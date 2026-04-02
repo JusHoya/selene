@@ -1,0 +1,31 @@
+# Claude Code personal memory
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ROS 2 build artifacts
+install/
+log/
+
+# Node.js
+node_modules/
+selene_dashboard/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/.env
