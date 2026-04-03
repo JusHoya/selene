@@ -1,0 +1,13 @@
+orchestrator_node:
+  ros__parameters:
+    auction_timeout_sec: 5.0
+    heartbeat_timeout_sec: 10.0
+    recharge_threshold: 0.30
+    bid_weight_distance: 0.4
+    bid_weight_energy: 0.35
+    bid_weight_capability: 0.25
+    fleet_state_publish_rate: 1.0
+    resource_map_publish_rate: 0.5
+    map_resolution: 1.0
+    map_width: 500
+    map_height: 500

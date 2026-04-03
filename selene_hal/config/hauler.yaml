@@ -1,0 +1,40 @@
+robot_type: hauler
+kinematic_model: differential_drive
+max_speed: 0.4
+turn_radius: 0.0
+mass: 100
+battery:
+  capacity: 800
+  idle_draw: 6
+  locomotion_draw: 30
+sensors:
+  - name: stereo_camera
+    type: depth_image
+    topic: sensors/depth
+    frame: camera_link
+    range: 20.0
+    fov: 90
+    resolution: [320, 240]
+    power_draw: 8
+  - name: imu
+    type: imu
+    topic: sensors/imu
+    frame: base_link
+    update_rate: 100
+    power_draw: 1
+  - name: load_cell
+    type: fill_level
+    topic: sensors/load_cell
+    frame: bin_link
+    capacity_kg: 50
+    power_draw: 0.5
+actuators:
+  - name: transport_bin
+    type: transfer
+    topic: actuators/bin_cmd
+    frame: bin_link
+    capacity_kg: 50
+    transfer_rate: 10
+    power_draw: 20
+capabilities:
+  - haul

@@ -1,0 +1,39 @@
+deposits:
+  - id: deposit_alpha
+    center: [-80, -140]
+    radius: 25.0
+    depth: 1.0
+    peak_concentration: 8.0
+    profile: gaussian
+    sigma: 12.0
+
+  - id: deposit_beta
+    center: [-110, -170]
+    radius: 15.0
+    depth: 0.5
+    peak_concentration: 4.0
+    profile: gaussian
+    sigma: 8.0
+
+  - id: deposit_gamma
+    center: [-90, -130]
+    radius: 10.0
+    depth: 0.3
+    peak_concentration: 2.5
+    profile: gaussian
+    sigma: 5.0
+
+  - id: deposit_delta
+    center: [-120, -155]
+    radius: 20.0
+    depth: 0.8
+    peak_concentration: 6.0
+    profile: gaussian
+    sigma: 10.0
+
+sensor_parameters:
+  neutron_spectrometer:
+    max_detection_range: 10.0
+    noise_base_stddev: 0.3
+    noise_distance_coefficient: 0.1
+    sampling_period: 2.0

@@ -1,0 +1,5 @@
+string scout_id
+geometry_msgs/Point location
+float32 ice_concentration
+float32 sensor_uncertainty
+builtin_interfaces/Time stamp

@@ -1,0 +1,6 @@
+string robot_id
+string command
+geometry_msgs/Point target
+---
+bool success
+string message

@@ -27,5 +27,10 @@ selene_dashboard/build/
 .DS_Store
 Thumbs.db
 
+# Environment / credentials
+.env
+.env.*
+!.env.example
+
 # Docker
 docker/.env

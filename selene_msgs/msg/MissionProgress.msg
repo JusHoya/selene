@@ -1,0 +1,8 @@
+string objective_description
+float32 target_quantity
+float32 extracted_quantity
+float32 in_transit_quantity
+float32 deposited_quantity
+float32 fleet_distance_total
+float32 fleet_energy_total
+float32 elapsed_sim_time

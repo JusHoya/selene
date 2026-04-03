@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  selene-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: selene-dev
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=42
+      - GZ_SIM_RESOURCE_PATH=/ros2_ws/src/selene/selene_sim/models
+    volumes:
+      - ../:/ros2_ws/src/selene
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    network_mode: host
+    stdin_open: true
+    tty: true
+    privileged: true
+
+  rosbridge:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: selene-rosbridge
+    command: >
+      /bin/bash -c "source /opt/ros/humble/setup.bash &&
+                    source /ros2_ws/install/setup.bash &&
+                    ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
+    environment:
+      - ROS_DOMAIN_ID=42
+    network_mode: host
+    depends_on:
+      - selene-dev
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: selene-dashboard
+    command: >
+      /bin/bash -c "cd /ros2_ws/src/selene/selene_dashboard && npm start"
+    environment:
+      - PORT=3000
+    network_mode: host
+    depends_on:
+      - rosbridge

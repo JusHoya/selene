@@ -1,0 +1,29 @@
+# ros_gz_bridge topic configuration
+# This file documents the bridge mappings used in the launch files.
+# The actual bridge is configured via parameter_bridge CLI arguments in the launch files.
+
+bridge_topics:
+  # Per-robot topics (replace {robot_id} with actual ID)
+  - gz_topic: "/model/{robot_id}/cmd_vel"
+    ros_topic: "/{robot_id}/cmd_vel"
+    ros_type: "geometry_msgs/msg/Twist"
+    gz_type: "gz.msgs.Twist"
+    direction: "ros_to_gz"
+
+  - gz_topic: "/model/{robot_id}/odometry"
+    ros_topic: "/{robot_id}/odom"
+    ros_type: "nav_msgs/msg/Odometry"
+    gz_type: "gz.msgs.Odometry"
+    direction: "gz_to_ros"
+
+  - gz_topic: "/{robot_id}/imu"
+    ros_topic: "/{robot_id}/sensors/imu"
+    ros_type: "sensor_msgs/msg/Imu"
+    gz_type: "gz.msgs.IMU"
+    direction: "gz_to_ros"
+
+  - gz_topic: "/{robot_id}/depth_camera"
+    ros_topic: "/{robot_id}/sensors/depth"
+    ros_type: "sensor_msgs/msg/Image"
+    gz_type: "gz.msgs.Image"
+    direction: "gz_to_ros"

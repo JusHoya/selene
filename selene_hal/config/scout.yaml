@@ -1,0 +1,34 @@
+robot_type: scout
+kinematic_model: differential_drive
+max_speed: 0.5
+turn_radius: 0.0
+mass: 50
+battery:
+  capacity: 500
+  idle_draw: 5
+  locomotion_draw: 20
+sensors:
+  - name: neutron_spectrometer
+    type: scalar_field
+    topic: sensors/neutron_spec
+    frame: base_link
+    range: 10.0
+    noise_stddev: 0.5
+    power_draw: 10
+  - name: stereo_camera
+    type: depth_image
+    topic: sensors/depth
+    frame: camera_link
+    range: 20.0
+    fov: 90
+    resolution: [320, 240]
+    power_draw: 8
+  - name: imu
+    type: imu
+    topic: sensors/imu
+    frame: base_link
+    update_rate: 100
+    power_draw: 1
+actuators: []
+capabilities:
+  - prospect

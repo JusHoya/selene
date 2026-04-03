@@ -1,0 +1,5 @@
+string task_id
+string robot_id
+float32 bid_score
+float32 estimated_arrival_time
+float32 energy_after_task

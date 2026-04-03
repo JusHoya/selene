@@ -1,0 +1,46 @@
+robot_type: excavator
+kinematic_model: differential_drive
+max_speed: 0.3
+turn_radius: 0.0
+mass: 150
+battery:
+  capacity: 1000
+  idle_draw: 8
+  locomotion_draw: 40
+sensors:
+  - name: stereo_camera
+    type: depth_image
+    topic: sensors/depth
+    frame: camera_link
+    range: 20.0
+    fov: 90
+    resolution: [320, 240]
+    power_draw: 8
+  - name: imu
+    type: imu
+    topic: sensors/imu
+    frame: base_link
+    update_rate: 100
+    power_draw: 1
+  - name: hopper_fill
+    type: fill_level
+    topic: sensors/hopper_fill
+    frame: hopper_link
+    capacity_kg: 20
+    power_draw: 0.5
+actuators:
+  - name: drill
+    type: drill
+    topic: actuators/drill_cmd
+    frame: drill_link
+    max_power: 200
+    power_draw: 200
+  - name: hopper
+    type: transfer
+    topic: actuators/hopper_cmd
+    frame: hopper_link
+    capacity_kg: 20
+    transfer_rate: 5
+    power_draw: 15
+capabilities:
+  - excavate

@@ -1,0 +1,8 @@
+string task_type
+geometry_msgs/Point target_location
+float32 quantity
+string assigned_robot_id
+---
+bool success
+string task_id
+string message

@@ -1,0 +1,9 @@
+string task_id
+string task_type
+geometry_msgs/Point target_location
+float32 estimated_energy_cost
+string[] required_capabilities
+float32 priority
+float32 estimated_duration
+string parent_task_id
+builtin_interfaces/Time deadline

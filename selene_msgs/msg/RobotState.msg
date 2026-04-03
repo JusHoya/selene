@@ -1,0 +1,10 @@
+string robot_id
+string robot_type
+string fsm_state
+geometry_msgs/Pose2D pose
+geometry_msgs/Twist velocity
+float32 battery_level
+string current_task_id
+float32 task_progress
+string[] capabilities
+builtin_interfaces/Time stamp

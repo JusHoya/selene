@@ -1,0 +1,22 @@
+world:
+  name: lunar_psr
+  gravity: [0, 0, -1.62]
+  bounds:
+    x_min: -250
+    x_max: 250
+    y_min: -250
+    y_max: 250
+  psr_zones:
+    - name: psr_alpha
+      type: circle
+      center: [-100, -150]
+      radius: 60
+  solar_zone:
+    type: complement
+    description: "Entire operational area minus PSR zones"
+  depot:
+    position: [50, 50, 0]
+    radius: 10
+  recharge_station:
+    position: [40, 40, 0]
+    radius: 5

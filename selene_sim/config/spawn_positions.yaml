@@ -1,0 +1,7 @@
+scouts:
+  - {x: 55, y: 45, z: 0.5, yaw: 0.0}
+  - {x: 45, y: 55, z: 0.5, yaw: 0.0}
+excavators:
+  - {x: 50, y: 40, z: 0.5, yaw: 0.0}
+haulers:
+  - {x: 40, y: 50, z: 0.5, yaw: 0.0}
