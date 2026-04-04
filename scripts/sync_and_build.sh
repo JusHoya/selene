@@ -9,5 +9,10 @@ rsync -a --delete --exclude=build --exclude=install --exclude=log --exclude=.git
 
 source /opt/ros/jazzy/setup.bash
 cd ~/selene
+echo "Building ROS 2 packages..."
 colcon build --symlink-install 2>&1 | tail -3
+echo "Installing dashboard dependencies..."
+cd ~/selene/selene_dashboard && npm install --silent 2>&1 | tail -1
+echo ""
 echo "Build complete. Run: bash scripts/start.sh"
+echo "Dashboard will open at: http://localhost:3000"

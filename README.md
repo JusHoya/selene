@@ -87,15 +87,15 @@ cd /mnt/c/Users/<you>/WorkSpace/Projects/selene
 # Sync to Linux filesystem and build (run once, or after code changes)
 bash scripts/sync_and_build.sh
 
-# Launch Gazebo GUI + autonomous scout agent
+# Launch simulation + dashboard
 bash scripts/start.sh
 ```
 
-The Gazebo server starts first, then the GUI connects to it separately. On WSL2, software rendering is used automatically to avoid GPU shader compatibility issues. A scout robot will autonomously prospect 5 ice deposit waypoints, return to recharge, and repeat.
+This starts the Gazebo simulation server, rosbridge WebSocket, the Mission Control Dashboard, and an autonomous scout agent. Open **http://localhost:3000** in your browser to see the dashboard.
 
-> **Note:** The GUI may take a few seconds to render on WSL2 with software rendering. If the GUI crashes, the simulation server continues running — you can monitor via `ros2 topic echo` in another terminal.
+The dashboard shows a real-time 2D map of the lunar terrain with robot positions, ice concentration heatmap, battery gauges, FSM state tracking, and mission progress — all updating live via WebSocket.
 
-**Headless mode** (no GUI, for CI or remote machines):
+**Headless mode** (no dashboard, for CI or remote machines):
 
 ```bash
 bash scripts/start.sh --headless
