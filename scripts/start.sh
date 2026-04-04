@@ -38,10 +38,11 @@ gz sim -s -r $P/selene_sim/worlds/lunar_psr.sdf &
 sleep 12
 
 # 2. Optionally start Gazebo GUI (connects to running server)
+#    Uses Ogre 1.x render engine for WSL2 compatibility (Ogre2 crashes on WSL2 GPU shaders)
 if [ "$HEADLESS" = false ]; then
-    echo "[2/5] Starting Gazebo GUI (software rendering)..."
-    gz sim -g &
-    sleep 3
+    echo "[2/5] Starting Gazebo GUI (ogre engine for WSL2 compatibility)..."
+    gz sim -g --render-engine ogre &
+    sleep 5
 else
     echo "[2/5] Skipping GUI (headless mode)"
 fi
