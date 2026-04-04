@@ -59,42 +59,65 @@ MISSION CONTROL (Earth)          FLEET ORCHESTRATION (Lunar)         ROBOTS (Per
 
 ### Prerequisites
 
-- **Ubuntu 22.04/24.04** (or WSL2 on Windows)
+- **Ubuntu 22.04/24.04** (or WSL2 on Windows 11)
 - **ROS 2** Humble (22.04) or Jazzy (24.04)
 - **Gazebo Harmonic**
 - Python 3.10+, Node.js 18+
 
-### Build
+> **WSL2 users:** The project lives on the Windows filesystem but must be synced to the Linux filesystem for Gazebo compatibility. The scripts below handle this automatically.
+
+### First-Time Setup
 
 ```bash
 # Clone
 git clone https://github.com/JusHoya/selene.git
-cd selene
 
-# Install ROS 2 dependencies
-sudo apt install ros-${ROS_DISTRO}-ros-gz-sim ros-${ROS_DISTRO}-ros-gz-bridge \
-  ros-${ROS_DISTRO}-rosbridge-suite python3-colcon-common-extensions
-
-# Build
-source /opt/ros/${ROS_DISTRO}/setup.bash
-colcon build --symlink-install
-source install/setup.bash
+# Install ROS 2 + Gazebo (WSL2 Ubuntu 24.04)
+cd /mnt/c/Users/<you>/WorkSpace/Projects/selene
+bash scripts/setup_wsl2.sh
 ```
 
-### Launch the Simulation
+### Build & Run
+
+From the project directory on the **WSL2 filesystem**:
 
 ```bash
-# Full fleet: 2 scouts, 1 excavator, 1 hauler on lunar terrain
-ros2 launch selene_sim simulation.launch.py
+cd /mnt/c/Users/<you>/WorkSpace/Projects/selene
 
-# World only (no robots)
-ros2 launch selene_sim gazebo_only.launch.py
+# Sync to Linux filesystem and build (run once, or after code changes)
+bash scripts/sync_and_build.sh
 
-# Custom fleet size
-ros2 launch selene_sim simulation.launch.py num_scouts:=3 num_excavators:=2
+# Launch Gazebo GUI + autonomous scout agent
+bash scripts/start.sh
 ```
 
-### Docker
+The Gazebo window will open showing the lunar terrain. A scout robot will autonomously prospect 5 ice deposit waypoints, return to recharge, and repeat.
+
+**Headless mode** (no GUI, for CI or remote machines):
+
+```bash
+bash scripts/start.sh --headless
+```
+
+### Monitoring (second terminal)
+
+```bash
+source /opt/ros/jazzy/setup.bash && cd ~/selene && source install/setup.bash
+
+# Watch robot state (FSM, battery, position)
+ros2 topic echo /scout_01/state
+
+# Watch ice readings
+ros2 topic echo /scout_01/sensors/neutron_spec
+
+# Watch battery level
+ros2 topic echo /scout_01/battery_state
+
+# List all active topics
+ros2 topic list
+```
+
+### Docker (alternative)
 
 ```bash
 cd docker
