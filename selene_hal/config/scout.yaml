@@ -29,6 +29,12 @@ sensors:
     frame: base_link
     update_rate: 100
     power_draw: 1
+  - name: odometry
+    type: odometry
+    topic: odom
+    frame: base_link
+    update_rate: 20
+    power_draw: 0
 actuators: []
 capabilities:
   - prospect

@@ -28,10 +28,16 @@ sensors:
     frame: bin_link
     capacity_kg: 50
     power_draw: 0.5
+  - name: odometry
+    type: odometry
+    topic: odom
+    frame: base_link
+    update_rate: 20
+    power_draw: 0
 actuators:
   - name: transport_bin
     type: transfer
-    topic: actuators/bin_cmd
+    topic: actuators/load_cmd
     frame: bin_link
     capacity_kg: 50
     transfer_rate: 10

@@ -17,7 +17,7 @@ def test_load_scout_rcdl():
     assert desc.max_speed == 0.5
     assert desc.mass == 50
     assert desc.battery.capacity == 500
-    assert len(desc.sensors) == 3
+    assert len(desc.sensors) == 4
     assert len(desc.actuators) == 0
     assert 'prospect' in desc.capabilities
 

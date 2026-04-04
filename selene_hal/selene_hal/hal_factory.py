@@ -32,6 +32,8 @@ def create_hal(
     # Lazy-load built-in backends on first use
     if not _HAL_BACKENDS:
         import selene_hal.stub_hal  # noqa: F401
+    if backend == "gazebo" and "gazebo" not in _HAL_BACKENDS:
+        import selene_hal.gazebo_hal  # noqa: F401
 
     if backend not in _HAL_BACKENDS:
         available = list(_HAL_BACKENDS.keys())

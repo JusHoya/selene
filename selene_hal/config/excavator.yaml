@@ -28,6 +28,12 @@ sensors:
     frame: hopper_link
     capacity_kg: 20
     power_draw: 0.5
+  - name: odometry
+    type: odometry
+    topic: odom
+    frame: base_link
+    update_rate: 20
+    power_draw: 0
 actuators:
   - name: drill
     type: drill
