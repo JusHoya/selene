@@ -1,0 +1,29 @@
+.fleet-map {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  cursor: grab;
+}
+
+.fleet-map--dragging {
+  cursor: grabbing;
+}
+
+.fleet-map__canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.fleet-map__coords {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(10, 14, 26, 0.8);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}

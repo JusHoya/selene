@@ -1,0 +1,83 @@
+/* === MISSION PROGRESS PANEL === */
+.mission-progress {
+  padding: 16px;
+}
+
+.mission-progress__header {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+/* --- Stats Grid --- */
+.mission-progress__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mission-progress__stat {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background var(--transition-fast);
+}
+
+.mission-progress__stat:hover {
+  background: var(--bg-card-hover);
+}
+
+.mission-progress__stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mission-progress__stat-value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+/* --- Waypoints Mini Progress Bar --- */
+.mission-progress__mini-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.mission-progress__mini-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent-cyan);
+  transition: width 0.3s ease;
+}
+
+/* --- Stat accent colors --- */
+.mission-progress__stat-value--cyan {
+  color: var(--accent-cyan);
+}
+
+.mission-progress__stat-value--green {
+  color: var(--accent-green);
+}
+
+.mission-progress__stat-value--amber {
+  color: var(--accent-amber);
+}
+
+.mission-progress__stat-value--teal {
+  color: var(--accent-teal);
+}

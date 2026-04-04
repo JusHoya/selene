@@ -1,0 +1,262 @@
+/* === ROBOT DETAIL PANEL === */
+.robot-detail {
+  padding: 0;
+}
+
+/* --- Placeholder --- */
+.robot-detail__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* --- Section --- */
+.robot-detail__section {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.robot-detail__section:last-child {
+  border-bottom: none;
+}
+
+.robot-detail__section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+/* --- Identity --- */
+.robot-detail__identity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.robot-detail__id-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.robot-detail__id {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.robot-detail__type {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.robot-detail__type-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.robot-detail__state-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #fff;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* --- Battery --- */
+.robot-detail__battery {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.robot-detail__battery-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.robot-detail__battery-percent {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.robot-detail__battery-charging {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent-green);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.robot-detail__battery-charging-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green);
+}
+
+/* --- Stats Grid --- */
+.robot-detail__stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.robot-detail__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.robot-detail__stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.robot-detail__stat-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* --- Task --- */
+.robot-detail__task-id {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.robot-detail__task-id span {
+  color: var(--text-primary);
+}
+
+.robot-detail__progress-bar {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.robot-detail__progress-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent-cyan);
+  transition: width 0.3s ease;
+}
+
+.robot-detail__progress-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+/* --- Capabilities --- */
+.robot-detail__capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.robot-detail__capability-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border: 1px solid;
+  text-transform: capitalize;
+}
+
+/* --- State History --- */
+.robot-detail__history-list {
+  list-style: none;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.robot-detail__history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 4px 0;
+  animation: fade-in 0.2s ease forwards;
+}
+
+.robot-detail__history-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  min-width: 48px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.robot-detail__history-from,
+.robot-detail__history-to {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.robot-detail__history-arrow {
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.robot-detail__history-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
