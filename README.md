@@ -91,7 +91,9 @@ bash scripts/sync_and_build.sh
 bash scripts/start.sh
 ```
 
-The Gazebo window will open showing the lunar terrain. A scout robot will autonomously prospect 5 ice deposit waypoints, return to recharge, and repeat.
+The Gazebo server starts first, then the GUI connects to it separately. On WSL2, software rendering is used automatically to avoid GPU shader compatibility issues. A scout robot will autonomously prospect 5 ice deposit waypoints, return to recharge, and repeat.
+
+> **Note:** The GUI may take a few seconds to render on WSL2 with software rendering. If the GUI crashes, the simulation server continues running — you can monitor via `ros2 topic echo` in another terminal.
 
 **Headless mode** (no GUI, for CI or remote machines):
 
