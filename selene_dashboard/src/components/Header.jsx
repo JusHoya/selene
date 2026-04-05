@@ -1,7 +1,7 @@
 import React from 'react';
 import './Header.css';
 
-export default function Header({ connected, error, simTime }) {
+export default function Header({ connected, error, simTime, showResourceGraph, onToggleResourceGraph }) {
   const formatTime = (seconds) => {
     if (!seconds && seconds !== 0) return '--:--:--';
     const h = Math.floor(seconds / 3600);
@@ -24,6 +24,19 @@ export default function Header({ connected, error, simTime }) {
             {connected ? 'CONNECTED' : error ? 'ERROR' : 'DISCONNECTED'}
           </span>
         </div>
+
+        {onToggleResourceGraph && (
+          <button
+            className={
+              'header__view-toggle' +
+              (showResourceGraph ? ' header__view-toggle--active' : '')
+            }
+            onClick={onToggleResourceGraph}
+          >
+            <span className="header__view-toggle-dot" />
+            {showResourceGraph ? 'KNOWLEDGE MAP' : 'FLEET MAP'}
+          </button>
+        )}
       </div>
 
       <div className="header__right">

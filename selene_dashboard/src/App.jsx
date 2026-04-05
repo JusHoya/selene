@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import ROSLIB from 'roslib';
 import './App.css';
 
@@ -8,6 +8,7 @@ import { ROBOT_IDS, TOPICS, MSG_TYPES } from './utils/rosTopics';
 
 import Header from './components/Header';
 import FleetMap from './components/FleetMap';
+import ResourceGraph from './components/ResourceGraph';
 import RobotDetail from './components/RobotDetail';
 import MissionProgress from './components/MissionProgress';
 import FleetCards from './components/FleetCards';
@@ -17,6 +18,8 @@ function App() {
   const { ros, connected } = useRosBridge();
   const [state, dispatch] = useFleetState();
 
+  const [showResourceGraph, setShowResourceGraph] = useState(false);
+
   const selectRobot = useCallback((id) => {
     dispatch({ type: 'SET_SELECTED_ROBOT', payload: id });
   }, [dispatch]);
@@ -24,6 +27,10 @@ function App() {
   const toggleHeatmap = useCallback(() => {
     dispatch({ type: 'TOGGLE_HEATMAP' });
   }, [dispatch]);
+
+  const toggleResourceGraph = useCallback(() => {
+    setShowResourceGraph((prev) => !prev);
+  }, []);
 
   // Subscribe to ROS topics when connected
   useEffect(() => {
@@ -119,17 +126,26 @@ function App() {
       <Header
         connected={connected}
         simTime={state.missionProgress?.elapsed_sim_time}
+        showResourceGraph={showResourceGraph}
+        onToggleResourceGraph={toggleResourceGraph}
       />
 
       <div className="app__map">
-        <FleetMap
-          robots={state.robots}
-          resourceReadings={state.resourceReadings}
-          selectedRobotId={state.selectedRobotId}
-          onSelectRobot={selectRobot}
-          heatmapVisible={state.heatmapVisible}
-          onToggleHeatmap={toggleHeatmap}
-        />
+        {showResourceGraph ? (
+          <ResourceGraph
+            readings={state.resourceReadings}
+            onClose={() => setShowResourceGraph(false)}
+          />
+        ) : (
+          <FleetMap
+            robots={state.robots}
+            resourceReadings={state.resourceReadings}
+            selectedRobotId={state.selectedRobotId}
+            onSelectRobot={selectRobot}
+            heatmapVisible={state.heatmapVisible}
+            onToggleHeatmap={toggleHeatmap}
+          />
+        )}
       </div>
 
       <div className="app__sidebar">
