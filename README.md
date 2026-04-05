@@ -87,13 +87,18 @@ cd /mnt/c/Users/<you>/WorkSpace/Projects/selene
 # Sync to Linux filesystem and build (run once, or after code changes)
 bash scripts/sync_and_build.sh
 
-# Launch simulation + dashboard
+# Phase 2: Single scout standalone prospecting
 bash scripts/start.sh
+
+# Phase 3: Multi-agent with orchestrator + auction
+bash scripts/start.sh --orchestrated
 ```
 
-This starts the Gazebo simulation server, rosbridge WebSocket, the Mission Control Dashboard, and an autonomous scout agent. Open **http://localhost:3000** in your browser to see the dashboard.
+Open **http://localhost:3000** in your browser to see the Mission Control Dashboard.
 
-The dashboard shows a real-time 2D map of the lunar terrain with robot positions, ice concentration heatmap, battery gauges, FSM state tracking, and mission progress — all updating live via WebSocket.
+The dashboard shows a real-time 2D map with robot positions, ice concentration heatmap, battery gauges, FSM state tracking, and mission progress — all updating live via WebSocket.
+
+In orchestrated mode, the orchestrator generates ~30 PSR survey waypoints and distributes them to 2 scouts via market-based auction. Scouts bid based on distance, energy, and capability. The dashboard shows BIDDING/ASSIGNED state transitions and fleet alerts.
 
 **Headless mode** (no dashboard, for CI or remote machines):
 
