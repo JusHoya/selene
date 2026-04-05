@@ -26,22 +26,22 @@ class BatteryNode(Node):
     # Default energy parameters per robot type
     ENERGY_PARAMS = {
         'scout': {
-            'capacity_wh': 500.0,
-            'idle_draw_w': 5.0,
-            'locomotion_draw_w_per_ms': 20.0,
-            'solar_recharge_w': 50.0,
+            'capacity_wh': 50.0,
+            'idle_draw_w': 10.0,
+            'locomotion_draw_w_per_ms': 150.0,
+            'solar_recharge_w': 40.0,
         },
         'excavator': {
-            'capacity_wh': 1000.0,
-            'idle_draw_w': 8.0,
-            'locomotion_draw_w_per_ms': 40.0,
-            'solar_recharge_w': 50.0,
+            'capacity_wh': 80.0,
+            'idle_draw_w': 15.0,
+            'locomotion_draw_w_per_ms': 250.0,
+            'solar_recharge_w': 40.0,
         },
         'hauler': {
-            'capacity_wh': 800.0,
-            'idle_draw_w': 6.0,
-            'locomotion_draw_w_per_ms': 30.0,
-            'solar_recharge_w': 50.0,
+            'capacity_wh': 65.0,
+            'idle_draw_w': 12.0,
+            'locomotion_draw_w_per_ms': 200.0,
+            'solar_recharge_w': 40.0,
         },
     }
 

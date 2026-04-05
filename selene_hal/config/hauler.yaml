@@ -4,9 +4,9 @@ max_speed: 0.4
 turn_radius: 0.0
 mass: 100
 battery:
-  capacity: 800
-  idle_draw: 6
-  locomotion_draw: 30
+  capacity: 65
+  idle_draw: 12
+  locomotion_draw: 200
 sensors:
   - name: stereo_camera
     type: depth_image

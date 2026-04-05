@@ -4,9 +4,9 @@ max_speed: 0.5
 turn_radius: 0.0
 mass: 50
 battery:
-  capacity: 500
-  idle_draw: 5
-  locomotion_draw: 20
+  capacity: 50
+  idle_draw: 10
+  locomotion_draw: 150
 sensors:
   - name: neutron_spectrometer
     type: scalar_field
