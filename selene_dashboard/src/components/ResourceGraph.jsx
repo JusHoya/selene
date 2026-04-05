@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { iceConcentrationColor } from '../utils/colors';
 import './ResourceGraph.css';
 
@@ -255,22 +255,53 @@ function ResourceGraph({ readings, onClose }) {
   hoveredRef.current = hoveredIdx;
   selectedRef.current = selectedIdx;
 
+  // ---------- Compute edges synchronously so stats are always current ----------
+  const edges = useMemo(
+    () => (readings && readings.length > 0 ? computeEdges(readings) : []),
+    [readings]
+  );
+  edgesRef.current = edges;
+
   // ---------- Initialize / update simulation when readings change ----------
   useEffect(() => {
     if (!readings || readings.length === 0) {
       nodesRef.current = [];
-      edgesRef.current = [];
       readingsCountRef.current = 0;
       return;
     }
 
-    // Only re-initialize when readings count changes
-    if (readings.length !== readingsCountRef.current) {
+    const prevCount = readingsCountRef.current;
+
+    if (readings.length !== prevCount) {
       const canvas = canvasRef.current;
       const w = canvas ? canvas.clientWidth : 800;
       const h = canvas ? canvas.clientHeight : 600;
-      nodesRef.current = initNodes(readings, w / 2, h / 2);
-      edgesRef.current = computeEdges(readings);
+
+      if (prevCount === 0) {
+        // First batch — full init
+        nodesRef.current = initNodes(readings, w / 2, h / 2);
+      } else {
+        // Append only new nodes, keep existing positions
+        const newReadings = readings.slice(0, readings.length - prevCount);
+        const existing = nodesRef.current;
+        const added = newReadings.map((r) => {
+          // Place new nodes near the centroid of existing nodes
+          let cx = w / 2;
+          let cy = h / 2;
+          if (existing.length > 0) {
+            cx = existing.reduce((s, n) => s + n.x, 0) / existing.length;
+            cy = existing.reduce((s, n) => s + n.y, 0) / existing.length;
+          }
+          return {
+            x: cx + (Math.random() - 0.5) * 80,
+            y: cy + (Math.random() - 0.5) * 80,
+            vx: 0,
+            vy: 0,
+            reading: r,
+          };
+        });
+        nodesRef.current = [...added, ...existing];
+      }
       readingsCountRef.current = readings.length;
     } else {
       // Update reading data in existing nodes (concentration/uncertainty may change)
@@ -279,7 +310,6 @@ function ResourceGraph({ readings, onClose }) {
           nodesRef.current[i].reading = r;
         }
       });
-      edgesRef.current = computeEdges(readings);
     }
   }, [readings]);
 
@@ -574,7 +604,7 @@ function ResourceGraph({ readings, onClose }) {
           readings.reduce((s, r) => s + r.ice_concentration, 0) / readings.length
         ).toFixed(2),
         peakConcentration: Math.max(...readings.map((r) => r.ice_concentration)).toFixed(2),
-        edgeCount: edgesRef.current.length,
+        edgeCount: edges.length,
       }
     : null;
 

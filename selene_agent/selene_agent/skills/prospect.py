@@ -82,7 +82,7 @@ class ProspectSkill(BaseSkill):
     def _update_navigating(self, dt: float) -> None:
         nav_status = self._navigator.update(dt)
         dist = self._navigator.get_distance_to_goal()
-        self._progress = 0.6 * (1.0 - dist / self._initial_distance)
+        self._progress = max(0.0, 0.6 * (1.0 - dist / self._initial_distance))
 
         if nav_status == "goal_reached":
             self._phase = ProspectPhase.SETTLING

@@ -32,5 +32,9 @@ Thumbs.db
 .env.*
 !.env.example
 
+# MCP / Playwright artifacts
+.mcp.json
+.playwright-mcp/
+
 # Docker
 docker/.env

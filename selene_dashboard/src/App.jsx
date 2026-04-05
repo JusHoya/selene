@@ -20,6 +20,13 @@ function App() {
 
   const [showResourceGraph, setShowResourceGraph] = useState(false);
 
+  // Dev: expose dispatch for interactive testing
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      window.__seleneDispatch = dispatch;
+    }
+  }, [dispatch]);
+
   const selectRobot = useCallback((id) => {
     dispatch({ type: 'SET_SELECTED_ROBOT', payload: id });
   }, [dispatch]);
