@@ -9,8 +9,18 @@ import {
   PROSPECT_WAYPOINTS,
 } from '../utils/worldConfig';
 import { TYPE_COLORS, iceConcentrationColor } from '../utils/colors';
+import { generateLunarTerrain, drawCraterOutlines } from '../utils/lunarTerrain';
 import ResourceLegend from './ResourceLegend';
 import './FleetMap.css';
+
+// ---------- Cached lunar terrain ----------
+let _terrainCanvas = null;
+function getLunarTerrain() {
+  if (!_terrainCanvas) {
+    _terrainCanvas = generateLunarTerrain(1024, 1024);
+  }
+  return _terrainCanvas;
+}
 
 // ---------- Constants ----------
 const PADDING_RATIO = 0.05;
@@ -34,7 +44,7 @@ function drawGrid(ctx, scale) {
   const minor = 50; // meters
 
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.025)';
   ctx.lineWidth = 1 / scale;
   ctx.beginPath();
   for (let x = WORLD.X_MIN; x <= WORLD.X_MAX; x += minor) {
@@ -221,11 +231,13 @@ function drawRechargeStation(ctx, scale) {
 
 function drawRocks(ctx, scale) {
   ctx.save();
-  ctx.fillStyle = 'rgba(100,100,100,0.4)';
+  // Rock hazard markers — subtle outlines that complement terrain craters
+  ctx.strokeStyle = 'rgba(180, 140, 100, 0.25)';
+  ctx.lineWidth = 1 / scale;
   ROCKS.forEach((rock) => {
     ctx.beginPath();
-    ctx.arc(rock.x, rock.y, rock.r, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.arc(rock.x, rock.y, rock.r + 0.5, 0, Math.PI * 2);
+    ctx.stroke();
   });
   ctx.restore();
 }
@@ -495,9 +507,20 @@ function FleetMap({
       // Reset transform and clear
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // (a) Background
+      // (a) Background — lunar terrain texture
       ctx.fillStyle = '#0a0e1a';
       ctx.fillRect(0, 0, canvasW, canvasH);
+
+      // Draw terrain image in world space
+      ctx.save();
+      worldToCanvas(ctx, centerX, centerY, scale, canvasW, canvasH);
+      const terrain = getLunarTerrain();
+      ctx.save();
+      ctx.translate(WORLD.X_MIN, WORLD.Y_MAX); // upper-left in world
+      ctx.scale(WORLD.WIDTH / terrain.width, -WORLD.HEIGHT / terrain.height);
+      ctx.drawImage(terrain, 0, 0);
+      ctx.restore();
+      ctx.restore();
 
       // (l) Grid labels in screen space (before world transform)
       drawGridLabels(ctx, centerX, centerY, scale, canvasW, canvasH);
@@ -508,6 +531,9 @@ function FleetMap({
 
       // (b) Grid
       drawGrid(ctx, scale);
+
+      // (b2) Crater outlines
+      drawCraterOutlines(ctx, scale);
 
       // (c) PSR zones
       drawPSRZones(ctx, scale);
