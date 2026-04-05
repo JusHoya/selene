@@ -12,7 +12,7 @@ cd ~/selene
 echo "Building ROS 2 packages..."
 colcon build --symlink-install 2>&1 | tail -3
 echo "Installing dashboard dependencies..."
-cd ~/selene/selene_dashboard && npm install --silent 2>&1 | tail -1
+cd ~/selene/selene_dashboard && /usr/bin/npm install --silent 2>&1 | tail -1
 echo ""
 echo "Build complete. Run: bash scripts/start.sh"
 echo "Dashboard will open at: http://localhost:3000"

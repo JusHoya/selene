@@ -42,12 +42,13 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml > /dev/null 2>&1 &
 sleep 3
 
 # 3. Dashboard (React dev server on port 3000)
+#    HOST=0.0.0.0 required for WSL2→Windows browser access
 if [ "$HEADLESS" = false ]; then
     echo "[3/6] Starting Mission Control Dashboard (http://localhost:3000)..."
     cd $P/selene_dashboard
-    npm start > /dev/null 2>&1 &
+    HOST=0.0.0.0 BROWSER=none /usr/bin/npm start > /dev/null 2>&1 &
     cd $P
-    sleep 5
+    sleep 8
 else
     echo "[3/6] Skipping dashboard (headless mode)"
 fi
