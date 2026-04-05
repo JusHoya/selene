@@ -23,8 +23,8 @@ def test_stub_battery():
     battery = hal.get_battery()
     state = battery.get_state()
     assert isinstance(state, BatteryState)
-    assert state.capacity_wh == 500.0
-    assert state.remaining_wh == 500.0
+    assert state.capacity_wh == 50.0
+    assert state.remaining_wh == 50.0
 
 
 def test_stub_kinematics():

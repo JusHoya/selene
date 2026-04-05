@@ -9,6 +9,7 @@ const initialState = {
   resourceReadings: [],
   alerts: [],
   missionProgress: null,
+  taskAuctions: [],  // recent auction activity
   selectedRobotId: null,
   heatmapVisible: true,
 };
@@ -62,6 +63,22 @@ function fleetReducer(state, action) {
       const alerts = [{ ...action.payload, timestamp: Date.now() }, ...state.alerts];
       if (alerts.length > MAX_ALERTS) alerts.pop();
       return { ...state, alerts };
+    }
+
+    case 'ADD_TASK_ANNOUNCEMENT': {
+      const auctions = [
+        { ...action.payload, eventType: 'announcement', timestamp: Date.now() },
+        ...state.taskAuctions,
+      ].slice(0, 50);
+      return { ...state, taskAuctions: auctions };
+    }
+
+    case 'ADD_TASK_ASSIGNMENT': {
+      const auctions = [
+        { ...action.payload, eventType: 'assignment', timestamp: Date.now() },
+        ...state.taskAuctions,
+      ].slice(0, 50);
+      return { ...state, taskAuctions: auctions };
     }
 
     case 'UPDATE_MISSION':

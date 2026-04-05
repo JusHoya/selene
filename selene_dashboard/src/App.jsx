@@ -85,6 +85,28 @@ function App() {
     });
     listeners.push(missionTopic);
 
+    // Task announcements
+    const announceTopic = new ROSLIB.Topic({
+      ros,
+      name: TOPICS.TASK_ANNOUNCEMENT,
+      messageType: MSG_TYPES.TASK_ANNOUNCEMENT,
+    });
+    announceTopic.subscribe((msg) => {
+      dispatch({ type: 'ADD_TASK_ANNOUNCEMENT', payload: msg });
+    });
+    listeners.push(announceTopic);
+
+    // Task assignments
+    const assignTopic = new ROSLIB.Topic({
+      ros,
+      name: TOPICS.TASK_ASSIGNMENT,
+      messageType: MSG_TYPES.TASK_ASSIGNMENT,
+    });
+    assignTopic.subscribe((msg) => {
+      dispatch({ type: 'ADD_TASK_ASSIGNMENT', payload: msg });
+    });
+    listeners.push(assignTopic);
+
     return () => {
       listeners.forEach((l) => l.unsubscribe());
     };

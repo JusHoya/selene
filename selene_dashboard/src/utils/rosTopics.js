@@ -10,6 +10,8 @@ export const TOPICS = {
   MAP_UPDATE: '/orchestrator/map_update',
   FLEET_ALERT: '/orchestrator/alerts',
   MISSION_PROGRESS: '/orchestrator/mission_progress',
+  TASK_ANNOUNCEMENT: '/orchestrator/task_announcement',
+  TASK_ASSIGNMENT: '/orchestrator/task_assignment',
 };
 
 // roslib message type strings
@@ -21,4 +23,7 @@ export const MSG_TYPES = {
   MISSION_PROGRESS: 'selene_msgs/MissionProgress',
   FLOAT32: 'std_msgs/Float32',
   PATH: 'nav_msgs/Path',
+  TASK_ANNOUNCEMENT: 'selene_msgs/TaskAnnouncement',
+  TASK_ASSIGNMENT: 'selene_msgs/TaskAssignment',
+  BID_RESPONSE: 'selene_msgs/BidResponse',
 };

@@ -3,16 +3,24 @@
 Wires together the FSM, HAL, Navigator, EnergyManager, and Skills
 into an autonomous agent that prospects waypoints, monitors battery,
 and returns to recharge when energy is critical.
+
+Supports two operating modes:
+  - standalone (orchestrated=False, default): self-directed waypoint list
+  - orchestrated (orchestrated=True): auction-based task assignment from
+    the fleet orchestrator
 """
 
 from __future__ import annotations
 
+import math
+import time
 import yaml
 
 import rclpy
 from rclpy.node import Node
 
 from selene_msgs.msg import RobotState, ResourceMapUpdate
+from selene_msgs.msg import TaskAnnouncement, TaskAssignment, BidResponse
 from geometry_msgs.msg import Pose2D, Twist, Point
 from nav_msgs.msg import Path
 
@@ -41,6 +49,11 @@ class AgentNode(Node):
         self.declare_parameter("energy_critical_threshold", 0.15)
         self.declare_parameter("energy_recharge_target", 0.90)
         self.declare_parameter("tick_rate", 10.0)
+        self.declare_parameter("orchestrated", False)
+        self.declare_parameter("auction_timeout_sec", 7.0)  # slightly > orchestrator's 5s
+        self.declare_parameter("bid_weight_distance", 0.4)
+        self.declare_parameter("bid_weight_energy", 0.35)
+        self.declare_parameter("bid_weight_capability", 0.25)
 
         # -- Read parameters -----------------------------------------------------
         self._robot_id = self.get_parameter("robot_id").get_parameter_value().string_value
@@ -53,6 +66,8 @@ class AgentNode(Node):
         energy_critical = self.get_parameter("energy_critical_threshold").get_parameter_value().double_value
         self._energy_recharge_target = self.get_parameter("energy_recharge_target").get_parameter_value().double_value
         self._tick_rate = self.get_parameter("tick_rate").get_parameter_value().double_value
+        self._orchestrated = self.get_parameter("orchestrated").get_parameter_value().bool_value
+        self._auction_timeout = self.get_parameter("auction_timeout_sec").get_parameter_value().double_value
 
         # -- Create HAL ----------------------------------------------------------
         self._hal = create_hal(rcdl_path, self._robot_id, backend=hal_backend, ros_node=self)
@@ -78,15 +93,22 @@ class AgentNode(Node):
         self._fsm = AgentFSM(self._robot_id, logger=self.get_logger().info)
 
         # -- Load prospect waypoints ---------------------------------------------
-        mission = nav_config.get("mission", {})
-        raw_waypoints = mission.get("prospect_waypoints", [])
-        self._waypoints = [(float(wp[0]), float(wp[1])) for wp in raw_waypoints]
+        if not self._orchestrated:
+            mission = nav_config.get("mission", {})
+            raw_waypoints = mission.get("prospect_waypoints", [])
+            self._waypoints = [(float(wp[0]), float(wp[1])) for wp in raw_waypoints]
+        else:
+            self._waypoints = []
         self._waypoint_index = 0
 
         # -- Skill tracking ------------------------------------------------------
         self._current_skill = None
         self._current_task_id = ""
         self._was_navigating = False  # tracks ProspectSkill NAVIGATING->SETTLING transition
+
+        # -- Auction state tracking ----------------------------------------------
+        self._bidding_since: float = 0.0
+        self._pending_task_id: str = ""
 
         # -- Publishers ----------------------------------------------------------
         self._state_pub = self.create_publisher(
@@ -98,6 +120,18 @@ class AgentNode(Node):
         self._map_update_pub = self.create_publisher(
             ResourceMapUpdate, "/orchestrator/map_update", 10
         )
+        self._bid_pub = self.create_publisher(
+            BidResponse, "/orchestrator/bid_response", 10
+        )
+
+        # -- Orchestrated-mode subscribers ---------------------------------------
+        if self._orchestrated:
+            self.create_subscription(
+                TaskAnnouncement, "/orchestrator/task_announcement",
+                self._on_task_announced, 10)
+            self.create_subscription(
+                TaskAssignment, "/orchestrator/task_assignment",
+                self._on_task_assigned, 10)
 
         # -- Timers --------------------------------------------------------------
         tick_period = 1.0 / self._tick_rate
@@ -107,6 +141,7 @@ class AgentNode(Node):
         # -- Startup log ---------------------------------------------------------
         self.get_logger().info(
             f"[{self._robot_id}] AgentNode started | type={self._robot_type} "
+            f"mode={'orchestrated' if self._orchestrated else 'standalone'} "
             f"backend={hal_backend} tick={self._tick_rate}Hz "
             f"waypoints={len(self._waypoints)} "
             f"recharge=({self._recharge_x}, {self._recharge_y})"
@@ -155,6 +190,10 @@ class AgentNode(Node):
 
         if state == AgentState.IDLE:
             self._handle_idle()
+        elif state == AgentState.BIDDING:
+            self._handle_bidding(dt)
+        elif state == AgentState.ASSIGNED:
+            pass  # Transient -- assignment callback chains to NAVIGATING
         elif state == AgentState.NAVIGATING:
             self._handle_navigating(dt)
         elif state == AgentState.WORKING:
@@ -170,6 +209,9 @@ class AgentNode(Node):
 
     def _handle_idle(self):
         """Pick the next waypoint, create a ProspectSkill, and start navigating."""
+        if self._orchestrated:
+            return  # Wait for task announcement from orchestrator
+
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
                 f"[{self._robot_id}] Mission complete -- all {len(self._waypoints)} waypoints visited"
@@ -197,6 +239,16 @@ class AgentNode(Node):
         self.get_logger().info(
             f"[{self._robot_id}] Targeting waypoint {self._waypoint_index}: {waypoint}"
         )
+
+    def _handle_bidding(self, dt: float):
+        """Monitor auction timeout while waiting for assignment."""
+        elapsed = time.time() - self._bidding_since
+        if elapsed > self._auction_timeout:
+            self.get_logger().info(
+                f"[{self._robot_id}] Auction timeout for {self._pending_task_id}"
+            )
+            self._fsm.handle_event(FSMEvent.AUCTION_LOST)
+            self._pending_task_id = ""
 
     def _handle_navigating(self, dt: float):
         """Drive the ProspectSkill; detect when navigation phase ends."""
@@ -294,6 +346,109 @@ class AgentNode(Node):
             self._current_skill = None
             self._current_task_id = ""
             self._fsm.handle_event(FSMEvent.CHARGE_COMPLETE)
+
+    # ===================================================================
+    # Orchestrated-mode callbacks
+    # ===================================================================
+
+    def _on_task_announced(self, msg):
+        """Evaluate task and submit bid if eligible."""
+        if self._fsm.state != AgentState.IDLE:
+            return
+
+        # Capability check
+        my_caps = set(self._hal.get_capabilities())
+        required = set(msg.required_capabilities)
+        if not required.issubset(my_caps):
+            return
+
+        # Position
+        try:
+            odom = self._hal.get_sensor("odometry").read()
+            my_pos = (odom.x, odom.y)
+        except Exception:
+            return
+
+        task_pos = (msg.target_location.x, msg.target_location.y)
+
+        # Energy check
+        if not self._energy_manager.can_afford_task(my_pos, task_pos, msg.estimated_energy_cost):
+            return
+
+        # Compute bid score
+        distance = math.hypot(task_pos[0] - my_pos[0], task_pos[1] - my_pos[1])
+        w_dist = self.get_parameter("bid_weight_distance").get_parameter_value().double_value
+        w_energy = self.get_parameter("bid_weight_energy").get_parameter_value().double_value
+        w_cap = self.get_parameter("bid_weight_capability").get_parameter_value().double_value
+
+        dist_score = 1.0 / (1.0 + distance / 100.0)
+        energy_cost = self._energy_manager.compute_energy_cost_wh(distance, msg.estimated_energy_cost)
+        remaining = self._energy_manager.get_remaining_wh()
+        energy_score = min(remaining / max(energy_cost, 0.01), 1.0)
+        cap_score = 1.0 if required.issubset(my_caps) else 0.0
+
+        bid_score = w_dist * dist_score + w_energy * energy_score + w_cap * cap_score
+
+        # ETA
+        speed = self._hal.get_kinematics().get_max_speed()
+        eta = distance / max(speed, 0.1)
+        energy_after = max(remaining - energy_cost, 0.0)
+
+        # Transition to BIDDING
+        self._fsm.handle_event(FSMEvent.TASK_ANNOUNCED)
+        self._bidding_since = time.time()
+        self._pending_task_id = msg.task_id
+
+        # Publish bid
+        bid = BidResponse()
+        bid.task_id = msg.task_id
+        bid.robot_id = self._robot_id
+        bid.bid_score = float(bid_score)
+        bid.estimated_arrival_time = float(eta)
+        bid.energy_after_task = float(energy_after)
+        self._bid_pub.publish(bid)
+
+        self.get_logger().info(
+            f"[{self._robot_id}] Bid on {msg.task_id}: score={bid_score:.3f} eta={eta:.1f}s")
+
+    def _on_task_assigned(self, msg):
+        """Handle task assignment from orchestrator."""
+        if msg.robot_id != self._robot_id:
+            # Not for me -- if I was bidding on this task, I lost
+            if self._fsm.state == AgentState.BIDDING and self._pending_task_id == msg.task_id:
+                self._fsm.handle_event(FSMEvent.AUCTION_LOST)
+                self._pending_task_id = ""
+            return
+
+        # I won
+        self.get_logger().info(f"[{self._robot_id}] Assigned task {msg.task_id}")
+
+        if self._fsm.state == AgentState.BIDDING:
+            self._fsm.handle_event(FSMEvent.AUCTION_WON)
+        elif self._fsm.state != AgentState.ASSIGNED:
+            self.get_logger().warn(
+                f"[{self._robot_id}] Assignment in state {self._fsm.state.value}, ignoring")
+            return
+
+        target = (msg.target_location.x, msg.target_location.y)
+        self._current_task_id = msg.task_id
+        self._pending_task_id = ""
+
+        # Create skill based on task type
+        if msg.task_type == "prospect":
+            self._current_skill = ProspectSkill()
+        else:
+            self.get_logger().error(f"[{self._robot_id}] Unknown task type: {msg.task_type}")
+            self._fsm.handle_event(FSMEvent.FAULT)
+            return
+
+        self._current_skill.start(self._hal, self._navigator, target=target)
+        if self._current_skill.has_failed():
+            self._fsm.handle_event(FSMEvent.FAULT)
+            return
+
+        self._was_navigating = True
+        self._fsm.handle_event(FSMEvent.WAYPOINT_ASSIGNED)
 
     # ===================================================================
     # Recharge helper
