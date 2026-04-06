@@ -158,13 +158,6 @@ class AgentNode(Node):
     def _tick(self):
         dt = 1.0 / self._tick_rate
 
-        # Don't do anything until odometry is ready — prevents the
-        # orchestrator from seeing this robot and assigning tasks
-        # before we can plan valid paths
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return
-
         # Read current state from HAL
         try:
             battery_state = self._hal.get_battery().get_state()
@@ -222,6 +215,11 @@ class AgentNode(Node):
         """Pick the next waypoint, create a ProspectSkill, and start navigating."""
         if self._orchestrated:
             return  # Wait for task announcement from orchestrator
+
+        # Wait for valid odometry before planning any path
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
+            return
 
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
@@ -490,9 +488,7 @@ class AgentNode(Node):
 
         Called from the tick loop while in ASSIGNED state.  If path
         planning fails (e.g. odometry not ready yet), retries on the
-        next tick.  After 3 seconds of retries, forces planning from
-        the cached position — the path follower will self-heal via
-        stall detection and replanning once real odometry arrives.
+        next tick instead of faulting.
         """
         target = self._assigned_target
         task_type = self._assigned_task_type
@@ -508,15 +504,15 @@ class AgentNode(Node):
             skill.start(self._hal, self._navigator, target=target)
         elif task_type == "haul":
             skill = HaulSkill()
+            # Target is pickup location; depot is the recharge/depot position
             depot = (self._recharge_x, self._recharge_y)
             skill.start(self._hal, self._navigator, pickup=target, depot=depot)
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             self._fsm.handle_event(FSMEvent.FAULT)
             return
-
         if skill.has_failed():
-            # Planning failed — retry next tick
+            # Planning failed (likely odom not ready) — retry next tick
             return
 
         self._current_skill = skill
@@ -542,17 +538,13 @@ class AgentNode(Node):
     # ===================================================================
 
     def _publish_state(self):
-        # Don't advertise to the orchestrator until odom is ready
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return
-
         msg = RobotState()
         msg.robot_id = self._robot_id
         msg.robot_type = self._robot_type
         msg.fsm_state = self._fsm.state.value
 
         try:
+            odom = self._hal.get_sensor("odometry").read()
             msg.pose = Pose2D(x=odom.x, y=odom.y, theta=odom.theta)
             msg.velocity = Twist()
             msg.velocity.linear.x = odom.linear_velocity
