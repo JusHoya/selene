@@ -14,8 +14,8 @@ export const PSR_ZONES = [
 ];
 
 // Depot and recharge station
-export const DEPOT = { x: 50, y: 50, radius: 10 };
-export const RECHARGE_STATION = { x: 40, y: 40, radius: 5 };
+export const DEPOT = { x: -60, y: -100, radius: 10 };
+export const RECHARGE_STATION = { x: -50, y: -100, radius: 5 };
 
 // Ice deposits (ground truth for reference overlay)
 export const ICE_DEPOSITS = [

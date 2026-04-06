@@ -109,13 +109,13 @@ fi
 if [ "$ORCHESTRATED" = true ]; then
     # --- PHASE 4: Full ISRU Fleet ---
     echo "[4/$STEPS] Spawning fleet (2 scouts, 1 excavator, 1 hauler)..."
-    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf 55 45
+    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -70 -110
     sleep 2
-    spawn_robot scout_02 scout $P/selene_sim/models/scout/model.sdf 45 55
+    spawn_robot scout_02 scout $P/selene_sim/models/scout/model.sdf -80 -110
     sleep 2
-    spawn_robot excavator_01 excavator $P/selene_sim/models/excavator/model.sdf 50 40
+    spawn_robot excavator_01 excavator $P/selene_sim/models/excavator/model.sdf -60 -105
     sleep 2
-    spawn_robot hauler_01 hauler $P/selene_sim/models/hauler/model.sdf 40 50
+    spawn_robot hauler_01 hauler $P/selene_sim/models/hauler/model.sdf -55 -105
     sleep 3
 
     echo "[5/$STEPS] Starting orchestrator..."

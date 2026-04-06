@@ -15,8 +15,8 @@ world:
     type: complement
     description: "Entire operational area minus PSR zones"
   depot:
-    position: [50, 50, 0]
+    position: [-60, -100, 0]
     radius: 10
   recharge_station:
-    position: [40, 40, 0]
+    position: [-50, -100, 0]
     radius: 5
