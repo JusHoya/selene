@@ -214,11 +214,6 @@ class AgentNode(Node):
         if self._orchestrated:
             return  # Wait for task announcement from orchestrator
 
-        # Wait for valid odometry before planning any path
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return
-
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
                 f"[{self._robot_id}] Mission complete -- all {len(self._waypoints)} waypoints visited"
@@ -449,18 +444,15 @@ class AgentNode(Node):
         self._pending_task_id = ""
 
     def _handle_assigned(self):
-        """Start navigation once odometry is valid.
+        """Start navigation for the assigned task.
 
         Called from the tick loop while in ASSIGNED state.  Waits for
-        the first valid odometry reading before planning a path so the
-        robot never plans from the stale (0, 0) default.
+        ``_assigned_target`` to be set by ``_on_task_assigned()``, then
+        creates and starts the skill.  If odometry is still stale, the
+        path follower will self-heal via stall detection and replanning.
         """
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return  # wait for next tick
-
-        target = getattr(self, '_assigned_target', None)
-        task_type = getattr(self, '_assigned_task_type', 'prospect')
+        target = self._assigned_target
+        task_type = self._assigned_task_type
         if target is None:
             return
 
