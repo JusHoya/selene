@@ -158,6 +158,13 @@ class AgentNode(Node):
     def _tick(self):
         dt = 1.0 / self._tick_rate
 
+        # Don't do anything until odometry is ready — prevents the
+        # orchestrator from seeing this robot and assigning tasks
+        # before we can plan valid paths
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
+            return
+
         # Read current state from HAL
         try:
             battery_state = self._hal.get_battery().get_state()
@@ -215,11 +222,6 @@ class AgentNode(Node):
         """Pick the next waypoint, create a ProspectSkill, and start navigating."""
         if self._orchestrated:
             return  # Wait for task announcement from orchestrator
-
-        # Wait for valid odometry before planning any path
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return
 
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
@@ -540,13 +542,17 @@ class AgentNode(Node):
     # ===================================================================
 
     def _publish_state(self):
+        # Don't advertise to the orchestrator until odom is ready
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
+            return
+
         msg = RobotState()
         msg.robot_id = self._robot_id
         msg.robot_type = self._robot_type
         msg.fsm_state = self._fsm.state.value
 
         try:
-            odom = self._hal.get_sensor("odometry").read()
             msg.pose = Pose2D(x=odom.x, y=odom.y, theta=odom.theta)
             msg.velocity = Twist()
             msg.velocity.linear.x = odom.linear_velocity
