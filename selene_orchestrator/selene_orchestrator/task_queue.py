@@ -11,6 +11,7 @@ class TaskStatus(str, Enum):
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    INTERRUPTED = "INTERRUPTED"
 
 
 @dataclass
@@ -25,6 +26,9 @@ class TaskEntry:
     required_capabilities: list[str] = field(default_factory=list)
     estimated_energy_cost: float = 0.0
     estimated_duration: float = 0.0
+    parent_task_id: str = ""
+    depends_on: list[str] = field(default_factory=list)
+    progress_metadata: dict = field(default_factory=dict)
 
 
 class TaskQueue:
@@ -33,7 +37,8 @@ class TaskQueue:
 
     def add_task(self, task_id: str, task_type: str, target_x: float, target_y: float,
                  priority: float = 1.0, required_capabilities: list[str] | None = None,
-                 estimated_energy_cost: float = 0.0, estimated_duration: float = 0.0) -> None:
+                 estimated_energy_cost: float = 0.0, estimated_duration: float = 0.0,
+                 parent_task_id: str = "", depends_on: list[str] | None = None) -> None:
         self._tasks[task_id] = TaskEntry(
             task_id=task_id, task_type=task_type,
             target_x=target_x, target_y=target_y,
@@ -41,6 +46,8 @@ class TaskQueue:
             required_capabilities=required_capabilities or [],
             estimated_energy_cost=estimated_energy_cost,
             estimated_duration=estimated_duration,
+            parent_task_id=parent_task_id,
+            depends_on=depends_on or [],
         )
 
     def get_next_pending(self) -> TaskEntry | None:
@@ -91,6 +98,46 @@ class TaskQueue:
 
     def get_total_count(self) -> int:
         return len(self._tasks)
+
+    def get_next_ready(self) -> TaskEntry | None:
+        """Return highest-priority PENDING task whose dependencies are all COMPLETED.
+
+        Unlike get_next_pending(), this method checks that every task_id in
+        the candidate's depends_on list has status COMPLETED before
+        considering it eligible. Tasks with no dependencies are always eligible.
+        """
+        ready = []
+        for t in self._tasks.values():
+            if t.status != TaskStatus.PENDING:
+                continue
+            # All dependencies must be COMPLETED
+            deps_met = all(
+                self._tasks.get(dep_id) is not None
+                and self._tasks[dep_id].status == TaskStatus.COMPLETED
+                for dep_id in t.depends_on
+            )
+            if deps_met:
+                ready.append(t)
+        if not ready:
+            return None
+        return max(ready, key=lambda t: t.priority)
+
+    def get_dependent_tasks(self, task_id: str) -> list[TaskEntry]:
+        """Return all tasks whose depends_on list contains the given task_id."""
+        return [t for t in self._tasks.values() if task_id in t.depends_on]
+
+    def interrupt_task(self, task_id: str, metadata: dict) -> None:
+        """Set task status to INTERRUPTED, store metadata, and clear assignment.
+
+        Args:
+            task_id: Identifier of the task to interrupt.
+            metadata: Progress information (e.g. partial work done) to preserve.
+        """
+        if task_id in self._tasks:
+            task = self._tasks[task_id]
+            task.status = TaskStatus.INTERRUPTED
+            task.progress_metadata = metadata
+            task.assigned_robot = ""
 
     def get_all_tasks(self) -> list[TaskEntry]:
         return list(self._tasks.values())

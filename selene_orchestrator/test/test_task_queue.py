@@ -82,3 +82,48 @@ class TestTaskQueue:
         q.add_task('t1', 'prospect', 0, 0)
         q.set_status('t1', TaskStatus.ASSIGNED)
         assert q.get_next_pending() is None
+
+    def test_get_next_ready_respects_dependencies(self):
+        q = TaskQueue()
+        q.add_task('dep1', 'prospect', 0, 0, priority=1.0)
+        q.add_task('dep2', 'prospect', 10, 10, priority=1.0)
+        q.add_task('child', 'excavate', 5, 5, priority=2.0, depends_on=['dep1', 'dep2'])
+
+        # Initially: dep1, dep2, child all PENDING; child has unmet deps
+        # dep1 and dep2 have no deps so they are ready (priority 1.0 each)
+        ready = q.get_next_ready()
+        assert ready is not None
+        assert ready.task_id in ('dep1', 'dep2')
+
+        # Complete one dep -- child still not ready (dep2 incomplete)
+        q.mark_complete('dep1')
+        ready = q.get_next_ready()
+        assert ready.task_id == 'dep2'
+
+        # Complete both deps -- child is now the only PENDING task and deps are met
+        q.mark_complete('dep2')
+        ready = q.get_next_ready()
+        assert ready.task_id == 'child'
+
+    def test_interrupt_preserves_metadata(self):
+        q = TaskQueue()
+        q.add_task('t1', 'excavate', 0, 0)
+        q.assign_to_robot('t1', 'hauler_01')
+        meta = {'kg_extracted': 12.5, 'progress_pct': 62}
+        q.interrupt_task('t1', meta)
+
+        t = q.get_task('t1')
+        assert t.status == TaskStatus.INTERRUPTED
+        assert t.assigned_robot == ''
+        assert t.progress_metadata == meta
+
+    def test_get_dependent_tasks(self):
+        q = TaskQueue()
+        q.add_task('parent', 'select_site', 0, 0)
+        q.add_task('child1', 'excavate', 1, 1, depends_on=['parent'])
+        q.add_task('child2', 'excavate', 2, 2, depends_on=['parent'])
+        q.add_task('unrelated', 'prospect', 3, 3)
+
+        deps = q.get_dependent_tasks('parent')
+        dep_ids = {t.task_id for t in deps}
+        assert dep_ids == {'child1', 'child2'}
