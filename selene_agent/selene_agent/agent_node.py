@@ -113,6 +113,7 @@ class AgentNode(Node):
         self._pending_task_id: str = ""
         self._assigned_target: tuple[float, float] | None = None
         self._assigned_task_type: str = "prospect"
+        self._assigned_since: float = 0.0
 
         # -- Publishers ----------------------------------------------------------
         self._state_pub = self.create_publisher(
@@ -480,6 +481,7 @@ class AgentNode(Node):
         # Store assignment — skill startup deferred to _handle_assigned()
         self._assigned_target = (msg.target_location.x, msg.target_location.y)
         self._assigned_task_type = msg.task_type
+        self._assigned_since = time.time()
         self._current_task_id = msg.task_id
         self._pending_task_id = ""
 
@@ -488,12 +490,20 @@ class AgentNode(Node):
 
         Called from the tick loop while in ASSIGNED state.  If path
         planning fails (e.g. odometry not ready yet), retries on the
-        next tick instead of faulting.
+        next tick.  After 3 seconds of retries, forces planning from
+        the cached position — the path follower will self-heal via
+        stall detection and replanning once real odometry arrives.
         """
         target = self._assigned_target
         task_type = self._assigned_task_type
         if target is None:
             return
+
+        # After 3s of retries, bypass odom validity check — the path
+        # follower will self-heal via stall detection + replanning
+        elapsed = time.time() - self._assigned_since
+        if elapsed > 3.0:
+            self._navigator._skip_odom_check = True
 
         # Create skill based on task type
         if task_type == "prospect":
@@ -504,15 +514,21 @@ class AgentNode(Node):
             skill.start(self._hal, self._navigator, target=target)
         elif task_type == "haul":
             skill = HaulSkill()
-            # Target is pickup location; depot is the recharge/depot position
             depot = (self._recharge_x, self._recharge_y)
             skill.start(self._hal, self._navigator, pickup=target, depot=depot)
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             self._fsm.handle_event(FSMEvent.FAULT)
+            self._navigator._skip_odom_check = False
             return
+
+        self._navigator._skip_odom_check = False
+
         if skill.has_failed():
-            # Planning failed (likely odom not ready) — retry next tick
+            if elapsed > 3.0:
+                self.get_logger().warn(
+                    f"[{self._robot_id}] Skill start failed after {elapsed:.1f}s"
+                )
             return
 
         self._current_skill = skill

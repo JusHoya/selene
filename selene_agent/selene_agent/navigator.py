@@ -555,13 +555,14 @@ class Navigator:
         self._goal: Optional[tuple[float, float]] = None
         self._status: str = NavigatorStatus.IDLE
         self._replan_count: int = 0
+        self._skip_odom_check: bool = False
 
     # -- Planning -------------------------------------------------------------
 
     def plan_to(self, goal_xy: tuple[float, float]) -> PlanResult:
         """Plan a path from the current pose to *goal_xy*."""
         odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
+        if not self._skip_odom_check and not odom.is_valid:
             return PlanResult([], 0.0, False, "odometry not yet available")
         start = (odom.x, odom.y)
         return self._planner.plan(start, goal_xy)

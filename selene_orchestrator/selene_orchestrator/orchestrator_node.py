@@ -259,6 +259,10 @@ class OrchestratorNode(Node):
         if next_task is None:
             return
 
+        # Skip virtual tasks — resolved by the HTN planner, not by robots
+        if next_task.task_type == 'select_site':
+            return
+
         # Start new auction
         self._task_queue.set_status(next_task.task_id, TaskStatus.AUCTIONING)
         self._auction.start(next_task.task_id, now)
