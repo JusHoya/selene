@@ -367,11 +367,9 @@ class AgentNode(Node):
         if not required.issubset(my_caps):
             return
 
-        # Position — reject if odometry is not yet valid
+        # Position
         try:
             odom = self._hal.get_sensor("odometry").read()
-            if not odom.is_valid:
-                return
             my_pos = (odom.x, odom.y)
         except Exception:
             return
