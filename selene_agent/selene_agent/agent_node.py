@@ -450,39 +450,31 @@ class AgentNode(Node):
         self._pending_task_id = ""
 
     def _handle_assigned(self):
-        """Start navigation once odometry is valid.
+        """Start navigation for the assigned task.
 
-        Called from the tick loop while in ASSIGNED state.  Waits for
-        both ``_assigned_target`` (set by callback) and valid odometry
-        (first Gazebo message) before starting the skill.
+        Called from the tick loop while in ASSIGNED state.  If path
+        planning fails (e.g. odometry not ready yet), retries on the
+        next tick instead of faulting.
         """
         target = self._assigned_target
         task_type = self._assigned_task_type
         if target is None:
             return
 
-        # Wait for valid odometry so we never plan from stale (0,0)
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return
-
         # Create skill based on task type
         if task_type == "prospect":
-            self._current_skill = ProspectSkill()
+            skill = ProspectSkill()
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
-        self._current_skill.start(self._hal, self._navigator, target=target)
-        if self._current_skill.has_failed():
-            self.get_logger().error(
-                f"[{self._robot_id}] Failed to start {task_type}: "
-                f"{self._current_skill.get_error()}"
-            )
-            self._fsm.handle_event(FSMEvent.FAULT)
+        skill.start(self._hal, self._navigator, target=target)
+        if skill.has_failed():
+            # Planning failed (likely odom not ready) — retry next tick
             return
 
+        self._current_skill = skill
         self._was_navigating = True
         self._assigned_target = None
         self._fsm.handle_event(FSMEvent.WAYPOINT_ASSIGNED)
