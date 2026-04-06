@@ -216,6 +216,11 @@ class AgentNode(Node):
         if self._orchestrated:
             return  # Wait for task announcement from orchestrator
 
+        # Wait for valid odometry before planning any path
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
+            return
+
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
                 f"[{self._robot_id}] Mission complete -- all {len(self._waypoints)} waypoints visited"
