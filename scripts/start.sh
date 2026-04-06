@@ -109,13 +109,13 @@ fi
 if [ "$ORCHESTRATED" = true ]; then
     # --- PHASE 4: Full ISRU Fleet ---
     echo "[4/$STEPS] Spawning fleet (2 scouts, 1 excavator, 1 hauler)..."
-    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -55 -95
+    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -70 -110
     sleep 2
-    spawn_robot scout_02 scout $P/selene_sim/models/scout/model.sdf -50 -92
+    spawn_robot scout_02 scout $P/selene_sim/models/scout/model.sdf -80 -110
     sleep 2
-    spawn_robot excavator_01 excavator $P/selene_sim/models/excavator/model.sdf -45 -95
+    spawn_robot excavator_01 excavator $P/selene_sim/models/excavator/model.sdf -65 -105
     sleep 2
-    spawn_robot hauler_01 hauler $P/selene_sim/models/hauler/model.sdf -40 -92
+    spawn_robot hauler_01 hauler $P/selene_sim/models/hauler/model.sdf -75 -105
     sleep 3
 
     echo "[5/$STEPS] Starting orchestrator..."
@@ -150,7 +150,7 @@ if [ "$ORCHESTRATED" = true ]; then
 else
     # --- PHASE 2: Single scout standalone mode ---
     echo "[4/$STEPS] Spawning scout_01..."
-    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -55 -95
+    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -70 -110
     sleep 3
 
     echo "[5/$STEPS] Starting agent (standalone mode)..."

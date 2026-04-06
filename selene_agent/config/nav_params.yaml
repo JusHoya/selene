@@ -31,7 +31,7 @@ mission:
     - [-100, -150]
     - [-110, -170]
     - [-90, -130]
-  recharge_position: [-50.0, -100.0]
+  recharge_position: [-75.0, -100.0]
   low_battery_threshold: 0.15
   recharge_target: 0.9
 

@@ -46,7 +46,7 @@ class AgentNode(Node):
         self.declare_parameter("rcdl_path", "")
         self.declare_parameter("hal_backend", "gazebo")
         self.declare_parameter("nav_config_path", "")
-        self.declare_parameter("recharge_x", -50.0)
+        self.declare_parameter("recharge_x", -75.0)
         self.declare_parameter("recharge_y", -100.0)
         self.declare_parameter("energy_critical_threshold", 0.15)
         self.declare_parameter("energy_recharge_target", 0.90)
