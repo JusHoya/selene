@@ -109,6 +109,8 @@ class AgentNode(Node):
         # -- Auction state tracking ----------------------------------------------
         self._bidding_since: float = 0.0
         self._pending_task_id: str = ""
+        self._assigned_target: tuple[float, float] | None = None
+        self._assigned_task_type: str = "prospect"
 
         # -- Publishers ----------------------------------------------------------
         self._state_pub = self.create_publisher(
@@ -193,7 +195,7 @@ class AgentNode(Node):
         elif state == AgentState.BIDDING:
             self._handle_bidding(dt)
         elif state == AgentState.ASSIGNED:
-            pass  # Transient -- assignment callback chains to NAVIGATING
+            self._handle_assigned()
         elif state == AgentState.NAVIGATING:
             self._handle_navigating(dt)
         elif state == AgentState.WORKING:
@@ -417,7 +419,12 @@ class AgentNode(Node):
             f"[{self._robot_id}] Bid on {msg.task_id}: score={bid_score:.3f} eta={eta:.1f}s")
 
     def _on_task_assigned(self, msg):
-        """Handle task assignment from orchestrator."""
+        """Handle task assignment from orchestrator.
+
+        Stores the assignment and transitions to ASSIGNED.  The actual
+        skill startup is deferred to ``_handle_assigned()`` in the tick
+        loop so it can safely wait for valid odometry.
+        """
         if msg.robot_id != self._robot_id:
             # Not for me -- if I was bidding on this task, I lost
             if self._fsm.state == AgentState.BIDDING and self._pending_task_id == msg.task_id:
@@ -435,24 +442,47 @@ class AgentNode(Node):
                 f"[{self._robot_id}] Assignment in state {self._fsm.state.value}, ignoring")
             return
 
-        target = (msg.target_location.x, msg.target_location.y)
+        # Store assignment — skill startup deferred to _handle_assigned()
+        self._assigned_target = (msg.target_location.x, msg.target_location.y)
+        self._assigned_task_type = msg.task_type
         self._current_task_id = msg.task_id
         self._pending_task_id = ""
 
+    def _handle_assigned(self):
+        """Start navigation once odometry is valid.
+
+        Called from the tick loop while in ASSIGNED state.  Waits for
+        the first valid odometry reading before planning a path so the
+        robot never plans from the stale (0, 0) default.
+        """
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
+            return  # wait for next tick
+
+        target = getattr(self, '_assigned_target', None)
+        task_type = getattr(self, '_assigned_task_type', 'prospect')
+        if target is None:
+            return
+
         # Create skill based on task type
-        if msg.task_type == "prospect":
+        if task_type == "prospect":
             self._current_skill = ProspectSkill()
         else:
-            self.get_logger().error(f"[{self._robot_id}] Unknown task type: {msg.task_type}")
+            self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
         self._current_skill.start(self._hal, self._navigator, target=target)
         if self._current_skill.has_failed():
+            self.get_logger().error(
+                f"[{self._robot_id}] Failed to start {task_type}: "
+                f"{self._current_skill.get_error()}"
+            )
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
         self._was_navigating = True
+        self._assigned_target = None
         self._fsm.handle_event(FSMEvent.WAYPOINT_ASSIGNED)
 
     # ===================================================================
