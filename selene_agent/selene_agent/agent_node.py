@@ -369,11 +369,10 @@ class AgentNode(Node):
         if not required.issubset(my_caps):
             return
 
-        # Position — reject if odometry is not yet valid
+        # Position (stale odom only affects bid score — navigation is
+        # gated by _handle_assigned which waits for valid odometry)
         try:
             odom = self._hal.get_sensor("odometry").read()
-            if not odom.is_valid:
-                return
             my_pos = (odom.x, odom.y)
         except Exception:
             return
