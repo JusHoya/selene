@@ -120,3 +120,22 @@ class ResourceMap:
 
     def get_variance_grid(self) -> np.ndarray:
         return self._variance.copy()
+
+    def get_best_extraction_sites(self, count: int = 5,
+                                  min_concentration: float = 2.0
+                                  ) -> list[tuple[float, float, float]]:
+        """Return the top-K cells by mean ice concentration.
+
+        Returns list of (world_x, world_y, mean_concentration) tuples,
+        sorted by concentration descending.
+        """
+        mean_grid = self.get_mean_grid()
+        candidates = []
+        for gy in range(self._height):
+            for gx in range(self._width):
+                mean_val = float(mean_grid[gy, gx])
+                if mean_val >= min_concentration:
+                    wx, wy = self.grid_to_world(gx, gy)
+                    candidates.append((wx, wy, mean_val))
+        candidates.sort(key=lambda c: c[2], reverse=True)
+        return candidates[:count]

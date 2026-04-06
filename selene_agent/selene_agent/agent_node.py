@@ -28,8 +28,10 @@ from selene_hal import create_hal
 from selene_agent.fsm import AgentFSM, AgentState, FSMEvent
 from selene_agent.energy_manager import EnergyManager
 from selene_agent.navigator import Navigator, OccupancyGrid
-from selene_agent.skills import ProspectSkill, RechargeSkill
+from selene_agent.skills import ProspectSkill, ExcavateSkill, HaulSkill, RechargeSkill
 from selene_agent.skills.prospect import ProspectPhase
+from selene_agent.skills.excavate import ExcavatePhase
+from selene_agent.skills.haul import HaulPhase
 
 
 class AgentNode(Node):
@@ -271,47 +273,79 @@ class AgentNode(Node):
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
-        # Detect transition from NAVIGATING to SETTLING/SENSING (arrival)
-        if self._was_navigating and self._current_skill._phase != ProspectPhase.NAVIGATING:
-            self._was_navigating = False
-            self._fsm.handle_event(FSMEvent.ARRIVED)
-            self.get_logger().info(
-                f"[{self._robot_id}] Arrived at waypoint {self._waypoint_index}, "
-                f"phase={self._current_skill._phase.value}"
+        # Detect transition from NAVIGATING to work phase (arrival).
+        # Each skill type has a different enum for its navigation phase.
+        if self._was_navigating:
+            phase = self._current_skill._phase
+            still_navigating = (
+                phase == ProspectPhase.NAVIGATING
+                or phase == ExcavatePhase.NAVIGATING
+                or phase == HaulPhase.NAVIGATING_TO_PICKUP
             )
+            if not still_navigating:
+                self._was_navigating = False
+                self._fsm.handle_event(FSMEvent.ARRIVED)
+                self.get_logger().info(
+                    f"[{self._robot_id}] Arrived at waypoint {self._waypoint_index}, "
+                    f"phase={phase.value}"
+                )
 
     def _handle_working(self, dt: float):
-        """Let ProspectSkill settle, sense, and record; publish result on completion."""
+        """Let current skill work; publish result on completion."""
         if self._current_skill is None:
             return
 
         self._current_skill.update(dt)
 
         if self._current_skill.is_complete():
-            result = self._current_skill.get_result()
-            if result is not None:
-                self._publish_map_update(result)
-                self.get_logger().info(
-                    f"[{self._robot_id}] Prospect complete at waypoint {self._waypoint_index}: "
-                    f"ice={result.ice_concentration:.3f} +/-{result.uncertainty:.3f}"
-                )
-            else:
-                self.get_logger().warn(
-                    f"[{self._robot_id}] Prospect at waypoint {self._waypoint_index} "
-                    f"completed with no result"
-                )
-            self._waypoint_index += 1
+            skill_name = self._current_skill.get_name()
+
+            if skill_name == "prospect":
+                result = self._current_skill.get_result()
+                if result is not None:
+                    self._publish_map_update(result)
+                    self.get_logger().info(
+                        f"[{self._robot_id}] Prospect complete at waypoint {self._waypoint_index}: "
+                        f"ice={result.ice_concentration:.3f} +/-{result.uncertainty:.3f}"
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"[{self._robot_id}] Prospect at waypoint {self._waypoint_index} "
+                        f"completed with no result"
+                    )
+                self._waypoint_index += 1
+
+            elif skill_name == "excavate":
+                result = self._current_skill.get_result()
+                if result is not None:
+                    self.get_logger().info(
+                        f"[{self._robot_id}] Excavation complete: "
+                        f"extracted={result.extracted_kg:.1f}kg "
+                        f"hopper_full={result.hopper_full}"
+                    )
+
+            elif skill_name == "haul":
+                result = self._current_skill.get_result()
+                if result is not None:
+                    self.get_logger().info(
+                        f"[{self._robot_id}] Haul complete: "
+                        f"delivered={result.delivered_kg:.1f}kg "
+                        f"to depot {result.depot_position}"
+                    )
+
             self._current_task_id = ""
             self._current_skill = None
             self._fsm.handle_event(FSMEvent.TASK_COMPLETE)
             self._start_recharge()
 
         elif self._current_skill.has_failed():
+            skill_name = self._current_skill.get_name()
             self.get_logger().error(
-                f"[{self._robot_id}] Prospect failed at waypoint {self._waypoint_index}: "
+                f"[{self._robot_id}] {skill_name.capitalize()} failed at waypoint {self._waypoint_index}: "
                 f"{self._current_skill.get_error()}"
             )
-            self._waypoint_index += 1
+            if skill_name == "prospect":
+                self._waypoint_index += 1
             self._current_task_id = ""
             self._current_skill = None
             self._fsm.handle_event(FSMEvent.TASK_COMPLETE)
@@ -464,12 +498,19 @@ class AgentNode(Node):
         # Create skill based on task type
         if task_type == "prospect":
             skill = ProspectSkill()
+            skill.start(self._hal, self._navigator, target=target)
+        elif task_type == "excavate":
+            skill = ExcavateSkill()
+            skill.start(self._hal, self._navigator, target=target)
+        elif task_type == "haul":
+            skill = HaulSkill()
+            # Target is pickup location; depot is the recharge/depot position
+            depot = (self._recharge_x, self._recharge_y)
+            skill.start(self._hal, self._navigator, pickup=target, depot=depot)
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             self._fsm.handle_event(FSMEvent.FAULT)
             return
-
-        skill.start(self._hal, self._navigator, target=target)
         if skill.has_failed():
             # Planning failed (likely odom not ready) — retry next tick
             return

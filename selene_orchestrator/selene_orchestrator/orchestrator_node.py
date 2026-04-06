@@ -25,6 +25,9 @@ from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 from selene_orchestrator.task_auction import TaskAuction, Bid
 from selene_orchestrator.resource_map import ResourceMap
 from selene_orchestrator.waypoint_generator import generate_psr_survey_waypoints
+from selene_orchestrator.htn_planner import HTNPlanner
+from selene_orchestrator.adaptive_survey import AdaptiveSurveyPlanner
+from selene_isru.inventory import MaterialInventory
 
 
 class OrchestratorNode(Node):
@@ -79,6 +82,11 @@ class OrchestratorNode(Node):
             origin_y=-map_h * map_res / 2,
         )
 
+        # ---- Phase 4 modules ----
+        self._htn_planner = HTNPlanner(self._task_queue, self._resource_map)
+        self._adaptive_survey = AdaptiveSurveyPlanner(self._resource_map)
+        self._inventory = MaterialInventory()
+
         # ---- Tracking ----
         self._start_time = self.get_clock().now()
         self._alert_counter = 0
@@ -127,6 +135,7 @@ class OrchestratorNode(Node):
         self.create_timer(1.0, self._heartbeat_check)           # 1 Hz
         self.create_timer(0.5, self._auction_tick)               # 2 Hz
         self.create_timer(1.0, self._publish_mission_progress)   # 1 Hz
+        self.create_timer(1.0, self._htn_advance)                # 1 Hz
 
         # ---- Generate survey tasks ----
         self._generate_survey_tasks()
@@ -168,6 +177,27 @@ class OrchestratorNode(Node):
                     self._task_queue.mark_complete(task_id)
                     self.get_logger().info(
                         f'Task {task_id} completed by {msg.robot_id}'
+                    )
+
+        # Detect robot error — interrupt its task and re-queue
+        if msg.fsm_state == 'ERROR' and msg.current_task_id == '':
+            task_id = self._task_queue.get_task_for_robot(msg.robot_id)
+            if task_id:
+                task = self._task_queue.get_task(task_id)
+                if task and task.status in (
+                    TaskStatus.ASSIGNED,
+                    TaskStatus.IN_PROGRESS,
+                ):
+                    self._task_queue.interrupt_task(task_id, {
+                        'reason': 'robot_error',
+                        'robot_id': msg.robot_id,
+                    })
+                    # Re-queue the interrupted task as PENDING for re-auction
+                    self._task_queue.set_status(task_id, TaskStatus.PENDING)
+                    self._publish_alert(
+                        'WARNING', msg.robot_id,
+                        f'Task {task_id} interrupted due to robot error, '
+                        f're-queued',
                     )
 
     def _on_bid_response(self, msg: BidResponseMsg) -> None:
@@ -225,7 +255,7 @@ class OrchestratorNode(Node):
         if not idle:
             return
 
-        next_task = self._task_queue.get_next_pending()
+        next_task = self._task_queue.get_next_ready()
         if next_task is None:
             return
 
@@ -273,35 +303,35 @@ class OrchestratorNode(Node):
         msg = MissionProgress()
         msg.objective_description = 'PSR Ice Prospecting Survey'
         msg.target_quantity = float(self._task_queue.get_total_count())
-        msg.extracted_quantity = float(self._task_queue.get_completed_count())
-        msg.in_transit_quantity = 0.0
-        msg.deposited_quantity = float(self._task_queue.get_completed_count())
+        progress = self._inventory.get_mission_progress()
+        msg.extracted_quantity = float(progress.get('extracted', 0.0))
+        msg.in_transit_quantity = float(progress.get('in_transit', 0.0))
+        msg.deposited_quantity = float(progress.get('deposited', 0.0))
         msg.fleet_distance_total = 0.0   # TODO: accumulate from odometry
         msg.fleet_energy_total = 0.0
         elapsed = (self.get_clock().now() - self._start_time).nanoseconds / 1e9
         msg.elapsed_sim_time = elapsed
         self._progress_pub.publish(msg)
 
+    def _htn_advance(self) -> None:
+        """Advance the HTN planner — resolve virtual tasks, spawn downstream."""
+        self._htn_planner.check_and_advance()
+
     # ------------------------------------------------------------------ #
     #  Internal helpers                                                    #
     # ------------------------------------------------------------------ #
 
     def _generate_survey_tasks(self) -> None:
-        """Generate prospect tasks for the PSR zone."""
-        waypoints = generate_psr_survey_waypoints()
-        for i, (wx, wy) in enumerate(waypoints):
-            task_id = f'prospect_{i:03d}'
-            self._task_queue.add_task(
-                task_id=task_id,
-                task_type='prospect',
-                target_x=wx,
-                target_y=wy,
-                priority=1.0,
-                required_capabilities=['prospect'],
-                estimated_energy_cost=5.0,
-                estimated_duration=30.0,
-            )
-        self.get_logger().info(f'Generated {len(waypoints)} survey waypoints')
+        """Decompose the initial ISRU mission objective via HTN planner."""
+        self._htn_planner.decompose_collect_ice(
+            zone_center=(-100.0, -150.0),
+            zone_radius=60.0,
+            quantity_kg=100.0,
+            depot=(50.0, 50.0),
+        )
+        self.get_logger().info(
+            f'HTN decomposed mission: {self._task_queue.get_total_count()} tasks'
+        )
 
     def _publish_announcement(self, task) -> None:
         """Publish a TaskAnnouncement to open an auction."""

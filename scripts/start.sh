@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash scripts/start.sh                  # Phase 2: single scout standalone
-#   bash scripts/start.sh --orchestrated   # Phase 3: multi-agent with orchestrator
+#   bash scripts/start.sh --orchestrated   # Phase 4: full ISRU fleet (2 scouts + excavator + hauler)
 #   bash scripts/start.sh --headless       # No dashboard
 #
 # Run scripts/sync_and_build.sh first if code has changed.
@@ -56,6 +56,20 @@ spawn_robot() {
             -p robot_id:=$ROBOT_ID \
             -p ice_config_file:=$P/selene_sim/config/ice_deposits.yaml &
     fi
+
+    if [ "$ROBOT_TYPE" = "excavator" ]; then
+        ros2 run selene_sim extraction_node --ros-args \
+            -p robot_id:=$ROBOT_ID \
+            -p ice_config_file:=$P/selene_sim/config/ice_deposits.yaml &
+        ros2 run selene_sim hopper_node --ros-args \
+            -p robot_id:=$ROBOT_ID \
+            -p ice_config_file:=$P/selene_sim/config/ice_deposits.yaml &
+    fi
+
+    if [ "$ROBOT_TYPE" = "hauler" ]; then
+        ros2 run selene_sim bin_load_node --ros-args \
+            -p robot_id:=$ROBOT_ID &
+    fi
 }
 
 # Helper: start an agent node
@@ -93,33 +107,39 @@ else
 fi
 
 if [ "$ORCHESTRATED" = true ]; then
-    # --- PHASE 3: Multi-agent orchestrated mode ---
-    echo "[4/$STEPS] Spawning fleet (2 scouts)..."
+    # --- PHASE 4: Full ISRU Fleet ---
+    echo "[4/$STEPS] Spawning fleet (2 scouts, 1 excavator, 1 hauler)..."
     spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf 55 45
     sleep 2
     spawn_robot scout_02 scout $P/selene_sim/models/scout/model.sdf 45 55
+    sleep 2
+    spawn_robot excavator_01 excavator $P/selene_sim/models/excavator/model.sdf 50 40
+    sleep 2
+    spawn_robot hauler_01 hauler $P/selene_sim/models/hauler/model.sdf 40 50
     sleep 3
 
     echo "[5/$STEPS] Starting orchestrator..."
     ros2 run selene_orchestrator orchestrator_node --ros-args \
         --params-file $P/selene_orchestrator/config/orchestrator_params.yaml \
-        -p fleet_robot_ids:="['scout_01', 'scout_02']" &
+        -p fleet_robot_ids:="['scout_01', 'scout_02', 'excavator_01', 'hauler_01']" &
     sleep 3
 
     echo "[6/$STEPS] Starting agents (orchestrated mode)..."
     start_agent scout_01 scout scout.yaml true
     start_agent scout_02 scout scout.yaml true
+    start_agent excavator_01 excavator excavator.yaml true
+    start_agent hauler_01 hauler hauler.yaml true
     sleep 2
 
     echo ""
     echo "  ============================================"
-    echo "  SELENE Phase 3 — Multi-Agent Coordination"
+    echo "  SELENE Phase 4 — Full ISRU Fleet"
     echo "  ============================================"
     echo "  Dashboard:     http://localhost:3000"
     echo "  rosbridge:     ws://localhost:9090"
-    echo "  Orchestrator:  auction-based task allocation"
-    echo "  Fleet:         scout_01, scout_02"
-    echo "  Tasks:         ~30 PSR survey waypoints"
+    echo "  Orchestrator:  HTN planning + auction coordination"
+    echo "  Fleet:         scout_01, scout_02, excavator_01, hauler_01"
+    echo "  Mission:       Collect 100 kg ice from PSR zone"
     echo "  ============================================"
     echo "  Press Ctrl+C to stop everything"
     echo ""
