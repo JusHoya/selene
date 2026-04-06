@@ -1,0 +1,226 @@
+% SELENE Technical White Paper LaTeX Template
+% Designed for Pandoc conversion — publication-quality output
+\documentclass[11pt,letterpaper]{article}
+
+% ── Encoding & Fonts ──
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% ── Page Geometry ──
+\usepackage[
+  top=1in, bottom=1in, left=1in, right=1in
+]{geometry}
+
+% ── Colors ──
+\usepackage{xcolor}
+\definecolor{selene-blue}{HTML}{1A3A5C}
+\definecolor{selene-accent}{HTML}{3B82F6}
+\definecolor{selene-gray}{HTML}{4B5563}
+\definecolor{selene-light}{HTML}{F3F4F6}
+\definecolor{code-bg}{HTML}{F8F9FA}
+
+% ── Headers & Footers ──
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{selene-gray}\textit{SELENE Technical White Paper Series}}
+\fancyhead[R]{\small\color{selene-gray}\thepage}
+\fancyfoot[C]{\small\color{selene-gray}$if(footer)$$footer$$else$\textcopyright\ 2026 SELENE Project. All rights reserved.$endif$}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% ── Section Styling ──
+\usepackage{titlesec}
+\titleformat{\section}
+  {\large\bfseries\color{selene-blue}}
+  {\thesection.}{0.5em}{}
+\titleformat{\subsection}
+  {\normalsize\bfseries\color{selene-blue}}
+  {\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}
+  {\normalsize\itshape\color{selene-gray}}
+  {\thesubsubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{12pt plus 2pt minus 2pt}{4pt plus 1pt minus 1pt}
+\titlespacing*{\subsection}{0pt}{8pt plus 2pt minus 1pt}{2pt plus 1pt minus 1pt}
+
+% ── Mathematics ──
+\usepackage{amsmath,amssymb,amsthm}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+
+% ── Tables ──
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\renewcommand{\arraystretch}{1.2}
+
+% ── Graphics & Figures ──
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[font=small,labelfont=bf,labelsep=period]{caption}
+\usepackage{subcaption}
+\graphicspath{{figures/}{screenshots/}{../template/}}
+
+% ── Code Listings ──
+\usepackage{listings}
+\lstset{
+  basicstyle=\footnotesize\ttfamily,
+  backgroundcolor=\color{code-bg},
+  frame=single,
+  framerule=0.5pt,
+  rulecolor=\color{selene-gray!30},
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=flexible,
+  keepspaces=true,
+  showstringspaces=false,
+  numbers=left,
+  numbersep=5pt,
+  numberstyle=\tiny\color{selene-gray},
+  keywordstyle=\color{selene-accent}\bfseries,
+  commentstyle=\color{selene-gray}\itshape,
+  stringstyle=\color{red!60!black},
+  tabsize=4,
+  xleftmargin=1.5em,
+  framexleftmargin=1.5em,
+}
+
+% ── Hyperlinks ──
+\usepackage[
+  colorlinks=true,
+  linkcolor=selene-blue,
+  citecolor=selene-accent,
+  urlcolor=selene-accent,
+  bookmarks=true,
+  pdfauthor={SELENE Project},
+  pdftitle={$if(title)$$title$$endif$},
+]{hyperref}
+
+% ── Bibliography ──
+\usepackage[numbers,sort&compress]{natbib}
+
+% ── Algorithms ──
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\SetAlCapSkip{0.5em}
+
+% ── Custom Commands ──
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+% Pandoc 3.x support
+\usepackage{calc}
+\makeatletter
+\providecommand{\real}[1]{\strip@pt\dimexpr#1pt\relax}
+\makeatother
+% Pandoc syntax highlighting support
+\usepackage{fancyvrb}
+\newenvironment{Shaded}{\begin{snugshade}}{\end{snugshade}}
+\usepackage{framed}
+\definecolor{shadecolor}{HTML}{F8F9FA}
+\newcommand{\AlertTok}[1]{\textcolor{red}{\textbf{#1}}}
+\newcommand{\AnnotationTok}[1]{\textcolor{gray}{\textit{#1}}}
+\newcommand{\AttributeTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\BaseNTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\BuiltInTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\CharTok}[1]{\textcolor{orange}{#1}}
+\newcommand{\CommentTok}[1]{\textcolor{gray}{\textit{#1}}}
+\newcommand{\CommentVarTok}[1]{\textcolor{gray}{\textit{#1}}}
+\newcommand{\ConstantTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\ControlFlowTok}[1]{\textcolor{blue}{\textbf{#1}}}
+\newcommand{\DataTypeTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\DecValTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\DocumentationTok}[1]{\textcolor{gray}{\textit{#1}}}
+\newcommand{\ErrorTok}[1]{\textcolor{red}{\textbf{#1}}}
+\newcommand{\ExtensionTok}[1]{#1}
+\newcommand{\FloatTok}[1]{\textcolor{teal}{#1}}
+\newcommand{\FunctionTok}[1]{\textcolor{blue}{#1}}
+\newcommand{\ImportTok}[1]{#1}
+\newcommand{\InformationTok}[1]{\textcolor{gray}{\textit{#1}}}
+\newcommand{\KeywordTok}[1]{\textcolor{blue}{\textbf{#1}}}
+\newcommand{\NormalTok}[1]{#1}
+\newcommand{\OperatorTok}[1]{#1}
+\newcommand{\OtherTok}[1]{#1}
+\newcommand{\PreprocessorTok}[1]{\textcolor{gray}{#1}}
+\newcommand{\RegionMarkerTok}[1]{#1}
+\newcommand{\SpecialCharTok}[1]{\textcolor{orange}{#1}}
+\newcommand{\SpecialStringTok}[1]{\textcolor{orange}{#1}}
+\newcommand{\StringTok}[1]{\textcolor{orange}{#1}}
+\newcommand{\VariableTok}[1]{#1}
+\newcommand{\VerbatimStringTok}[1]{\textcolor{orange}{#1}}
+\newcommand{\WarningTok}[1]{\textcolor{red}{\textit{#1}}}
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{fontsize=\footnotesize}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\},fontsize=\footnotesize}
+
+% Pandoc 3.9+ captionless table support (defines 'none' counter)
+\newcounter{none}
+% Pandoc 3.9+ bounded image command — wraps an \includegraphics call
+\newlength{\pandocboundedwidth}
+\setlength{\pandocboundedwidth}{\linewidth}
+\newlength{\pandocboundedheight}
+\setlength{\pandocboundedheight}{0.8\textheight}
+\providecommand{\pandocbounded}[1]{%
+  \resizebox{\pandocboundedwidth}{!}{#1}%
+}
+\newcommand{\selene}{\textsc{Selene}}
+\newcommand{\ie}{i.e.,\ }
+\newcommand{\eg}{e.g.,\ }
+\newcommand{\cf}{cf.\ }
+\newcommand{\etal}{\textit{et al.}}
+
+% ── Abstract Environment ──
+\renewenvironment{abstract}{%
+  \begin{center}
+    \begin{minipage}{0.92\textwidth}
+      \small
+      \noindent\textbf{\color{selene-blue}Abstract.}
+}{%
+    \end{minipage}
+  \end{center}
+  \vspace{0.5em}
+  \hrule
+  \vspace{1em}
+}
+
+% ── Title Block ──
+\makeatletter
+\renewcommand{\maketitle}{%
+    \begin{center}
+      {\color{selene-gray}\footnotesize SELENE Technical White Paper $if(paper-number)$\textbf{$paper-number$}$endif$\par}
+      \vspace{0.3em}
+      {\LARGE\bfseries\color{selene-blue} $title$\par}
+      \vspace{0.6em}
+      {\large $for(author)$$author$$sep$,\ $endfor$\par}
+      \vspace{0.3em}
+      {\color{selene-gray}\small $if(affiliation)$$affiliation$$endif$\par}
+      {\color{selene-gray}\small $if(date)$$date$$endif$\par}
+      \vspace{0.8em}
+      $if(abstract)$
+      \begin{minipage}{0.92\textwidth}
+        \small\noindent\textbf{\color{selene-blue}Abstract.} $abstract$
+      \end{minipage}
+      \vspace{0.5em}
+      \hrule
+      $endif$
+      $if(keywords)$
+      \vspace{0.4em}
+      {\footnotesize\color{selene-gray}\textbf{Keywords:} $keywords$}
+      $endif$
+      \vspace{1.2em}
+    \end{center}
+}
+\makeatother
+
+% ── Document ──
+\begin{document}
+\maketitle
+
+$body$
+
+$if(bibliography)$
+\bibliographystyle{unsrtnat}
+\bibliography{$bibliography$}
+$endif$
+
+\end{document}
