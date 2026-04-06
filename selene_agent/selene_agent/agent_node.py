@@ -214,6 +214,11 @@ class AgentNode(Node):
         if self._orchestrated:
             return  # Wait for task announcement from orchestrator
 
+        # Wait for valid odometry before planning any path
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
+            return
+
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
                 f"[{self._robot_id}] Mission complete -- all {len(self._waypoints)} waypoints visited"
@@ -364,9 +369,11 @@ class AgentNode(Node):
         if not required.issubset(my_caps):
             return
 
-        # Position
+        # Position — reject if odometry is not yet valid
         try:
             odom = self._hal.get_sensor("odometry").read()
+            if not odom.is_valid:
+                return
             my_pos = (odom.x, odom.y)
         except Exception:
             return
@@ -444,16 +451,20 @@ class AgentNode(Node):
         self._pending_task_id = ""
 
     def _handle_assigned(self):
-        """Start navigation for the assigned task.
+        """Start navigation once odometry is valid.
 
         Called from the tick loop while in ASSIGNED state.  Waits for
-        ``_assigned_target`` to be set by ``_on_task_assigned()``, then
-        creates and starts the skill.  If odometry is still stale, the
-        path follower will self-heal via stall detection and replanning.
+        both ``_assigned_target`` (set by callback) and valid odometry
+        (first Gazebo message) before starting the skill.
         """
         target = self._assigned_target
         task_type = self._assigned_task_type
         if target is None:
+            return
+
+        # Wait for valid odometry so we never plan from stale (0,0)
+        odom = self._hal.get_sensor("odometry").read()
+        if not odom.is_valid:
             return
 
         # Create skill based on task type
