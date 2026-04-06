@@ -113,7 +113,6 @@ class AgentNode(Node):
         self._pending_task_id: str = ""
         self._assigned_target: tuple[float, float] | None = None
         self._assigned_task_type: str = "prospect"
-        self._assigned_since: float = 0.0
 
         # -- Publishers ----------------------------------------------------------
         self._state_pub = self.create_publisher(
@@ -216,11 +215,6 @@ class AgentNode(Node):
         """Pick the next waypoint, create a ProspectSkill, and start navigating."""
         if self._orchestrated:
             return  # Wait for task announcement from orchestrator
-
-        # Wait for valid odometry before planning any path
-        odom = self._hal.get_sensor("odometry").read()
-        if not odom.is_valid:
-            return
 
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
@@ -481,7 +475,6 @@ class AgentNode(Node):
         # Store assignment — skill startup deferred to _handle_assigned()
         self._assigned_target = (msg.target_location.x, msg.target_location.y)
         self._assigned_task_type = msg.task_type
-        self._assigned_since = time.time()
         self._current_task_id = msg.task_id
         self._pending_task_id = ""
 
@@ -499,12 +492,6 @@ class AgentNode(Node):
         if target is None:
             return
 
-        # After 3s of retries, bypass odom validity check — the path
-        # follower will self-heal via stall detection + replanning
-        elapsed = time.time() - self._assigned_since
-        if elapsed > 3.0:
-            self._navigator._skip_odom_check = True
-
         # Create skill based on task type
         if task_type == "prospect":
             skill = ProspectSkill()
@@ -519,16 +506,10 @@ class AgentNode(Node):
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             self._fsm.handle_event(FSMEvent.FAULT)
-            self._navigator._skip_odom_check = False
             return
 
-        self._navigator._skip_odom_check = False
-
         if skill.has_failed():
-            if elapsed > 3.0:
-                self.get_logger().warn(
-                    f"[{self._robot_id}] Skill start failed after {elapsed:.1f}s"
-                )
+            # Planning failed — retry next tick
             return
 
         self._current_skill = skill
