@@ -38,7 +38,7 @@ spawn_robot() {
 
     gz service -s /world/lunar_psr/create \
         --reqtype gz.msgs.EntityFactory --reptype gz.msgs.Boolean --timeout 10000 \
-        --req "sdf_filename: \"$SDF\", name: \"$ROBOT_ID\", pose: {position: {x: $X, y: $Y, z: 3}}" >/dev/null 2>&1
+        --req "sdf_filename: \"$SDF\", name: \"$ROBOT_ID\", pose: {position: {x: $X, y: $Y, z: 3}}"
 
     ros2 run ros_gz_bridge parameter_bridge \
         /model/${ROBOT_ID}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist \
@@ -109,13 +109,13 @@ fi
 if [ "$ORCHESTRATED" = true ]; then
     # --- PHASE 4: Full ISRU Fleet ---
     echo "[4/$STEPS] Spawning fleet (2 scouts, 1 excavator, 1 hauler)..."
-    spawn_robot scout_01 scout "$P/selene_sim/models/scout/model.sdf" "-55" "-95"
+    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -55 -95
     sleep 2
-    spawn_robot scout_02 scout "$P/selene_sim/models/scout/model.sdf" "-50" "-92"
+    spawn_robot scout_02 scout $P/selene_sim/models/scout/model.sdf -50 -92
     sleep 2
-    spawn_robot excavator_01 excavator "$P/selene_sim/models/excavator/model.sdf" "-45" "-95"
+    spawn_robot excavator_01 excavator $P/selene_sim/models/excavator/model.sdf -45 -95
     sleep 2
-    spawn_robot hauler_01 hauler "$P/selene_sim/models/hauler/model.sdf" "-40" "-92"
+    spawn_robot hauler_01 hauler $P/selene_sim/models/hauler/model.sdf -40 -92
     sleep 3
 
     echo "[5/$STEPS] Starting orchestrator..."
@@ -150,7 +150,7 @@ if [ "$ORCHESTRATED" = true ]; then
 else
     # --- PHASE 2: Single scout standalone mode ---
     echo "[4/$STEPS] Spawning scout_01..."
-    spawn_robot scout_01 scout "$P/selene_sim/models/scout/model.sdf" "-55" "-95"
+    spawn_robot scout_01 scout $P/selene_sim/models/scout/model.sdf -55 -95
     sleep 3
 
     echo "[5/$STEPS] Starting agent (standalone mode)..."
