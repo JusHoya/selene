@@ -184,7 +184,7 @@ def generate_heightmap():
     print("=" * 50)
     print(f"Grid size:   {size} x {size}")
     print(f"World size:  {world_size} x {world_size} m")
-    print(f"Random seed: 42")
+    print("Random seed: 42")
     print()
 
     noise = PerlinNoise2D(seed=42)
@@ -247,11 +247,12 @@ def generate_heightmap():
     print(f"  Output file:   {output_path}")
     print()
     print("Features:")
-    print(f"  PSR crater:       center=(-100, -150), diameter=120m, depth=15m")
+    print("  PSR crater:       center=(-100, -150), diameter=120m, depth=15m")
     for i, (cx, cy, diam, dep) in enumerate(secondaries):
-        print(f"  Secondary #{i+1}:     center=({cx}, {cy}), diameter={diam}m, depth={dep}m")
-    print(f"  Eastern ridge:    x~200m, height~8m, slope 10-25 deg")
-    print(f"  Base undulation:  2-5m amplitude, 50-100m wavelength")
+        print(f"  Secondary #{i + 1}:     center=({cx}, {cy}), "
+              f"diameter={diam}m, depth={dep}m")
+    print("  Eastern ridge:    x~200m, height~8m, slope 10-25 deg")
+    print("  Base undulation:  2-5m amplitude, 50-100m wavelength")
     print()
     print("Done.")
 

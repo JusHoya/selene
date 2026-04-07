@@ -2,8 +2,6 @@
 
 import math
 
-import pytest
-
 from selene_orchestrator.waypoint_generator import generate_psr_survey_waypoints
 
 

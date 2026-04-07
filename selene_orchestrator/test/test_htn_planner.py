@@ -2,7 +2,6 @@
 
 import math
 
-import numpy as np
 import pytest
 
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
@@ -92,7 +91,9 @@ class TestDecompose:
         assert len(hauls) >= 1
 
         # First excavate depends on select_site
-        select_site_id = [t.task_id for t in queue.get_all_tasks() if t.task_type == "select_site"][0]
+        select_site_id = [
+            t.task_id for t in queue.get_all_tasks() if t.task_type == "select_site"
+        ][0]
         assert select_site_id in excavates[0].depends_on
 
         # Each haul depends on its corresponding excavate

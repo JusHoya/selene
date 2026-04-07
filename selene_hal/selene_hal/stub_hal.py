@@ -18,7 +18,7 @@ from selene_hal.kinematics_interface import KinematicsInterface
 from selene_hal.data_types import (
     SensorType, ActuatorType, ScalarFieldReading, DepthImageReading,
     IMUReading, FillLevelReading, OdometryReading, BatteryState,
-    ActuatorState, Timestamp,
+    ActuatorState,
 )
 from selene_hal.robot_descriptor import RobotDescriptor
 from selene_hal.hal_factory import register_hal_backend

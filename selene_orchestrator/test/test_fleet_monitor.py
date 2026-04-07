@@ -1,6 +1,5 @@
 """Tests for FleetMonitor."""
 
-import pytest
 from selene_orchestrator.fleet_monitor import FleetMonitor
 
 

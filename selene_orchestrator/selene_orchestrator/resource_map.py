@@ -52,7 +52,8 @@ class ResourceMap:
         - Compute distance-decayed observation weight
         - Apply Gaussian conjugate update:
           posterior_precision = prior_precision + observation_precision
-          posterior_mean = (prior_precision * prior_mean + obs_precision * reading) / posterior_precision
+          posterior_mean = (prior_precision * prior_mean
+                            + obs_precision * reading) / posterior_precision
 
         Args:
             x, y: World coordinates of measurement

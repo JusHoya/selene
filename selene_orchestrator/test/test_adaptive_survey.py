@@ -2,8 +2,6 @@
 
 import math
 
-import pytest
-
 from selene_orchestrator.resource_map import ResourceMap
 from selene_orchestrator.adaptive_survey import AdaptiveSurveyPlanner
 

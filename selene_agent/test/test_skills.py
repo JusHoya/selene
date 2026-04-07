@@ -3,8 +3,6 @@
 import os
 from dataclasses import dataclass
 
-import pytest
-
 from selene_hal import create_hal
 from selene_hal.data_types import FillLevelReading
 from selene_agent.skills.prospect import ProspectSkill, ProspectResult

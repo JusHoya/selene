@@ -19,7 +19,6 @@ from selene_agent.navigator import (
     OccupancyGrid,
     PathFollower,
     PathFollowerStatus,
-    PlanResult,
 )
 from selene_agent.obstacle_avoidance import (
     ObstacleAvoidance,
@@ -586,8 +585,9 @@ class TestNavigator:
 
     def test_get_current_pose(self):
         """get_current_pose reads from the odometry sensor."""
-        nav, odom, _, _ = self._make_navigator(odom_x=3.0, odom_y=4.0,
-                                                odom_theta=1.57)
+        nav, odom, _, _ = self._make_navigator(
+            odom_x=3.0, odom_y=4.0, odom_theta=1.57
+        )
         x, y, theta = nav.get_current_pose()
         assert abs(x - 3.0) < 0.01
         assert abs(y - 4.0) < 0.01

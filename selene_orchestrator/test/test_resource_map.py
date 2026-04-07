@@ -1,7 +1,5 @@
 """Tests for ResourceMap Bayesian grid."""
 
-import pytest
-import numpy as np
 from selene_orchestrator.resource_map import ResourceMap
 
 

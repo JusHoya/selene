@@ -15,7 +15,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
-from std_msgs.msg import Float32, Bool
+from std_msgs.msg import Bool
 import yaml
 import os
 
@@ -165,8 +165,9 @@ class BatteryNode(Node):
 
         # Update battery
         delta_wh = power_w * self.dt / 3600.0
-        self.remaining_wh = max(0.0, min(self.capacity_wh,
-                                          self.remaining_wh - delta_wh))
+        self.remaining_wh = max(
+            0.0, min(self.capacity_wh, self.remaining_wh - delta_wh)
+        )
 
         # Publish BatteryState
         msg = BatteryState()

@@ -1,6 +1,5 @@
 """Tests for TaskAuction."""
 
-import pytest
 from selene_orchestrator.task_auction import TaskAuction, Bid
 
 

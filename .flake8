@@ -1,0 +1,13 @@
+[flake8]
+max-line-length = 100
+exclude =
+    __pycache__,
+    build,
+    install,
+    log,
+    .git,
+    node_modules
+# W503/W504 are mutually contradictory style rules.
+# Modern PEP8 prefers line break BEFORE binary operator (W503), so we
+# allow that and disable both warnings.
+extend-ignore = W503, W504

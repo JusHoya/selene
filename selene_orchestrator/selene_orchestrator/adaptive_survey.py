@@ -189,8 +189,8 @@ class AdaptiveSurveyPlanner:
         """Average mean ice concentration of 8 neighboring grid cells."""
         res = self._resource_map._resolution
         offsets = [(-res, -res), (0, -res), (res, -res),
-                   (-res, 0),               (res, 0),
-                   (-res, res),  (0, res),  (res, res)]
+                   (-res, 0), (res, 0),
+                   (-res, res), (0, res), (res, res)]
 
         total = 0.0
         count = 0

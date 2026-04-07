@@ -1,8 +1,7 @@
 """Spawn a single SELENE robot into Gazebo and start its bridge + sensor nodes."""
 
-import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -15,7 +14,6 @@ def generate_launch_description():
     y = LaunchConfiguration('y', default='0.0')
     z = LaunchConfiguration('z', default='0.5')
     yaw = LaunchConfiguration('yaw', default='0.0')
-    ice_config = LaunchConfiguration('ice_config', default='')
     world_params = LaunchConfiguration('world_params', default='')
 
     # Spawn robot into Gazebo

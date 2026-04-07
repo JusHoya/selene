@@ -1,6 +1,5 @@
 """Tests for TaskQueue."""
 
-import pytest
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 
 
@@ -8,7 +7,10 @@ class TestTaskQueue:
 
     def test_add_and_retrieve(self):
         q = TaskQueue()
-        q.add_task('t1', 'prospect', -80.0, -140.0, priority=1.0, required_capabilities=['prospect'])
+        q.add_task(
+            't1', 'prospect', -80.0, -140.0,
+            priority=1.0, required_capabilities=['prospect'],
+        )
         task = q.get_next_pending()
         assert task is not None
         assert task.task_id == 't1'

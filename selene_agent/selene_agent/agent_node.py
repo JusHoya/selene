@@ -65,11 +65,17 @@ class AgentNode(Node):
         nav_config_path = self.get_parameter("nav_config_path").get_parameter_value().string_value
         self._recharge_x = self.get_parameter("recharge_x").get_parameter_value().double_value
         self._recharge_y = self.get_parameter("recharge_y").get_parameter_value().double_value
-        energy_critical = self.get_parameter("energy_critical_threshold").get_parameter_value().double_value
-        self._energy_recharge_target = self.get_parameter("energy_recharge_target").get_parameter_value().double_value
+        energy_critical = (
+            self.get_parameter("energy_critical_threshold").get_parameter_value().double_value
+        )
+        self._energy_recharge_target = (
+            self.get_parameter("energy_recharge_target").get_parameter_value().double_value
+        )
         self._tick_rate = self.get_parameter("tick_rate").get_parameter_value().double_value
         self._orchestrated = self.get_parameter("orchestrated").get_parameter_value().bool_value
-        self._auction_timeout = self.get_parameter("auction_timeout_sec").get_parameter_value().double_value
+        self._auction_timeout = (
+            self.get_parameter("auction_timeout_sec").get_parameter_value().double_value
+        )
 
         # -- Create HAL ----------------------------------------------------------
         self._hal = create_hal(rcdl_path, self._robot_id, backend=hal_backend, ros_node=self)
@@ -223,7 +229,8 @@ class AgentNode(Node):
 
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
-                f"[{self._robot_id}] Mission complete -- all {len(self._waypoints)} waypoints visited"
+                f"[{self._robot_id}] Mission complete -- "
+                f"all {len(self._waypoints)} waypoints visited"
             )
             return
 
@@ -341,7 +348,8 @@ class AgentNode(Node):
         elif self._current_skill.has_failed():
             skill_name = self._current_skill.get_name()
             self.get_logger().error(
-                f"[{self._robot_id}] {skill_name.capitalize()} failed at waypoint {self._waypoint_index}: "
+                f"[{self._robot_id}] {skill_name.capitalize()} failed at "
+                f"waypoint {self._waypoint_index}: "
                 f"{self._current_skill.get_error()}"
             )
             if skill_name == "prospect":
@@ -424,7 +432,9 @@ class AgentNode(Node):
         w_cap = self.get_parameter("bid_weight_capability").get_parameter_value().double_value
 
         dist_score = 1.0 / (1.0 + distance / 100.0)
-        energy_cost = self._energy_manager.compute_energy_cost_wh(distance, msg.estimated_energy_cost)
+        energy_cost = self._energy_manager.compute_energy_cost_wh(
+            distance, msg.estimated_energy_cost
+        )
         remaining = self._energy_manager.get_remaining_wh()
         energy_score = min(remaining / max(energy_cost, 0.01), 1.0)
         cap_score = 1.0 if required.issubset(my_caps) else 0.0

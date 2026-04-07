@@ -5,8 +5,6 @@ import pytest
 from selene_isru.inventory import (
     ExtractionRateModel,
     MaterialInventory,
-    SiteInventory,
-    RobotCargo,
 )
 
 

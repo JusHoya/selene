@@ -29,7 +29,6 @@ from selene_hal.data_types import (
 from selene_hal.robot_descriptor import RobotDescriptor
 from selene_hal.hal_factory import register_hal_backend
 
-import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Float32, Bool, String
 from sensor_msgs.msg import Image, Imu, BatteryState as RosBatteryState

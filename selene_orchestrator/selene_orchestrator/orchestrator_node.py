@@ -24,7 +24,6 @@ from selene_orchestrator.fleet_monitor import FleetMonitor
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 from selene_orchestrator.task_auction import TaskAuction, Bid
 from selene_orchestrator.resource_map import ResourceMap
-from selene_orchestrator.waypoint_generator import generate_psr_survey_waypoints
 from selene_orchestrator.htn_planner import HTNPlanner
 from selene_orchestrator.adaptive_survey import AdaptiveSurveyPlanner
 from selene_isru.inventory import MaterialInventory

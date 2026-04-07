@@ -10,11 +10,11 @@ import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable,
-    TimerAction, GroupAction,
+    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -68,7 +68,7 @@ def generate_launch_description():
 
     # Scouts
     for i, pos in enumerate(spawn_positions.get('scouts', [])[:2]):
-        robot_id = f'scout_{i+1:02d}'
+        robot_id = f'scout_{i + 1:02d}'
         spawn_actions.append(TimerAction(
             period=spawn_delay * (len(spawn_actions) + 1),
             actions=[
@@ -85,7 +85,7 @@ def generate_launch_description():
 
     # Excavators
     for i, pos in enumerate(spawn_positions.get('excavators', [])[:1]):
-        robot_id = f'excavator_{i+1:02d}'
+        robot_id = f'excavator_{i + 1:02d}'
         spawn_actions.append(TimerAction(
             period=spawn_delay * (len(spawn_actions) + 1),
             actions=[
@@ -102,7 +102,7 @@ def generate_launch_description():
 
     # Haulers
     for i, pos in enumerate(spawn_positions.get('haulers', [])[:1]):
-        robot_id = f'hauler_{i+1:02d}'
+        robot_id = f'hauler_{i + 1:02d}'
         spawn_actions.append(TimerAction(
             period=spawn_delay * (len(spawn_actions) + 1),
             actions=[
@@ -121,11 +121,11 @@ def generate_launch_description():
     bridge_actions = []
     all_robots = []
     for i in range(2):
-        all_robots.append(('scout', f'scout_{i+1:02d}'))
+        all_robots.append(('scout', f'scout_{i + 1:02d}'))
     for i in range(1):
-        all_robots.append(('excavator', f'excavator_{i+1:02d}'))
+        all_robots.append(('excavator', f'excavator_{i + 1:02d}'))
     for i in range(1):
-        all_robots.append(('hauler', f'hauler_{i+1:02d}'))
+        all_robots.append(('hauler', f'hauler_{i + 1:02d}'))
 
     for robot_type, robot_id in all_robots:
         bridge_actions.append(Node(
@@ -162,7 +162,7 @@ def generate_launch_description():
 
     # Neutron spectrometer for scouts
     for i in range(2):
-        robot_id = f'scout_{i+1:02d}'
+        robot_id = f'scout_{i + 1:02d}'
         sensor_actions.append(Node(
             package='selene_sim',
             executable='neutron_spectrometer_node',
@@ -176,7 +176,7 @@ def generate_launch_description():
 
     # Hopper and extraction nodes for excavators
     for i in range(1):
-        robot_id = f'excavator_{i+1:02d}'
+        robot_id = f'excavator_{i + 1:02d}'
         sensor_actions.append(Node(
             package='selene_sim',
             executable='hopper_node',
@@ -200,7 +200,7 @@ def generate_launch_description():
 
     # Bin load node for haulers
     for i in range(1):
-        robot_id = f'hauler_{i+1:02d}'
+        robot_id = f'hauler_{i + 1:02d}'
         sensor_actions.append(Node(
             package='selene_sim',
             executable='bin_load_node',

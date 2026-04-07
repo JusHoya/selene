@@ -658,7 +658,6 @@ class Navigator:
         try:
             from nav_msgs.msg import Path
             from geometry_msgs.msg import PoseStamped
-            from builtin_interfaces.msg import Time
 
             if not hasattr(self, "_path_pub"):
                 self._path_pub = self._ros_node.create_publisher(

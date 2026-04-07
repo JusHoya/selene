@@ -68,16 +68,21 @@ class TaskQueue:
 
     def get_task_for_robot(self, robot_id: str) -> str | None:
         """Return task_id assigned to robot, or None."""
+        active_statuses = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
         for t in self._tasks.values():
-            if t.assigned_robot == robot_id and t.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            if t.assigned_robot == robot_id and t.status in active_statuses:
                 return t.task_id
         return None
 
     def recover_tasks_for_robot(self, robot_id: str) -> list[str]:
-        """Reset ASSIGNED/IN_PROGRESS tasks for robot back to PENDING. Returns re-queued task_ids."""
+        """Reset ASSIGNED/IN_PROGRESS tasks for robot back to PENDING.
+
+        Returns re-queued task_ids.
+        """
         recovered = []
+        active_statuses = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
         for t in self._tasks.values():
-            if t.assigned_robot == robot_id and t.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            if t.assigned_robot == robot_id and t.status in active_statuses:
                 t.status = TaskStatus.PENDING
                 t.assigned_robot = ""
                 recovered.append(t.task_id)

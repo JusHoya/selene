@@ -6,7 +6,7 @@ read() returns the most recent cached value.
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Callable
 from selene_hal.data_types import (
     SensorReading, ScalarFieldReading, DepthImageReading,
     IMUReading, FillLevelReading, OdometryReading, SensorType,
