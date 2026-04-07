@@ -28,7 +28,11 @@ jobs:
             ros-humble-lifecycle-msgs \
             ros-humble-rosbridge-suite \
             ros-humble-std-msgs
-          pip3 install pytest flake8 numpy scipy pydantic pyyaml
+          # Remove any apt-installed flake8 (which may bundle plugins like
+          # flake8-docstrings/import-order/quotes) so the pip install below
+          # gives us a deterministic plain flake8 environment.
+          apt-get remove -y python3-flake8 flake8 || true
+          pip3 install --upgrade pytest flake8 numpy scipy pydantic pyyaml
 
       - name: Build workspace
         shell: bash
@@ -41,10 +45,10 @@ jobs:
 
       - name: Lint Python
         run: |
-          flake8 --version
-          flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ \
+          python3 -m flake8 --version
+          python3 -m flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ \
             --max-line-length=100 \
-            --exclude=__pycache__,build,install,log,.git,node_modules \
+            --exclude=__pycache__,build,install,log,.git,node_modules,*.egg-info \
             --extend-ignore=W503,W504 \
             --select=E,W,F \
             --show-source \
