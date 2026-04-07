@@ -83,7 +83,18 @@ function buildCraterCatalog() {
     craters.push({ x, y, r });
   }
 
-  // A few large impact features
+  // PSR crater — large impact feature centered on the Permanently Shadowed Region
+  // (matches world_params.yaml psr_alpha center [-100, -150], radius 60)
+  craters.push({ x: -100, y: -150, r: 58 });
+
+  // Secondary ejecta craters around the PSR rim
+  craters.push({ x: -65, y: -125, r: 8 });
+  craters.push({ x: -135, y: -140, r: 7 });
+  craters.push({ x: -110, y: -195, r: 9 });
+  craters.push({ x: -150, y: -170, r: 6 });
+  craters.push({ x: -75, y: -190, r: 5 });
+
+  // Distant large craters for visual variety across the map
   craters.push({ x: 80, y: -70, r: 22 });
   craters.push({ x: -180, y: 100, r: 18 });
   craters.push({ x: 160, y: 170, r: 15 });

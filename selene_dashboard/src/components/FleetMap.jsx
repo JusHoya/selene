@@ -91,10 +91,16 @@ function drawPSRZones(ctx, scale) {
   ctx.save();
   PSR_ZONES.forEach((zone) => {
     const [cx, cy] = zone.center;
-    // Filled semi-transparent area
+
+    // Radial gradient simulating crater shadow depth — darkest at center,
+    // softer at the rim. Layered over the procedural crater bowl.
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, zone.radius);
+    grad.addColorStop(0.0, 'rgba(2, 4, 12, 0.85)');    // pitch-black floor
+    grad.addColorStop(0.55, 'rgba(8, 12, 28, 0.55)');  // mid wall
+    grad.addColorStop(1.0, 'rgba(20, 28, 50, 0.15)');  // soft rim fade
     ctx.beginPath();
     ctx.arc(cx, cy, zone.radius, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(10, 15, 40, 0.5)';
+    ctx.fillStyle = grad;
     ctx.fill();
 
     // Dashed cyan border
