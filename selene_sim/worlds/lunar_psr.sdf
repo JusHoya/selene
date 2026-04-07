@@ -57,7 +57,7 @@
     <include>
       <uri>model://depot_marker</uri>
       <name>depot</name>
-      <pose>50 50 0 0 0 0</pose>
+      <pose>-30 -100 0 0 0 0</pose>
     </include>
 
     <!-- ============================================================ -->
