@@ -41,9 +41,15 @@ jobs:
 
       - name: Lint Python
         run: |
+          flake8 --version
           flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ \
             --max-line-length=100 \
-            --exclude=__pycache__,build,install,log
+            --exclude=__pycache__,build,install,log,.git,node_modules \
+            --extend-ignore=W503,W504 \
+            --select=E,W,F \
+            --show-source \
+            --statistics \
+            --count
 
       - name: Run tests
         shell: bash
