@@ -237,9 +237,15 @@ class HTNPlanner:
 
         Scores each surveyed cell as ``mean / (1 + variance)`` and returns
         the world coordinates of the highest-scoring cell within the zone.
+        Falls back to the zone center if no readings are available.
         """
         mean_grid = self._resource_map.get_mean_grid()
         var_grid = self._resource_map.get_variance_grid()
+
+        # Safety: if no readings have been collected, fall back to zone center
+        # so we don't pick the world origin (0,0) by default.
+        if not np.any(mean_grid > 0.0):
+            return (float(self._zone_center[0]), float(self._zone_center[1]))
 
         # Score: higher mean and lower variance is better
         score_grid = mean_grid / (1.0 + var_grid)
