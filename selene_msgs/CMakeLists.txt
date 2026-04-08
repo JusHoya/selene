@@ -20,6 +20,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MissionProgress.msg"
   "srv/InjectTask.srv"
   "srv/OverrideRobot.srv"
+  "srv/SetRobotCommand.srv"
   DEPENDENCIES builtin_interfaces geometry_msgs
 )
 

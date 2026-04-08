@@ -24,6 +24,21 @@ from selene_msgs.msg import TaskAnnouncement, TaskAssignment, BidResponse
 from geometry_msgs.msg import Pose2D, Twist, Point
 from nav_msgs.msg import Path
 
+try:
+    from selene_msgs.srv import SetRobotCommand
+except ImportError:  # pragma: no cover - srv not built yet
+    class SetRobotCommand:  # type: ignore
+        class Request:
+            def __init__(self):
+                self.command = ''
+                self.target = Point()
+                self.sequence = 0
+
+        class Response:
+            def __init__(self):
+                self.accepted = False
+                self.reason = ''
+
 from selene_hal import create_hal
 from selene_agent.fsm import AgentFSM, AgentState, FSMEvent
 from selene_agent.energy_manager import EnergyManager
@@ -32,6 +47,10 @@ from selene_agent.skills import ProspectSkill, ExcavateSkill, HaulSkill, Recharg
 from selene_agent.skills.prospect import ProspectPhase
 from selene_agent.skills.excavate import ExcavatePhase
 from selene_agent.skills.haul import HaulPhase
+from selene_agent.operator_command import (
+    _OperatorCommandContext,
+    operator_command_logic,
+)
 
 
 class AgentNode(Node):
@@ -120,6 +139,10 @@ class AgentNode(Node):
         self._assigned_target: tuple[float, float] | None = None
         self._assigned_task_type: str = "prospect"
 
+        # -- Operator override state ---------------------------------------------
+        self._operator_target: tuple[float, float] | None = None
+        self._last_operator_seq: int = -1
+
         # -- Publishers ----------------------------------------------------------
         self._state_pub = self.create_publisher(
             RobotState, f"/{self._robot_id}/state", 10
@@ -142,6 +165,16 @@ class AgentNode(Node):
             self.create_subscription(
                 TaskAssignment, "/orchestrator/task_assignment",
                 self._on_task_assigned, 10)
+
+        # -- Operator command service --------------------------------------------
+        # Per-robot service that lets the orchestrator (and ultimately the
+        # dashboard) cancel tasks, send the robot to a waypoint, or force a
+        # recharge cycle. Available in both standalone and orchestrated modes.
+        self._operator_srv = self.create_service(
+            SetRobotCommand,
+            f'/{self._robot_id}/set_command',
+            self._on_operator_command,
+        )
 
         # -- Timers --------------------------------------------------------------
         tick_period = 1.0 / self._tick_rate
@@ -268,6 +301,31 @@ class AgentNode(Node):
 
     def _handle_navigating(self, dt: float):
         """Drive the ProspectSkill; detect when navigation phase ends."""
+        # Operator override_goto pseudo-task: navigator drives directly
+        # without a wrapping skill. Treat arrival as completion → IDLE.
+        if self._current_task_id.startswith("override_goto_"):
+            nav_status = self._navigator.update(dt)
+            if nav_status == "goal_reached":
+                self.get_logger().info(
+                    f"[{self._robot_id}] Operator goto complete, returning to IDLE"
+                )
+                try:
+                    self._hal.get_actuator("drive").stop()
+                except (KeyError, AttributeError):
+                    pass
+                self._navigator.stop()
+                self._current_task_id = ""
+                self._operator_target = None
+                self._fsm.handle_event(FSMEvent.OPERATOR_CANCEL)
+            elif nav_status == "blocked":
+                self.get_logger().error(
+                    f"[{self._robot_id}] Operator goto path blocked"
+                )
+                self._current_task_id = ""
+                self._operator_target = None
+                self._fsm.handle_event(FSMEvent.OPERATOR_CANCEL)
+            return
+
         if self._current_skill is None:
             return
 
@@ -542,6 +600,64 @@ class AgentNode(Node):
         )
         self._current_skill.start(self._hal, self._navigator)
         self._current_task_id = "recharge"
+
+    # ===================================================================
+    # Operator override helpers
+    # ===================================================================
+
+    def _start_operator_navigation(self, target_x: float, target_y: float):
+        """Plan a path to *(target_x, target_y)* and begin path-following.
+
+        Used by the operator ``send_to_location`` command. Skips skill
+        creation entirely — the navigator drives the wheels directly,
+        and ``_handle_navigating`` recognises the override_goto pseudo-task
+        for arrival handling.
+        """
+        result = self._navigator.plan_to((target_x, target_y))
+        if not result.success:
+            self.get_logger().error(
+                f"[{self._robot_id}] Operator goto plan failed: "
+                f"{result.failure_reason}"
+            )
+            self._operator_target = None
+            # Drop back to IDLE so we don't strand the agent.
+            try:
+                self._fsm.handle_event(FSMEvent.OPERATOR_CANCEL)
+            except Exception:
+                pass
+            return
+        self._navigator.start_following(result.path)
+
+    def _publish_bid_withdrawal(self, task_id: str, robot_id: str):
+        """Publish a negative-score bid so the orchestrator drops us."""
+        bid = BidResponse()
+        bid.task_id = task_id
+        bid.robot_id = robot_id
+        bid.bid_score = -1.0  # negative = withdrawal sentinel
+        bid.estimated_arrival_time = 0.0
+        bid.energy_after_task = 0.0
+        self._bid_pub.publish(bid)
+
+    def _on_operator_command(self, request, response):
+        """ROS 2 service callback — delegates to the pure-Python helper."""
+        ctx = _OperatorCommandContext(
+            robot_id=self._robot_id,
+            get_state=lambda: self._fsm.state,
+            fire_event=self._fsm.handle_event,
+            get_current_skill=lambda: self._current_skill,
+            set_current_skill=lambda s: setattr(self, '_current_skill', s),
+            set_current_task_id=lambda t: setattr(self, '_current_task_id', t),
+            get_pending_task_id=lambda: self._pending_task_id,
+            set_pending_task_id=lambda t: setattr(self, '_pending_task_id', t),
+            publish_bid_withdrawal=self._publish_bid_withdrawal,
+            start_navigation=self._start_operator_navigation,
+            set_operator_target=lambda t: setattr(self, '_operator_target', t),
+            start_recharge=self._start_recharge,
+            get_last_seq=lambda: self._last_operator_seq,
+            set_last_seq=lambda s: setattr(self, '_last_operator_seq', s),
+            log_warn=self.get_logger().warn,
+        )
+        return operator_command_logic(ctx, request, response)
 
     # ===================================================================
     # State publisher (2 Hz)

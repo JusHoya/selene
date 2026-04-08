@@ -43,6 +43,9 @@ class FSMEvent(str, Enum):
     FAULT = "FAULT"
     RECOVERY = "RECOVERY"
     SHUTDOWN = "SHUTDOWN"
+    OPERATOR_CANCEL = "OPERATOR_CANCEL"
+    OPERATOR_GOTO = "OPERATOR_GOTO"
+    OPERATOR_RECHARGE = "OPERATOR_RECHARGE"
 
 
 class InvalidTransitionError(Exception):
@@ -82,6 +85,24 @@ def _build_full_table() -> dict[tuple[AgentState, FSMEvent], AgentState]:
     for state in AgentState:
         if state != AgentState.OFFLINE:
             table[(state, FSMEvent.FAULT)] = AgentState.ERROR
+
+    # OPERATOR_CANCEL from any state except OFFLINE
+    # (allowed from ERROR so the operator can clear errors back to IDLE)
+    for state in AgentState:
+        if state != AgentState.OFFLINE:
+            table[(state, FSMEvent.OPERATOR_CANCEL)] = AgentState.IDLE
+
+    # OPERATOR_GOTO from any state except OFFLINE and ERROR
+    # (cannot navigate a faulted robot)
+    for state in AgentState:
+        if state not in (AgentState.OFFLINE, AgentState.ERROR):
+            table[(state, FSMEvent.OPERATOR_GOTO)] = AgentState.NAVIGATING
+
+    # OPERATOR_RECHARGE from any state except OFFLINE and ERROR
+    # (cannot recharge a faulted robot)
+    for state in AgentState:
+        if state not in (AgentState.OFFLINE, AgentState.ERROR):
+            table[(state, FSMEvent.OPERATOR_RECHARGE)] = AgentState.RECHARGING
 
     # SHUTDOWN from any state
     for state in AgentState:

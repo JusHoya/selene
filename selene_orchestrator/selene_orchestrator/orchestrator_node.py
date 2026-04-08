@@ -5,6 +5,8 @@ Generates prospect survey waypoints and distributes them via auction.
 """
 
 import time
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import rclpy
 from rclpy.node import Node
@@ -18,6 +20,29 @@ from selene_msgs.msg import (
     TaskAnnouncement,
     TaskAssignment,
 )
+from selene_msgs.srv import InjectTask, OverrideRobot
+
+# SetRobotCommand is created in parallel by Wave 1 Agent 2. Until that build
+# lands, fall back to a stub that mirrors the request/response shape so the
+# orchestrator module still imports cleanly for unit tests and CI.
+try:  # pragma: no cover - import-path resolved at runtime
+    from selene_msgs.srv import SetRobotCommand
+except ImportError:  # pragma: no cover - tested via stub injection
+    class _SetRobotCommandStub:
+        class Request:
+            def __init__(self):
+                from geometry_msgs.msg import Point as _Point
+                self.command = ''
+                self.target = _Point()
+                self.sequence = 0
+
+        class Response:
+            def __init__(self):
+                self.accepted = False
+                self.reason = ''
+
+    SetRobotCommand = _SetRobotCommandStub  # type: ignore[assignment,misc]
+
 from geometry_msgs.msg import Point
 
 from selene_orchestrator.fleet_monitor import FleetMonitor
@@ -27,6 +52,279 @@ from selene_orchestrator.resource_map import ResourceMap
 from selene_orchestrator.htn_planner import HTNPlanner
 from selene_orchestrator.adaptive_survey import AdaptiveSurveyPlanner
 from selene_isru.inventory import MaterialInventory
+
+
+# ---- Operator-injected task constants ------------------------------------ #
+# Capability requirements per manual task type. Keeping this at module scope
+# lets unit tests verify the mapping without instantiating the full ROS node.
+MANUAL_TASK_CAPABILITIES: dict[str, list[str]] = {
+    'prospect': ['neutron_spectrometer'],
+    'excavate': ['drill', 'hopper'],
+    'haul': ['transport_bin'],
+}
+
+# FSM states from which a robot cannot accept a freshly injected task.
+INJECT_BLOCKED_STATES: frozenset[str] = frozenset({
+    'ERROR', 'OFFLINE', 'RECHARGING',
+})
+
+# FSM states from which a robot cannot accept any operator override.
+OVERRIDE_BLOCKED_STATES: frozenset[str] = frozenset({'ERROR', 'OFFLINE'})
+
+VALID_OVERRIDE_COMMANDS: frozenset[str] = frozenset({
+    'cancel_task', 'send_to_location', 'force_recharge',
+})
+
+
+# ---- Pure-logic helpers for the operator service handlers ---------------- #
+# These live at module scope so unit tests can drive them with mocks instead
+# of standing up a full ROS node. The OrchestratorNode methods build a
+# context object and delegate.
+
+
+@dataclass
+class _InjectTaskContext:
+    """Injected dependencies for ``inject_task_logic``."""
+    task_queue: Any
+    fleet_monitor: Any
+    next_task_id: Callable[[], str]
+    now_stamp: Any
+    publish_assignment: Callable[[str, str, str, Any], None]
+    publish_alert: Callable[[str, str], None]
+
+
+@dataclass
+class _OverrideRobotContext:
+    """Injected dependencies for ``override_robot_logic``."""
+    task_queue: Any
+    fleet_monitor: Any
+    set_command_clients: dict
+    next_sequence: Callable[[], int]
+    spin_until_complete: Callable[[Any], None]
+    publish_alert: Callable[[str, str], None]
+    set_command_factory: Callable[[], Any]
+
+
+def inject_task_logic(ctx: _InjectTaskContext, request, response):
+    """Pure decision tree for InjectTask. Mutates ctx state, returns response.
+
+    Decision order:
+        1. Reject unknown task_type.
+        2. Allocate a fresh manual task_id and add the task to the queue at
+           priority 10.0 (above HTN baseline) with capability requirements.
+        3. If no assigned_robot_id is provided, leave the task PENDING for
+           the next auction tick to pick up.
+        4. Otherwise validate the target robot:
+              - exists in the fleet monitor
+              - not in ERROR/OFFLINE/RECHARGING
+              - has every required capability
+        5. If the robot is busy, interrupt + re-PENDING its current task and
+           publish a WARNING alert before forcing the new assignment.
+        6. Force-assign + publish TaskAssignment immediately so the agent
+           and dashboard see the change without waiting for an auction.
+
+    Failure paths set the freshly-created manual task to FAILED so the
+    queue does not retain a phantom row, then return success=False with a
+    diagnostic message.
+    """
+    if request.task_type not in MANUAL_TASK_CAPABILITIES:
+        response.success = False
+        response.task_id = ''
+        response.message = f"invalid task_type '{request.task_type}'"
+        return response
+
+    cap_required = list(MANUAL_TASK_CAPABILITIES[request.task_type])
+    task_id = ctx.next_task_id()
+
+    ctx.task_queue.add_task(
+        task_id=task_id,
+        task_type=request.task_type,
+        target_x=float(request.target_location.x),
+        target_y=float(request.target_location.y),
+        priority=10.0,
+        required_capabilities=cap_required,
+    )
+
+    assigned_robot_id = (request.assigned_robot_id or '').strip()
+    if not assigned_robot_id:
+        ctx.publish_alert(
+            'INFO', f'operator queued {task_id} for auction',
+        )
+        response.success = True
+        response.task_id = task_id
+        response.message = 'queued'
+        return response
+
+    robot = ctx.fleet_monitor.get_robot(assigned_robot_id)
+    if robot is None:
+        ctx.task_queue.set_status(task_id, TaskStatus.FAILED)
+        response.success = False
+        response.task_id = task_id
+        response.message = f"unknown robot '{assigned_robot_id}'"
+        return response
+
+    fsm_state = robot.get('fsm_state', '') if isinstance(robot, dict) \
+        else getattr(robot, 'fsm_state', '')
+    capabilities = robot.get('capabilities', []) if isinstance(robot, dict) \
+        else getattr(robot, 'capabilities', [])
+    current_task_id = robot.get('current_task_id', '') if isinstance(robot, dict) \
+        else getattr(robot, 'current_task_id', '')
+
+    if fsm_state in INJECT_BLOCKED_STATES:
+        ctx.task_queue.set_status(task_id, TaskStatus.FAILED)
+        response.success = False
+        response.task_id = task_id
+        response.message = (
+            f"robot in {fsm_state}, cannot accept task"
+        )
+        return response
+
+    missing = [c for c in cap_required if c not in (capabilities or [])]
+    if missing:
+        ctx.task_queue.set_status(task_id, TaskStatus.FAILED)
+        response.success = False
+        response.task_id = task_id
+        response.message = f"robot lacks capabilities {missing}"
+        return response
+
+    # Pre-empt any active task on the target robot before forcing the new one.
+    if current_task_id:
+        ctx.task_queue.interrupt_task(
+            current_task_id, {'reason': 'operator_reassign'},
+        )
+        ctx.task_queue.set_status(current_task_id, TaskStatus.PENDING)
+        ctx.publish_alert(
+            'WARNING',
+            f'task {current_task_id} preempted by operator reassign',
+        )
+
+    ctx.task_queue.assign_to_robot(task_id, assigned_robot_id)
+    ctx.publish_assignment(
+        task_id,
+        assigned_robot_id,
+        request.task_type,
+        request.target_location,
+    )
+    ctx.publish_alert(
+        'INFO',
+        f'operator force-assigned {task_id} to {assigned_robot_id}',
+    )
+
+    response.success = True
+    response.task_id = task_id
+    response.message = 'force-assigned'
+    return response
+
+
+def override_robot_logic(ctx: _OverrideRobotContext, request, response):
+    """Pure decision tree for OverrideRobot. Returns the populated response.
+
+    Validation order:
+        1. Reject unknown ``request.command``.
+        2. Reject unknown robot.
+        3. Reject robots in ERROR/OFFLINE.
+        4. For ``cancel_task`` and ``force_recharge``, interrupt the current
+           task (if any) and re-PEND it so a future auction can re-dispatch
+           the work to a healthy robot.
+        5. Look up the per-agent SetRobotCommand client; abort early if it
+           does not exist or never becomes available.
+        6. Build a SetRobotCommand request with a monotonic sequence and
+           call asynchronously, spinning until the future completes or
+           times out at 2 s.
+        7. Forward the agent's accept/reject verdict back to the caller.
+
+    All return paths emit a single FleetAlert summarising the outcome.
+    """
+    if request.command not in VALID_OVERRIDE_COMMANDS:
+        response.success = False
+        response.message = f"invalid command '{request.command}'"
+        return response
+
+    robot = ctx.fleet_monitor.get_robot(request.robot_id)
+    if robot is None:
+        response.success = False
+        response.message = f"unknown robot '{request.robot_id}'"
+        ctx.publish_alert(
+            'INFO',
+            f'operator override: {request.robot_id} {request.command} -> '
+            f'{response.message}',
+        )
+        return response
+
+    fsm_state = robot.get('fsm_state', '') if isinstance(robot, dict) \
+        else getattr(robot, 'fsm_state', '')
+    current_task_id = robot.get('current_task_id', '') if isinstance(robot, dict) \
+        else getattr(robot, 'current_task_id', '')
+
+    if fsm_state in OVERRIDE_BLOCKED_STATES:
+        response.success = False
+        response.message = f"robot in {fsm_state}, override rejected"
+        ctx.publish_alert(
+            'INFO',
+            f'operator override: {request.robot_id} {request.command} -> '
+            f'{response.message}',
+        )
+        return response
+
+    # Requeue any in-flight task before yanking the robot off it.
+    if request.command in ('cancel_task', 'force_recharge') and current_task_id:
+        ctx.task_queue.interrupt_task(
+            current_task_id, {'reason': f'operator_{request.command}'},
+        )
+        ctx.task_queue.set_status(current_task_id, TaskStatus.PENDING)
+
+    client = ctx.set_command_clients.get(request.robot_id)
+    if client is None:
+        response.success = False
+        response.message = f"agent {request.robot_id} not reachable"
+        ctx.publish_alert(
+            'INFO',
+            f'operator override: {request.robot_id} {request.command} -> '
+            f'{response.message}',
+        )
+        return response
+
+    # Wait briefly for the agent service to come up. The mock client used by
+    # tests treats wait_for_service as a no-op returning True.
+    try:
+        ready = client.wait_for_service(timeout_sec=1.0)
+    except TypeError:
+        ready = client.wait_for_service()
+    if not ready:
+        response.success = False
+        response.message = f"agent {request.robot_id} not reachable"
+        ctx.publish_alert(
+            'INFO',
+            f'operator override: {request.robot_id} {request.command} -> '
+            f'{response.message}',
+        )
+        return response
+
+    seq = ctx.next_sequence()
+    cmd_req = ctx.set_command_factory()
+    cmd_req.command = request.command
+    cmd_req.target = request.target
+    cmd_req.sequence = seq
+
+    future = client.call_async(cmd_req)
+    ctx.spin_until_complete(future)
+
+    if future.done() and future.result() is not None:
+        agent_resp = future.result()
+        response.success = bool(agent_resp.accepted)
+        response.message = (
+            agent_resp.reason or f'override {request.command} accepted'
+        )
+    else:
+        response.success = False
+        response.message = 'agent service call timed out'
+
+    ctx.publish_alert(
+        'INFO',
+        f'operator override: {request.robot_id} {request.command} -> '
+        f'{response.message}',
+    )
+    return response
 
 
 class OrchestratorNode(Node):
@@ -129,6 +427,32 @@ class OrchestratorNode(Node):
         self._progress_pub = self.create_publisher(
             MissionProgress, '/orchestrator/mission_progress', 10,
         )
+
+        # ---- Operator services (FR-DASH-5 / FR-DASH-6) ----
+        self._fleet_robot_ids = list(fleet_ids)
+        self._manual_task_counter = 0
+        self._operator_command_seq = 0
+
+        self._inject_task_srv = self.create_service(
+            InjectTask,
+            '/orchestrator/inject_task',
+            self._handle_inject_task,
+        )
+        self._override_robot_srv = self.create_service(
+            OverrideRobot,
+            '/orchestrator/override_robot',
+            self._handle_override_robot,
+        )
+
+        # Per-agent SetRobotCommand client cache. Each agent (Wave 1 Agent 2)
+        # exposes /{robot_id}/set_command; we keep a long-lived client per
+        # robot so override calls don't pay client-construction cost on the
+        # hot path.
+        self._set_command_clients: dict = {}
+        for rid in fleet_ids:
+            self._set_command_clients[rid] = self.create_client(
+                SetRobotCommand, f'/{rid}/set_command',
+            )
 
         # ---- Timers ----
         self.create_timer(1.0, self._heartbeat_check)           # 1 Hz
@@ -302,7 +626,14 @@ class OrchestratorNode(Node):
         self._auction.reset()
 
     def _publish_mission_progress(self) -> None:
-        """Publish aggregated mission progress metrics."""
+        """Publish aggregated mission progress metrics.
+
+        Distance and energy totals come from FleetMonitor's per-update
+        deltas; uptime is folded into ``elapsed_sim_time`` so the dashboard
+        can derive both wall-clock and mission-anchored views without an
+        extra topic. (MissionProgress.msg has no dedicated uptime field — a
+        future revision can promote this if needed.)
+        """
         msg = MissionProgress()
         msg.objective_description = 'PSR Ice Prospecting Survey'
         msg.target_quantity = float(self._task_queue.get_total_count())
@@ -310,8 +641,12 @@ class OrchestratorNode(Node):
         msg.extracted_quantity = float(progress.get('extracted', 0.0))
         msg.in_transit_quantity = float(progress.get('in_transit', 0.0))
         msg.deposited_quantity = float(progress.get('deposited', 0.0))
-        msg.fleet_distance_total = 0.0   # TODO: accumulate from odometry
-        msg.fleet_energy_total = 0.0
+        msg.fleet_distance_total = float(self._fleet.get_total_distance())
+        msg.fleet_energy_total = float(self._fleet.get_total_energy_consumed())
+        # elapsed_sim_time mirrors orchestrator wall-clock since startup;
+        # FleetMonitor.get_uptime_sec() reflects time since the first robot
+        # heartbeat, which can lag startup by several seconds. We prefer the
+        # node-relative time so the dashboard sees a tick from t=0.
         elapsed = (self.get_clock().now() - self._start_time).nanoseconds / 1e9
         msg.elapsed_sim_time = elapsed
         self._progress_pub.publish(msg)
@@ -319,6 +654,77 @@ class OrchestratorNode(Node):
     def _htn_advance(self) -> None:
         """Advance the HTN planner — resolve virtual tasks, spawn downstream."""
         self._htn_planner.check_and_advance()
+
+    # ------------------------------------------------------------------ #
+    #  Operator service handlers (FR-DASH-5 / FR-DASH-6)                   #
+    # ------------------------------------------------------------------ #
+
+    def _handle_inject_task(self, request, response):
+        """Handle InjectTask service requests from the dashboard.
+
+        Delegates to the pure-Python ``inject_task_logic`` helper so the
+        decision tree can be unit-tested without instantiating the ROS node.
+        Side effects (publish, log) happen here, in the Node-bound wrapper.
+        """
+        ctx = _InjectTaskContext(
+            task_queue=self._task_queue,
+            fleet_monitor=self._fleet,
+            next_task_id=self._next_manual_task_id,
+            now_stamp=self.get_clock().now().to_msg(),
+            publish_assignment=self._publish_assignment_msg,
+            publish_alert=lambda sev, msg: self._publish_alert(sev, '', msg),
+        )
+        return inject_task_logic(ctx, request, response)
+
+    def _next_manual_task_id(self) -> str:
+        """Allocate the next monotonic ``manual_NNNN`` identifier."""
+        # Use the task_queue helper to ensure no collision with HTN ids.
+        candidate = self._task_queue.make_unique_task_id('manual')
+        # Best-effort numeric counter sync for diagnostics.
+        try:
+            self._manual_task_counter = max(
+                self._manual_task_counter,
+                int(candidate.split('_')[-1]) + 1,
+            )
+        except (ValueError, IndexError):
+            self._manual_task_counter += 1
+        return candidate
+
+    def _publish_assignment_msg(self, task_id: str, robot_id: str,
+                                task_type: str, target_location) -> None:
+        """Publish a TaskAssignment for a force-assigned manual task."""
+        msg = TaskAssignment()
+        msg.task_id = task_id
+        msg.robot_id = robot_id
+        msg.task_type = task_type
+        msg.target_location = target_location
+        msg.parameters = []
+        msg.assigned_at = self.get_clock().now().to_msg()
+        self._assign_pub.publish(msg)
+
+    def _handle_override_robot(self, request, response):
+        """Handle OverrideRobot service requests from the dashboard.
+
+        Builds a SetRobotCommand request, dispatches it to the per-agent
+        client, and waits for the agent's accept/reject response. Pure
+        validation logic lives in ``override_robot_logic`` for unit testing.
+        """
+        ctx = _OverrideRobotContext(
+            task_queue=self._task_queue,
+            fleet_monitor=self._fleet,
+            set_command_clients=self._set_command_clients,
+            next_sequence=self._next_operator_sequence,
+            spin_until_complete=lambda fut: rclpy.spin_until_future_complete(
+                self, fut, timeout_sec=2.0,
+            ),
+            publish_alert=lambda sev, msg: self._publish_alert(sev, '', msg),
+            set_command_factory=SetRobotCommand.Request,
+        )
+        return override_robot_logic(ctx, request, response)
+
+    def _next_operator_sequence(self) -> int:
+        self._operator_command_seq += 1
+        return self._operator_command_seq
 
     # ------------------------------------------------------------------ #
     #  Internal helpers                                                    #

@@ -1,0 +1,6 @@
+string command          # "cancel_task" | "send_to_location" | "force_recharge"
+geometry_msgs/Point target
+uint32 sequence         # monotonic, for dedupe
+---
+bool accepted
+string reason

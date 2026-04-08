@@ -146,3 +146,17 @@ class TaskQueue:
 
     def get_all_tasks(self) -> list[TaskEntry]:
         return list(self._tasks.values())
+
+    def make_unique_task_id(self, prefix: str) -> str:
+        """Generate a unique task_id with the given prefix and a monotonic suffix.
+
+        Returns the smallest ``f"{prefix}_{n:04d}"`` not currently present in
+        the task store. Used by manual / operator task injection paths to avoid
+        ID collisions with HTN-generated identifiers.
+        """
+        n = 0
+        while True:
+            candidate = f"{prefix}_{n:04d}"
+            if candidate not in self._tasks:
+                return candidate
+            n += 1
