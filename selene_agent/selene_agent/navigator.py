@@ -441,27 +441,18 @@ class PathFollower:
         desired_heading = math.atan2(ty - ry, tx - rx)
         heading_error = self._wrap_angle(desired_heading - rtheta)
 
-        # Turn-in-place when heading error is large; otherwise drive forward
-        # with speed scaled by alignment quality. The previous formulation
-        # multiplied speed_scale BEFORE the max_speed cap, so a far-away goal
-        # would saturate to max_speed and ignore the scale entirely — leaving
-        # heavy 6-wheeled robots fighting between full forward motion and a
-        # max-rate turn, generating massive wheel scrub and near-zero net
-        # progress. Apply the scale AFTER capping, and stop forward motion
-        # entirely when the robot is severely misaligned.
+        # Speed modulation based on heading error
         abs_err = abs(heading_error)
         if abs_err > math.radians(45):
-            speed_scale = 0.0  # turn in place
-        elif abs_err > math.radians(22.5):
             speed_scale = 0.3
-        elif abs_err > math.radians(10):
+        elif abs_err > math.radians(22.5):
             speed_scale = 0.7
         else:
             speed_scale = 1.0
 
         max_speed = self._kinematics.get_max_speed()
-        linear_vel = self._lin_kp * dist_to_goal
-        linear_vel = min(linear_vel, max_speed) * speed_scale
+        linear_vel = self._lin_kp * dist_to_goal * speed_scale
+        linear_vel = min(linear_vel, max_speed)
 
         angular_vel = self._ang_kp * heading_error
         angular_vel = max(-self._max_ang, min(self._max_ang, angular_vel))
