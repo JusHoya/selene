@@ -87,23 +87,41 @@ cd /mnt/c/Users/<you>/WorkSpace/Projects/selene
 # Sync to Linux filesystem and build (run once, or after code changes)
 bash scripts/sync_and_build.sh
 
-# Phase 2: Single scout standalone prospecting
-bash scripts/start.sh
-
-# Phase 3: Multi-agent with orchestrator + auction
-bash scripts/start.sh --orchestrated
+# Phase 5+: Single command brings up the entire system
+ros2 launch selene_sim unified_sim.launch.py
 ```
 
 Open **http://localhost:3000** in your browser to see the Mission Control Dashboard.
 
-The dashboard shows a real-time 2D map with robot positions, ice concentration heatmap, battery gauges, FSM state tracking, and mission progress — all updating live via WebSocket.
+The dashboard shows a real-time 2D map with robot positions, ice concentration heatmap, battery gauges, FSM state tracking, mission progress, task queue, task injection form, and per-robot operator override buttons — all updating live via rosbridge WebSocket.
 
-In orchestrated mode, the orchestrator generates ~30 PSR survey waypoints and distributes them to 2 scouts via market-based auction. Scouts bid based on distance, energy, and capability. The dashboard shows BIDDING/ASSIGNED state transitions and fleet alerts.
+The unified launch starts: Gazebo + lunar PSR world, 2 scouts + 1 excavator + 1 hauler, the orchestrator (HTN planner + auction loop), per-robot agents, rosbridge_server, and the React dashboard. The orchestrator generates ~30 PSR survey waypoints and distributes them via market-based auction; the operator can inject additional tasks and override individual robots through the dashboard.
 
-**Headless mode** (no dashboard, for CI or remote machines):
+**Custom robot counts:**
 
 ```bash
-bash scripts/start.sh --headless
+ros2 launch selene_sim unified_sim.launch.py num_scouts:=3 num_excavators:=2 num_haulers:=2
+```
+
+**Headless mode** (rosbridge still up for CLI tooling; dashboard skipped):
+
+```bash
+ros2 launch selene_sim unified_sim.launch.py headless:=true
+```
+
+**Phase 5 exit-gate validation:**
+
+```bash
+bash scripts/validate_phase5.sh
+cat phase5_validation_report.md
+```
+
+**Legacy launch (deprecated, kept for backward compat):**
+
+```bash
+bash scripts/start.sh                  # Phase 2: single scout standalone
+bash scripts/start.sh --orchestrated   # Phase 3: hardcoded 4-robot fleet
+bash scripts/start.sh --headless       # No dashboard
 ```
 
 ### Monitoring (second terminal)

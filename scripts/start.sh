@@ -1,4 +1,9 @@
 #!/bin/bash
+# DEPRECATED (Phase 5+): use `ros2 launch selene_sim unified_sim.launch.py` instead.
+# Preserved for backward compatibility and as a reference for the legacy hardcoded
+# fleet startup. The unified launch supports parameterized robot counts and
+# integrates rosbridge + dashboard via standard ROS 2 launch.
+#
 # Start the SELENE simulation with Mission Control Dashboard.
 #
 # Usage:
