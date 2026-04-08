@@ -65,6 +65,42 @@
   transition: width 0.3s ease;
 }
 
+/* --- Objective headline progress bar --- */
+.mission-progress__objective {
+  margin-bottom: 14px;
+}
+
+.mission-progress__objective-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.mission-progress__objective-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
+  transition: width 0.4s ease;
+}
+
+.mission-progress__objective-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.mission-progress__objective-pct {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.mission-progress__stat--wide {
+  grid-column: span 2;
+}
+
 /* --- Stat accent colors --- */
 .mission-progress__stat-value--cyan {
   color: var(--accent-cyan);

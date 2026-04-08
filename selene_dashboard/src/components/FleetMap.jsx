@@ -289,7 +289,7 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
   const entries = Object.values(robots);
 
   entries.forEach((robot) => {
-    const { robot_id, robot_type, fsm_state, pose } = robot;
+    const { robot_id, robot_type, fsm_state, pose, battery_level } = robot;
     if (!pose) return;
 
     const { x, y, theta } = pose;
@@ -360,8 +360,66 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
     ctx.textBaseline = 'top';
     ctx.fillText(robot_id, 0, 0);
     ctx.restore();
+
+    // Wave2-A4: Per-robot battery overlay (horizontal bar below the label).
+    // Drawn in world space but sized in screen pixels via 1/scale.
+    if (typeof battery_level === 'number') {
+      const barW = 20 / scale;
+      const barH = 3 / scale;
+      // Position it just below the id label
+      const barX = x - barW / 2;
+      const barY = y - baseSize - 14 / scale;
+      const b = Math.max(0, Math.min(1, battery_level));
+      let battColor;
+      if (b > 0.5) battColor = '#00e676';
+      else if (b > 0.2) battColor = '#ffc107';
+      else battColor = '#ff4757';
+
+      ctx.save();
+      // Background
+      ctx.fillStyle = 'rgba(20, 26, 42, 0.75)';
+      ctx.fillRect(barX, barY, barW, barH);
+      // Fill proportional to battery level
+      ctx.fillStyle = battColor;
+      ctx.fillRect(barX, barY, barW * b, barH);
+      // Thin outline
+      ctx.strokeStyle = 'rgba(224,230,240,0.35)';
+      ctx.lineWidth = 0.5 / scale;
+      ctx.strokeRect(barX, barY, barW, barH);
+      ctx.restore();
+    }
   });
 
+  ctx.restore();
+}
+
+// Wave2-A4: Draw per-robot planned paths from nav_msgs/Path subscriptions.
+// robotPaths is a map of robotId -> [{x, y}, ...] world coords.
+function drawPlannedPaths(ctx, robots, robotPaths, scale) {
+  if (!robotPaths || !robots) return;
+  ctx.save();
+  Object.entries(robotPaths).forEach(([robotId, path]) => {
+    if (!Array.isArray(path) || path.length === 0) return;
+    const robot = robots[robotId];
+    if (!robot || !robot.pose) return;
+    const color = TYPE_COLORS[robot.robot_type] || '#e0e6f0';
+
+    ctx.beginPath();
+    // Start from the robot's current position for visual continuity
+    ctx.moveTo(robot.pose.x, robot.pose.y);
+    path.forEach((pt) => {
+      if (pt && typeof pt.x === 'number' && typeof pt.y === 'number') {
+        ctx.lineTo(pt.x, pt.y);
+      }
+    });
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1.2 / scale;
+    ctx.setLineDash([5 / scale, 3 / scale]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  });
   ctx.restore();
 }
 
@@ -407,6 +465,72 @@ function drawScaleBar(ctx, scale, canvasW, canvasH, dpr) {
   ctx.restore();
 }
 
+// ---------- Wave2-A3: Selected-task highlight ----------
+
+function drawSelectedTaskHighlight(ctx, robots, tasksById, selectedTaskId, scale, now) {
+  if (!selectedTaskId || !tasksById) return;
+  const task = tasksById[selectedTaskId];
+  if (!task) return;
+
+  // Locate the assigned robot if any; if not assigned yet, just draw a target marker.
+  const robot = task.assigned_robot ? robots[task.assigned_robot] : null;
+  const tx = task.target_x;
+  const ty = task.target_y;
+  const hasTarget = tx != null && ty != null && !(tx === 0 && ty === 0);
+
+  ctx.save();
+
+  if (robot && robot.pose) {
+    const rx = robot.pose.x;
+    const ry = robot.pose.y;
+    const baseRadius = 14 / scale;
+    const pulse = 0.5 + 0.5 * Math.sin(now / 280);
+    const ringRadius = baseRadius * (1.0 + 0.6 * pulse);
+
+    // Pulsing ring around the assigned robot
+    ctx.beginPath();
+    ctx.arc(rx, ry, ringRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0, 212, 255, ${0.35 + 0.5 * pulse})`;
+    ctx.lineWidth = 2 / scale;
+    ctx.stroke();
+
+    // Dashed line from robot to task target
+    if (hasTarget) {
+      ctx.setLineDash([6 / scale, 4 / scale]);
+      ctx.strokeStyle = 'rgba(0, 212, 255, 0.65)';
+      ctx.lineWidth = 1.5 / scale;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // Always draw a crosshair on the target position itself for clarity
+  if (hasTarget) {
+    const armLen = 8 / scale;
+    ctx.strokeStyle = 'rgba(0, 212, 255, 0.8)';
+    ctx.lineWidth = 1.5 / scale;
+    ctx.beginPath();
+    ctx.moveTo(tx - armLen, ty);
+    ctx.lineTo(tx + armLen, ty);
+    ctx.moveTo(tx, ty - armLen);
+    ctx.lineTo(tx, ty + armLen);
+    ctx.stroke();
+
+    // Outer pulse circle on the target
+    const pulse2 = 0.5 + 0.5 * Math.sin(now / 350);
+    ctx.beginPath();
+    ctx.arc(tx, ty, (6 + 4 * pulse2) / scale, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0, 212, 255, ${0.25 + 0.5 * pulse2})`;
+    ctx.lineWidth = 1.5 / scale;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 // ---------- FleetMap Component ----------
 
 function FleetMap({
@@ -416,6 +540,14 @@ function FleetMap({
   onSelectRobot,
   heatmapVisible,
   onToggleHeatmap,
+  // Wave2-A3: selected-task highlight inputs (optional)
+  selectedTaskId,
+  tasksById,
+  // Wave2-A4: picker mode + planned path inputs
+  pickerMode,
+  pickerContext,
+  robotPaths,
+  onPickerResult,
 }) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
@@ -433,8 +565,32 @@ function FleetMap({
   const [isDragging, setIsDragging] = useState(false);
 
   // Store latest props in refs so animation loop sees them without re-creating
-  const propsRef = useRef({ robots, resourceReadings, selectedRobotId, heatmapVisible });
-  propsRef.current = { robots, resourceReadings, selectedRobotId, heatmapVisible };
+  // Wave2-A3: also store selectedTaskId + tasksById for the highlight overlay
+  // Wave2-A4: also store pickerMode + robotPaths for picker click + path draw
+  const propsRef = useRef({
+    robots,
+    resourceReadings,
+    selectedRobotId,
+    heatmapVisible,
+    selectedTaskId,
+    tasksById,
+    pickerMode,
+    pickerContext,
+    robotPaths,
+    onPickerResult,
+  });
+  propsRef.current = {
+    robots,
+    resourceReadings,
+    selectedRobotId,
+    heatmapVisible,
+    selectedTaskId,
+    tasksById,
+    pickerMode,
+    pickerContext,
+    robotPaths,
+    onPickerResult,
+  };
 
   // ---------- Canvas sizing ----------
   const updateCanvasSize = useCallback(() => {
@@ -507,7 +663,17 @@ function FleetMap({
       }
 
       const { centerX, centerY, scale } = viewRef.current;
-      const { robots: robs, resourceReadings: readings, selectedRobotId: selId, heatmapVisible: hmVis } = propsRef.current;
+      const {
+        robots: robs,
+        resourceReadings: readings,
+        selectedRobotId: selId,
+        heatmapVisible: hmVis,
+        // Wave2-A3: highlight inputs
+        selectedTaskId: selTaskId,
+        tasksById: tById,
+        // Wave2-A4: path overlay input
+        robotPaths: rPaths,
+      } = propsRef.current;
       const now = Date.now();
 
       // Reset transform and clear
@@ -564,9 +730,19 @@ function FleetMap({
       // (i) Prospect waypoints
       drawProspectWaypoints(ctx, scale);
 
+      // (i2) Wave2-A4: planned paths — drawn under robots so arrows stay on top
+      if (robs && rPaths) {
+        drawPlannedPaths(ctx, robs, rPaths, scale);
+      }
+
       // (j) Robots
       if (robs) {
         drawRobots(ctx, robs, selId, scale, now);
+      }
+
+      // (j2) Wave2-A3: selected-task highlight overlay
+      if (selTaskId && tById && robs) {
+        drawSelectedTaskHighlight(ctx, robs, tById, selTaskId, scale, now);
       }
 
       ctx.restore(); // restore world transform
@@ -692,6 +868,17 @@ function FleetMap({
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
+    // Wave2-A4: Picker mode short-circuit — treat this click as a target pick
+    // and skip the robot-selection logic entirely.
+    const { pickerMode: pMode, onPickerResult: pCb } = propsRef.current;
+    if (pMode) {
+      const { wx: pwx, wy: pwy } = screenToWorld(sx, sy);
+      if (typeof pCb === 'function') {
+        pCb({ x: pwx, y: pwy });
+      }
+      return;
+    }
+
     const { robots: robs } = propsRef.current;
     if (!robs) return;
 
@@ -734,10 +921,24 @@ function FleetMap({
     handleMouseMove(e);
   }, [handleMouseMove]);
 
+  // Wave2-A4: Root class list — adds picker-mode class for crosshair cursor.
+  const rootClass = [
+    'fleet-map',
+    isDragging ? 'fleet-map--dragging' : '',
+    pickerMode ? 'fleet-map--picking' : '',
+  ].filter(Boolean).join(' ');
+
+  // Wave2-A4: Banner text for the active picker
+  const pickerBanner = pickerMode === 'inject_task'
+    ? 'Click map to set task target'
+    : pickerMode === 'send_to_location'
+      ? `Click map to send ${pickerContext?.robotId || 'robot'}`
+      : null;
+
   return (
     <div
       ref={containerRef}
-      className={'fleet-map' + (isDragging ? ' fleet-map--dragging' : '')}
+      className={rootClass}
     >
       <canvas
         ref={canvasRef}
@@ -752,6 +953,13 @@ function FleetMap({
       {mouseCoords && (
         <div className="fleet-map__coords">
           X: {mouseCoords.x} m &nbsp; Y: {mouseCoords.y} m
+        </div>
+      )}
+
+      {/* Wave2-A4: Picker mode banner */}
+      {pickerBanner && (
+        <div className="fleet-map__picker-banner">
+          {pickerBanner}
         </div>
       )}
 

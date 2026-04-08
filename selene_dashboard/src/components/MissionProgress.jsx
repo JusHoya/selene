@@ -1,26 +1,41 @@
 import React from 'react';
 import './MissionProgress.css';
 
-const TOTAL_WAYPOINTS = 5;
-
 function formatSimTime(seconds) {
-  if (!seconds && seconds !== 0) return '--';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}m ${String(s).padStart(2, '0')}s`;
+  if (seconds == null || Number.isNaN(seconds)) return '--';
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export default function MissionProgress({ progress, robots, readings }) {
+function formatKg(value) {
+  if (value == null || Number.isNaN(value)) return '--';
+  if (value >= 100) return `${value.toFixed(0)} kg`;
+  if (value >= 10)  return `${value.toFixed(1)} kg`;
+  return `${value.toFixed(2)} kg`;
+}
+
+function formatKm(meters) {
+  if (meters == null || Number.isNaN(meters)) return '--';
+  const km = meters / 1000;
+  if (km >= 10) return `${km.toFixed(1)} km`;
+  return `${km.toFixed(2)} km`;
+}
+
+function formatWh(value) {
+  if (value == null || Number.isNaN(value)) return '--';
+  if (value >= 1000) return `${(value / 1000).toFixed(1)} kWh`;
+  return `${value.toFixed(1)} Wh`;
+}
+
+export default function MissionProgress({ progress, robots }) {
   const robotMap = robots || {};
-  const readingsList = readings || [];
   const robotEntries = Object.values(robotMap);
-
-  // Waypoints: unique reading locations count, capped at total
-  const waypointsCompleted = Math.min(readingsList.length, TOTAL_WAYPOINTS);
-  const waypointsPct = (waypointsCompleted / TOTAL_WAYPOINTS) * 100;
-
-  // Ice readings count
-  const iceReadings = readingsList.length;
 
   // Active robots: not IDLE and not OFFLINE
   const activeRobots = robotEntries.filter(
@@ -28,43 +43,68 @@ export default function MissionProgress({ progress, robots, readings }) {
   ).length;
   const totalRobots = robotEntries.length;
 
-  // Energy used: estimate from battery data
-  const energyUsed = robotEntries.length > 0
-    ? robotEntries.reduce((sum, r) => sum + (1 - (r.battery_level || 0)), 0)
-    : null;
-  const energyDisplay = energyUsed !== null
-    ? `${(energyUsed * 100).toFixed(0)}%`
-    : '--';
+  // Progress topic fields (graceful fallback if undefined)
+  const p = progress || {};
+  const objective = p.objective_description || 'Mission Status';
+  const target = p.target_quantity || 0;
+  const extracted = p.extracted_quantity;
+  const inTransit = p.in_transit_quantity;
+  const deposited = p.deposited_quantity;
+  const distance = p.fleet_distance_total;
+  const energy = p.fleet_energy_total;
+  const simTime = p.elapsed_sim_time;
 
-  // Fleet distance: not directly available
-  const fleetDistance = '--';
-
-  // Sim time
-  const simTime = progress?.elapsed_sim_time;
+  // Primary progress bar = deposited / target
+  let depositedPct = 0;
+  if (target > 0 && deposited != null) {
+    depositedPct = Math.min(100, Math.max(0, (deposited / target) * 100));
+  }
 
   return (
     <div className="mission-progress">
-      <div className="mission-progress__header">Mission Status</div>
-      <div className="mission-progress__grid">
-        {/* Waypoints */}
-        <div className="mission-progress__stat">
-          <span className="mission-progress__stat-label">Waypoints</span>
-          <span className="mission-progress__stat-value mission-progress__stat-value--cyan">
-            {waypointsCompleted} / {TOTAL_WAYPOINTS}
-          </span>
-          <div className="mission-progress__mini-bar">
+      <div className="mission-progress__header" title={objective}>
+        {objective}
+      </div>
+
+      {target > 0 && (
+        <div className="mission-progress__objective">
+          <div className="mission-progress__objective-bar">
             <div
-              className="mission-progress__mini-fill"
-              style={{ width: `${waypointsPct}%` }}
+              className="mission-progress__objective-fill"
+              style={{ width: `${depositedPct}%` }}
             />
           </div>
+          <div className="mission-progress__objective-label">
+            {formatKg(deposited)} / {formatKg(target)}{' '}
+            <span className="mission-progress__objective-pct">
+              ({depositedPct.toFixed(0)}%)
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="mission-progress__grid">
+        {/* Extracted */}
+        <div className="mission-progress__stat">
+          <span className="mission-progress__stat-label">Extracted</span>
+          <span className="mission-progress__stat-value mission-progress__stat-value--cyan">
+            {formatKg(extracted)}
+          </span>
         </div>
 
-        {/* Ice Readings */}
+        {/* In Transit */}
         <div className="mission-progress__stat">
-          <span className="mission-progress__stat-label">Ice Readings</span>
+          <span className="mission-progress__stat-label">In Transit</span>
           <span className="mission-progress__stat-value mission-progress__stat-value--teal">
-            {iceReadings}
+            {formatKg(inTransit)}
+          </span>
+        </div>
+
+        {/* Deposited */}
+        <div className="mission-progress__stat">
+          <span className="mission-progress__stat-label">Deposited</span>
+          <span className="mission-progress__stat-value mission-progress__stat-value--green">
+            {formatKg(deposited)}
           </span>
         </div>
 
@@ -72,15 +112,15 @@ export default function MissionProgress({ progress, robots, readings }) {
         <div className="mission-progress__stat">
           <span className="mission-progress__stat-label">Fleet Distance</span>
           <span className="mission-progress__stat-value">
-            {fleetDistance}
+            {formatKm(distance)}
           </span>
         </div>
 
         {/* Energy Used */}
         <div className="mission-progress__stat">
-          <span className="mission-progress__stat-label">Energy Used</span>
+          <span className="mission-progress__stat-label">Fleet Energy</span>
           <span className="mission-progress__stat-value mission-progress__stat-value--amber">
-            {energyDisplay}
+            {formatWh(energy)}
           </span>
         </div>
 
@@ -93,7 +133,7 @@ export default function MissionProgress({ progress, robots, readings }) {
         </div>
 
         {/* Active Robots */}
-        <div className="mission-progress__stat">
+        <div className="mission-progress__stat mission-progress__stat--wide">
           <span className="mission-progress__stat-label">Active Robots</span>
           <span className="mission-progress__stat-value mission-progress__stat-value--green">
             {activeRobots}{totalRobots > 0 ? ` / ${totalRobots}` : ''}

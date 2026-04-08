@@ -1,0 +1,167 @@
+/* Wave2-A4: Task Injector panel styles */
+.task-injector {
+  background: var(--bg-secondary, #141a2a);
+  border: 1px solid var(--border, #1f2a44);
+  border-radius: var(--radius-md, 6px);
+  padding: 12px 14px;
+  font-family: var(--font-base, 'Inter', system-ui, sans-serif);
+  color: var(--text-primary, #e0e6f0);
+  position: relative;
+}
+
+.task-injector__header {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 10px;
+}
+
+.task-injector__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-injector__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+}
+
+.task-injector__form input,
+.task-injector__form select {
+  background: var(--bg-primary, #0a0e1a);
+  border: 1px solid var(--border, #1f2a44);
+  border-radius: var(--radius-sm, 4px);
+  padding: 6px 8px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  color: var(--text-primary, #e0e6f0);
+  outline: none;
+}
+
+.task-injector__form input:focus,
+.task-injector__form select:focus {
+  border-color: var(--accent-cyan, #00d4ff);
+}
+
+.task-injector__target {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  align-items: end;
+}
+
+.task-injector__target label {
+  font-size: 10px;
+}
+
+.task-injector__target button {
+  background: var(--bg-primary, #0a0e1a);
+  border: 1px solid var(--accent-cyan, #00d4ff);
+  color: var(--accent-cyan, #00d4ff);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.task-injector__target button:hover {
+  background: rgba(0, 212, 255, 0.1);
+}
+
+.task-injector__form > button[type="submit"] {
+  background: var(--accent-cyan, #00d4ff);
+  color: var(--bg-primary, #0a0e1a);
+  border: none;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.task-injector__form > button[type="submit"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.task-injector__form > button[type="submit"]:not(:disabled):hover {
+  background: #33dfff;
+}
+
+.task-injector__confirm {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(255, 193, 7, 0.08);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: var(--radius-sm, 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-injector__confirm p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary, #e0e6f0);
+}
+
+.task-injector__confirm button {
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  border: 1px solid var(--border, #1f2a44);
+  background: var(--bg-primary, #0a0e1a);
+  color: var(--text-primary, #e0e6f0);
+  margin-right: 6px;
+}
+
+.task-injector__confirm button:first-of-type {
+  background: var(--accent-cyan, #00d4ff);
+  color: var(--bg-primary, #0a0e1a);
+  border-color: var(--accent-cyan, #00d4ff);
+}
+
+.task-injector__confirm button:first-of-type:hover {
+  background: #33dfff;
+}
+
+.task-injector__feedback {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 11px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  animation: fade-in 0.2s ease forwards;
+}
+
+.task-injector__feedback--success {
+  background: rgba(0, 230, 118, 0.12);
+  border: 1px solid rgba(0, 230, 118, 0.4);
+  color: var(--accent-green, #00e676);
+}
+
+.task-injector__feedback--error {
+  background: rgba(255, 71, 87, 0.12);
+  border: 1px solid rgba(255, 71, 87, 0.4);
+  color: var(--accent-red, #ff4757);
+}

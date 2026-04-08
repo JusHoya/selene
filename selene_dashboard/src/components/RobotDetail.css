@@ -260,3 +260,133 @@
   color: var(--text-muted);
   font-style: italic;
 }
+
+/* === Wave2-A4: Time-to-empty + Override section === */
+
+.robot-detail__battery-eta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.robot-detail__battery-eta-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.robot-detail__battery-eta-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.robot-detail__overrides {
+  /* inherits .robot-detail__section */
+}
+
+.robot-detail__override-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.robot-detail__override-btn {
+  background: var(--bg-primary, #0a0e1a);
+  border: 1px solid var(--border, #1f2a44);
+  color: var(--text-primary, #e0e6f0);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.robot-detail__override-btn:hover:not(:disabled) {
+  border-color: var(--accent-cyan, #00d4ff);
+  color: var(--accent-cyan, #00d4ff);
+}
+
+.robot-detail__override-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.robot-detail__override-btn--active {
+  border-color: var(--accent-cyan, #00d4ff);
+  color: var(--accent-cyan, #00d4ff);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.robot-detail__override-btn:first-child {
+  grid-column: 1 / -1;
+}
+
+.robot-detail__recent-actions {
+  margin-top: 12px;
+}
+
+.robot-detail__subsection-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.robot-detail__recent-actions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 110px;
+  overflow-y: auto;
+}
+
+.robot-detail__recent-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.robot-detail__recent-action-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  min-width: 58px;
+}
+
+.robot-detail__recent-action-cmd {
+  color: var(--text-secondary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.robot-detail__recent-action-result {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.robot-detail__recent-action-result--ok {
+  color: var(--accent-green, #00e676);
+}
+
+.robot-detail__recent-action-result--fail {
+  color: var(--accent-red, #ff4757);
+}

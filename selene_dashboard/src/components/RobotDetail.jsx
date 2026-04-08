@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { STATE_COLORS, STATE_LABELS, TYPE_COLORS, TYPE_LABELS, batteryColor } from '../utils/colors';
+import { SERVICES, SERVICE_TYPES } from '../utils/rosTopics';
 import BatteryGauge from './BatteryGauge';
 import './RobotDetail.css';
 
@@ -15,7 +16,113 @@ function radToDeg(rad) {
   return ((rad * 180) / Math.PI).toFixed(1);
 }
 
-export default function RobotDetail({ robot }) {
+export default function RobotDetail({ robot, state, dispatch, callService }) {
+  // Wave2-A4: Recent override action history (in-memory, last 5)
+  const [recentActions, setRecentActions] = useState([]);
+
+  // Wave2-A4: Rolling window of battery samples for time-to-empty estimate
+  const batteryHistoryRef = useRef([]);
+  const [batteryTick, setBatteryTick] = useState(0);
+
+  useEffect(() => {
+    if (!robot || typeof robot.battery_level !== 'number') return;
+    const now = Date.now();
+    batteryHistoryRef.current.push({ t: now, b: robot.battery_level });
+    // Keep only samples from the last 30s
+    const cutoff = now - 30000;
+    batteryHistoryRef.current = batteryHistoryRef.current.filter((s) => s.t >= cutoff);
+    // Bump tick so downstream useMemo recomputes
+    setBatteryTick((prev) => prev + 1);
+  }, [robot?.battery_level]);
+
+  // Wave2-A4: Send override helper — records outcome to recentActions
+  const recordAction = (cmd, result, message) => {
+    setRecentActions((prev) => {
+      const next = [
+        ...prev,
+        {
+          time: new Date().toLocaleTimeString(),
+          cmd,
+          result,
+          message: message || '',
+        },
+      ];
+      return next.slice(-5);
+    });
+  };
+
+  const callOverride = async (command, target = { x: 0, y: 0, z: 0 }) => {
+    if (!robot || !callService) return;
+    // Confirmation — window.confirm is fine for Sprint 0; a modal can come later
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`${command.replace(/_/g, ' ')} for ${robot.robot_id}?`)
+      : true;
+    if (!ok) return;
+    try {
+      const result = await callService(
+        SERVICES.OVERRIDE_ROBOT,
+        SERVICE_TYPES.OVERRIDE_ROBOT,
+        { robot_id: robot.robot_id, command, target },
+      );
+      if (result && result.success) {
+        recordAction(command, 'ok', result.message || '');
+      } else {
+        recordAction(command, 'fail', (result && result.message) || '');
+      }
+    } catch (err) {
+      recordAction(command, 'fail', err?.message || 'call failed');
+    }
+  };
+
+  const handleCancelTask = () => callOverride('cancel_task');
+  const handleForceRecharge = () => callOverride('force_recharge');
+  const handleSendToLocation = () => {
+    if (!robot || !dispatch) return;
+    dispatch({
+      type: 'SET_PICKER_MODE',
+      payload: { mode: 'send_to_location', robotId: robot.robot_id },
+    });
+  };
+
+  // Wave2-A4: Watch for a picker result for this specific robot
+  useEffect(() => {
+    if (!robot || !dispatch) return;
+    const pickerRobot = state?.pickerContext?.robotId;
+    if (
+      state?.pickerResult
+      && state?.pickerMode === 'send_to_location'
+      && pickerRobot === robot.robot_id
+    ) {
+      const { x, y } = state.pickerResult;
+      dispatch({ type: 'CLEAR_PICKER_MODE' });
+      callOverride('send_to_location', { x, y, z: 0 });
+    }
+  }, [state?.pickerResult, state?.pickerMode, robot?.robot_id]);
+
+  // Wave2-A4: Time-to-empty estimate from a 30s rolling window of battery samples.
+  // Uses batteryTick so it recomputes on each new sample without us having to
+  // bust the useMemo cache manually.
+  const timeToEmpty = useMemo(() => {
+    const hist = batteryHistoryRef.current;
+    if (!robot || hist.length < 2) return null;
+    const first = hist[0];
+    const last = hist[hist.length - 1];
+    const dt = (last.t - first.t) / 1000;
+    const dB = first.b - last.b;
+    if (dB <= 0 || dt <= 0) return null;
+    const dropPerSec = dB / dt;
+    if (dropPerSec <= 0) return null;
+    const secsRemaining = robot.battery_level / dropPerSec;
+    if (!Number.isFinite(secsRemaining) || secsRemaining <= 0) return null;
+    if (secsRemaining > 86400) return '>24h';
+    const totalMin = Math.floor(secsRemaining / 60);
+    if (totalMin < 1) return '<1m';
+    if (totalMin < 60) return `${totalMin}m`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}h ${m}m`;
+  }, [robot?.battery_level, batteryTick]);
+
   if (!robot) {
     return (
       <div className="robot-detail">
@@ -49,6 +156,12 @@ export default function RobotDetail({ robot }) {
   const progressPct = Math.round((task_progress || 0) * 100);
   const batteryPct = Math.round((battery_level || 0) * 100);
   const historySlice = (stateHistory || []).slice(0, 10);
+
+  // Wave2-A4: Disable override buttons when we have no service client
+  const overrideDisabled = !callService;
+  // Wave2-A4: Indicate that this robot is awaiting a target-pick on the map
+  const awaitingPick = state?.pickerMode === 'send_to_location'
+    && state?.pickerContext?.robotId === robot_id;
 
   return (
     <div className="robot-detail animate-slide-in">
@@ -90,6 +203,13 @@ export default function RobotDetail({ robot }) {
               <span className="robot-detail__battery-charging">
                 <span className="robot-detail__battery-charging-dot" />
                 Charging
+              </span>
+            )}
+            {/* Wave2-A4: Time-to-empty estimate (30s rolling window) */}
+            {timeToEmpty && !isCharging && (
+              <span className="robot-detail__battery-eta">
+                <span className="robot-detail__battery-eta-label">Empty in</span>
+                <span className="robot-detail__battery-eta-value">{timeToEmpty}</span>
               </span>
             )}
           </div>
@@ -155,6 +275,61 @@ export default function RobotDetail({ robot }) {
           </div>
         </div>
       )}
+
+      {/* Wave2-A4: Section — Operator Override */}
+      <div className="robot-detail__section robot-detail__overrides">
+        <div className="robot-detail__section-label">Operator Override</div>
+        <div className="robot-detail__override-buttons">
+          <button
+            type="button"
+            className={
+              'robot-detail__override-btn'
+              + (awaitingPick ? ' robot-detail__override-btn--active' : '')
+            }
+            onClick={handleSendToLocation}
+            disabled={overrideDisabled}
+          >
+            {awaitingPick ? 'Pick on Map\u2026' : 'Send to Location'}
+          </button>
+          <button
+            type="button"
+            className="robot-detail__override-btn"
+            onClick={handleCancelTask}
+            disabled={overrideDisabled}
+          >
+            Cancel Task
+          </button>
+          <button
+            type="button"
+            className="robot-detail__override-btn"
+            onClick={handleForceRecharge}
+            disabled={overrideDisabled}
+          >
+            Force Recharge
+          </button>
+        </div>
+        {recentActions.length > 0 && (
+          <div className="robot-detail__recent-actions">
+            <div className="robot-detail__subsection-label">Recent Actions</div>
+            <ul className="robot-detail__recent-actions-list">
+              {recentActions.slice().reverse().map((a, i) => (
+                <li
+                  key={`${a.time}-${i}`}
+                  className="robot-detail__recent-action"
+                >
+                  <span className="robot-detail__recent-action-time">{a.time}</span>
+                  <span className="robot-detail__recent-action-cmd">{a.cmd}</span>
+                  <span
+                    className={`robot-detail__recent-action-result robot-detail__recent-action-result--${a.result}`}
+                  >
+                    {a.result}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
 
       {/* Section 6: State History */}
       <div className="robot-detail__section">

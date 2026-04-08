@@ -27,3 +27,15 @@ export const MSG_TYPES = {
   TASK_ASSIGNMENT: 'selene_msgs/TaskAssignment',
   BID_RESPONSE: 'selene_msgs/BidResponse',
 };
+
+// Wave2-A4: Orchestrator service names for dashboard->backend calls
+export const SERVICES = {
+  INJECT_TASK: '/orchestrator/inject_task',
+  OVERRIDE_ROBOT: '/orchestrator/override_robot',
+};
+
+// Wave2-A4: roslib service type strings
+export const SERVICE_TYPES = {
+  INJECT_TASK: 'selene_msgs/srv/InjectTask',
+  OVERRIDE_ROBOT: 'selene_msgs/srv/OverrideRobot',
+};
