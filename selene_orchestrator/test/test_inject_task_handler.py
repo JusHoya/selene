@@ -45,6 +45,24 @@ def _install_ros_stubs() -> None:
 
     rclpy_node = _ensure_stub('rclpy.node')
 
+    # rclpy.callback_groups + rclpy.executors: orchestrator_node imports
+    # ReentrantCallbackGroup + MultiThreadedExecutor at module import time
+    # for the override-robot service path (D8 fix).
+    rclpy_cb = _ensure_stub('rclpy.callback_groups')
+
+    class _ReentrantCallbackGroup:
+        def __init__(self, *a, **k): pass
+    rclpy_cb.ReentrantCallbackGroup = _ReentrantCallbackGroup
+
+    rclpy_exec = _ensure_stub('rclpy.executors')
+
+    class _MultiThreadedExecutor:
+        def __init__(self, *a, **k): pass
+        def add_node(self, *a, **k): pass
+        def spin(self): pass
+        def shutdown(self): pass
+    rclpy_exec.MultiThreadedExecutor = _MultiThreadedExecutor
+
     class _FakeNode:
         def __init__(self, *a, **k): pass
         def declare_parameter(self, *a, **k):
@@ -337,7 +355,7 @@ class TestInjectTaskHandler:
         _add_robot(
             fleet_monitor, 'scout_01',
             fsm_state='ERROR',
-            capabilities=['neutron_spectrometer'],
+            capabilities=['prospect'],
         )
         req = _FakeInjectRequest(
             task_type='prospect', assigned_robot_id='scout_01',
@@ -354,7 +372,7 @@ class TestInjectTaskHandler:
         _add_robot(
             fleet_monitor, 'scout_01',
             fsm_state='RECHARGING',
-            capabilities=['neutron_spectrometer'],
+            capabilities=['prospect'],
         )
         req = _FakeInjectRequest(
             task_type='prospect', assigned_robot_id='scout_01',
@@ -367,11 +385,11 @@ class TestInjectTaskHandler:
 
     def test_inject_force_assign_capability_mismatch(
             self, inject_ctx, task_queue, fleet_monitor):
-        # Haul task requires transport_bin, scout only has spectrometer.
+        # Haul task requires 'haul' capability, scout only has 'prospect'.
         _add_robot(
             fleet_monitor, 'scout_01',
             fsm_state='IDLE',
-            capabilities=['neutron_spectrometer'],
+            capabilities=['prospect'],
         )
         req = _FakeInjectRequest(
             task_type='haul', assigned_robot_id='scout_01',
@@ -381,7 +399,7 @@ class TestInjectTaskHandler:
 
         assert out.success is False
         assert 'capabilities' in out.message
-        assert 'transport_bin' in out.message
+        assert 'haul' in out.message
         assert task_queue.get_task(out.task_id).status == TaskStatus.FAILED
 
     def test_inject_force_assign_happy_path(
@@ -390,7 +408,7 @@ class TestInjectTaskHandler:
         _add_robot(
             fleet_monitor, 'hauler_01',
             fsm_state='IDLE',
-            capabilities=['transport_bin'],
+            capabilities=['haul'],
         )
         req = _FakeInjectRequest(
             task_type='haul', x=-80.0, y=-140.0,
@@ -421,13 +439,13 @@ class TestInjectTaskHandler:
             self, inject_ctx, task_queue, fleet_monitor, publish_alert):
         # Pre-seed the queue with an existing task assigned to the target.
         task_queue.add_task('auto_0001', 'haul', 0.0, 0.0, priority=5.0,
-                            required_capabilities=['transport_bin'])
+                            required_capabilities=['haul'])
         task_queue.assign_to_robot('auto_0001', 'hauler_01')
 
         _add_robot(
             fleet_monitor, 'hauler_01',
             fsm_state='WORKING',
-            capabilities=['transport_bin'],
+            capabilities=['haul'],
             current_task_id='auto_0001',
         )
         req = _FakeInjectRequest(
@@ -469,12 +487,12 @@ class TestInjectTaskHandler:
         n2 = int(resp2.task_id.split('_')[-1])
         assert n2 > n1
 
-    def test_inject_excavate_requires_drill_and_hopper(
+    def test_inject_excavate_capability_mismatch(
             self, inject_ctx, task_queue, fleet_monitor):
         _add_robot(
             fleet_monitor, 'excavator_01',
             fsm_state='IDLE',
-            capabilities=['drill'],  # missing hopper
+            capabilities=['prospect'],  # wrong capability for excavate
         )
         req = _FakeInjectRequest(
             task_type='excavate', assigned_robot_id='excavator_01',
@@ -483,4 +501,4 @@ class TestInjectTaskHandler:
         out = inject_task_logic(inject_ctx, req, resp)
 
         assert out.success is False
-        assert 'hopper' in out.message
+        assert 'excavate' in out.message

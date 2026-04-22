@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from selene_msgs.msg import (
@@ -58,9 +60,9 @@ from selene_isru.inventory import MaterialInventory
 # Capability requirements per manual task type. Keeping this at module scope
 # lets unit tests verify the mapping without instantiating the full ROS node.
 MANUAL_TASK_CAPABILITIES: dict[str, list[str]] = {
-    'prospect': ['neutron_spectrometer'],
-    'excavate': ['drill', 'hopper'],
-    'haul': ['transport_bin'],
+    'prospect': ['prospect'],
+    'excavate': ['excavate'],
+    'haul': ['haul'],
 }
 
 # FSM states from which a robot cannot accept a freshly injected task.
@@ -287,7 +289,7 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
     # Wait briefly for the agent service to come up. The mock client used by
     # tests treats wait_for_service as a no-op returning True.
     try:
-        ready = client.wait_for_service(timeout_sec=1.0)
+        ready = client.wait_for_service(timeout_sec=5.0)
     except TypeError:
         ready = client.wait_for_service()
     if not ready:
@@ -438,10 +440,17 @@ class OrchestratorNode(Node):
             '/orchestrator/inject_task',
             self._handle_inject_task,
         )
+        # The override service must wait on a SetRobotCommand client response
+        # from within its callback. Running that wait on the default mutually-
+        # exclusive group deadlocks the executor, so the service and its
+        # downstream clients share a reentrant group that the MultiThreaded-
+        # Executor in main() can dispatch across multiple threads.
+        self._override_cb_group = ReentrantCallbackGroup()
         self._override_robot_srv = self.create_service(
             OverrideRobot,
             '/orchestrator/override_robot',
             self._handle_override_robot,
+            callback_group=self._override_cb_group,
         )
 
         # Per-agent SetRobotCommand client cache. Each agent (Wave 1 Agent 2)
@@ -452,13 +461,21 @@ class OrchestratorNode(Node):
         for rid in fleet_ids:
             self._set_command_clients[rid] = self.create_client(
                 SetRobotCommand, f'/{rid}/set_command',
+                callback_group=self._override_cb_group,
             )
 
         # ---- Timers ----
-        self.create_timer(1.0, self._heartbeat_check)           # 1 Hz
-        self.create_timer(0.5, self._auction_tick)               # 2 Hz
-        self.create_timer(1.0, self._publish_mission_progress)   # 1 Hz
-        self.create_timer(1.0, self._htn_advance)                # 1 Hz
+        # Timers get their own callback group so high-frequency subscription
+        # callbacks cannot starve them in the MultiThreadedExecutor.
+        self._timer_cb_group = ReentrantCallbackGroup()
+        self.create_timer(1.0, self._heartbeat_check,
+                          callback_group=self._timer_cb_group)           # 1 Hz
+        self.create_timer(0.5, self._auction_tick,
+                          callback_group=self._timer_cb_group)           # 2 Hz
+        self.create_timer(1.0, self._publish_mission_progress,
+                          callback_group=self._timer_cb_group)           # 1 Hz
+        self.create_timer(1.0, self._htn_advance,
+                          callback_group=self._timer_cb_group)           # 1 Hz
 
         # ---- Generate survey tasks ----
         self._generate_survey_tasks()
@@ -708,15 +725,27 @@ class OrchestratorNode(Node):
         Builds a SetRobotCommand request, dispatches it to the per-agent
         client, and waits for the agent's accept/reject response. Pure
         validation logic lives in ``override_robot_logic`` for unit testing.
+
+        The wait on the downstream client future uses a polling loop rather
+        than ``rclpy.spin_until_future_complete`` because this callback is
+        invoked from within an executor that is already spinning (Jazzy
+        refuses re-entry with ``RuntimeError: Executor is already spinning``).
+        The poll relies on the MultiThreadedExecutor in ``main()`` plus the
+        reentrant callback group on the client, which together allow the
+        client's response to land on a sibling thread while this thread
+        blocks on ``future.done()``.
         """
+        def _poll_future(fut, timeout_sec=5.0):
+            deadline = time.monotonic() + timeout_sec
+            while not fut.done() and time.monotonic() < deadline:
+                time.sleep(0.005)
+
         ctx = _OverrideRobotContext(
             task_queue=self._task_queue,
             fleet_monitor=self._fleet,
             set_command_clients=self._set_command_clients,
             next_sequence=self._next_operator_sequence,
-            spin_until_complete=lambda fut: rclpy.spin_until_future_complete(
-                self, fut, timeout_sec=2.0,
-            ),
+            spin_until_complete=_poll_future,
             publish_alert=lambda sev, msg: self._publish_alert(sev, '', msg),
             set_command_factory=SetRobotCommand.Request,
         )
@@ -788,15 +817,23 @@ class OrchestratorNode(Node):
 
 
 def main(args=None):
-    """Entry point for the orchestrator node."""
+    """Entry point for the orchestrator node.
+
+    Uses a ``MultiThreadedExecutor`` so the override service callback can
+    block on a downstream client future while the client's response is
+    processed on a sibling thread (see ``_handle_override_robot``).
+    """
     rclpy.init(args=args)
     node = OrchestratorNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         node.get_logger().info('Orchestrator shutting down')
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

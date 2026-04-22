@@ -1,7 +1,20 @@
+import os
 from glob import glob
 from setuptools import setup
 
 package_name = 'selene_sim'
+
+
+def _model_data_files():
+    """Walk models/ recursively so Gazebo can resolve model:// URIs."""
+    entries = []
+    for dirpath, _, filenames in os.walk('models'):
+        if not filenames:
+            continue
+        dest = os.path.join('share', package_name, dirpath)
+        entries.append((dest, [os.path.join(dirpath, f) for f in filenames]))
+    return entries
+
 
 setup(
     name=package_name,
@@ -15,6 +28,7 @@ setup(
         ('share/' + package_name + '/worlds', glob('worlds/*.sdf')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
+        *_model_data_files(),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

@@ -21,7 +21,7 @@ from launch.actions import (
     IncludeLaunchDescription,
 )
 from launch.conditions import UnlessCondition
-from launch.launch_description_sources import XMLLaunchDescriptionSource
+from launch.launch_description_sources import FrontendLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
 
@@ -30,7 +30,7 @@ def generate_launch_description():
     headless = LaunchConfiguration('headless')
 
     rosbridge = IncludeLaunchDescription(
-        XMLLaunchDescriptionSource([
+        FrontendLaunchDescriptionSource([
             FindPackageShare('rosbridge_server'),
             '/launch/rosbridge_websocket_launch.xml',
         ]),

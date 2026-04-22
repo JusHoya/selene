@@ -22,7 +22,8 @@ def generate_launch_description():
                 'launch', 'gz_sim.launch.py'
             )
         ),
-        launch_arguments={'gz_args': ['-r ', world_file]}.items(),
+        # -s = server-only (no GUI) to avoid OGRE shader crash on WSL2
+        launch_arguments={'gz_args': ['-s -r ', world_file]}.items(),
     )
 
     return LaunchDescription([gz_resource_path, gz_sim])

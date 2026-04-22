@@ -51,6 +51,7 @@ def generate_launch_description():
     gz_resource_path = SetEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH', models_path)
 
+
     # Start Gazebo
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -59,7 +60,9 @@ def generate_launch_description():
                 'launch', 'gz_sim.launch.py'
             )
         ),
-        launch_arguments={'gz_args': ['-r ', world_file]}.items(),
+        # -s = server-only (no GUI).  Avoids OGRE shader crashes on WSL2
+        # and keeps the footprint small; the dashboard is the operator UI.
+        launch_arguments={'gz_args': ['-s -r ', world_file]}.items(),
     )
 
     # Build robot spawn actions

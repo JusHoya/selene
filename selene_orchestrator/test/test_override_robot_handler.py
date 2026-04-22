@@ -33,6 +33,23 @@ def _install_ros_stubs() -> None:
 
     rclpy_node = _ensure_stub('rclpy.node')
 
+    # orchestrator_node imports ReentrantCallbackGroup + MultiThreadedExecutor
+    # at module import time for the override-robot service path (D8 fix).
+    rclpy_cb = _ensure_stub('rclpy.callback_groups')
+
+    class _ReentrantCallbackGroup:
+        def __init__(self, *a, **k): pass
+    rclpy_cb.ReentrantCallbackGroup = _ReentrantCallbackGroup
+
+    rclpy_exec = _ensure_stub('rclpy.executors')
+
+    class _MultiThreadedExecutor:
+        def __init__(self, *a, **k): pass
+        def add_node(self, *a, **k): pass
+        def spin(self): pass
+        def shutdown(self): pass
+    rclpy_exec.MultiThreadedExecutor = _MultiThreadedExecutor
+
     class _FakeNode:
         def __init__(self, *a, **k): pass
         def declare_parameter(self, *a, **k):

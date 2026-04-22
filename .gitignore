@@ -38,3 +38,6 @@ Thumbs.db
 
 # Docker
 docker/.env
+
+# Debug screenshots at repo root
+/selene-*.png

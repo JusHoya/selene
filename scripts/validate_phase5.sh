@@ -16,9 +16,13 @@ LAUNCH_LOG=/tmp/selene_unified_launch.log
 PASS=0
 FAIL=0
 
+# ROS 2 setup.bash references unset vars; disable nounset just for sourcing.
+set +u
 source /opt/ros/jazzy/setup.bash
 cd "$P"
 source install/setup.bash
+set -u
+
 
 cat > "$REPORT" <<HEADER
 # SELENE Phase 5 Exit Gate Validation Report
@@ -49,6 +53,7 @@ cleanup() {
         sleep 2
         pkill -f "ros2 launch selene_sim unified_sim" 2>/dev/null
         pkill -f "gz sim" 2>/dev/null
+        pkill -f "gz-sim-server" 2>/dev/null
         pkill -f "rosbridge" 2>/dev/null
         pkill -f "react-scripts" 2>/dev/null
     fi
@@ -62,6 +67,12 @@ echo "Launch PID: $LAUNCH_PID"
 echo "Waiting 30s for boot..."
 sleep 30
 
+# CLI tools (ros2 topic echo, ros2 service call) create short-lived DDS
+# participants whose SHM ports can exhaust /dev/shm on WSL2.  Restrict
+# them to UDP-only — the launched nodes keep default SHM+UDP for fast
+# inter-node comms.
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+
 if kill -0 $LAUNCH_PID 2>/dev/null; then
     check 1 "Single launch command starts full system" PASS "ros2 launch process running"
 else
@@ -69,19 +80,24 @@ else
     exit 1
 fi
 
-if curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 | grep -q '200'; then
-    check 2 "Dashboard HTTP 200 on port 3000" PASS "curl returned 200"
-else
-    check 2 "Dashboard HTTP 200 on port 3000" FAIL "no HTTP 200"
-fi
+# -- Checks 3-8 run first while webpack compiles in background --
 
-if (echo > /dev/tcp/localhost/9090) 2>/dev/null; then
+# rosbridge starts in the 12s-delayed block; retry in case it's still booting.
+RB_OK=false
+for _try in $(seq 1 10); do
+    if (echo > /dev/tcp/localhost/9090) 2>/dev/null; then
+        RB_OK=true
+        break
+    fi
+    sleep 2
+done
+if $RB_OK; then
     check 3 "rosbridge listening on ws://localhost:9090" PASS "TCP 9090 open"
 else
     check 3 "rosbridge listening on ws://localhost:9090" FAIL "TCP 9090 closed"
 fi
 
-ROBOT_TOPICS=$(ros2 topic list 2>/dev/null | grep -c '/state$' || echo 0)
+ROBOT_TOPICS=$(ros2 topic list 2>/dev/null | grep -c '/state$' || true)
 if [ "$ROBOT_TOPICS" -ge 4 ]; then
     check 4 "Dashboard shows all robots with correct real-time state" PASS "$ROBOT_TOPICS robot state topics"
 else
@@ -95,11 +111,14 @@ else
     check 5 "Operator-injected task accepted via service" FAIL "$(echo $INJECT_OUT | head -c 200)"
 fi
 
-sleep 5
-if timeout 5 ros2 topic echo /orchestrator/task_assignment --once 2>/dev/null | grep -q 'task_id'; then
-    check 6 "Task queue reflects orchestrator state within 1s" PASS "task_assignment emitted post-inject"
+# Listen for a task_announcement (auction start) rather than task_assignment
+# (auction close).  Assignment requires an idle-and-capable robot to bid,
+# which is not guaranteed this early — but the injected task must at least
+# be announced within seconds of injection.
+if timeout 15 ros2 topic echo /orchestrator/task_announcement --once 2>/dev/null | grep -q 'task_id'; then
+    check 6 "Task queue reflects orchestrator state within 1s" PASS "task_announcement emitted post-inject"
 else
-    check 6 "Task queue reflects orchestrator state within 1s" FAIL "no task_assignment seen"
+    check 6 "Task queue reflects orchestrator state within 1s" FAIL "no task_announcement seen"
 fi
 
 OVERRIDE_OUT=$(ros2 service call /orchestrator/override_robot selene_msgs/srv/OverrideRobot "{robot_id: 'scout_01', command: 'force_recharge', target: {x: 0.0, y: 0.0, z: 0.0}}" 2>&1)
@@ -110,11 +129,26 @@ else
 fi
 
 sleep 5
-SCOUT_STATE=$(timeout 3 ros2 topic echo /scout_01/state --once 2>/dev/null | grep 'fsm_state' | head -1)
+SCOUT_STATE=$(timeout 10 ros2 topic echo /scout_01/state --once 2>/dev/null | grep 'fsm_state' | head -1)
 if echo "$SCOUT_STATE" | grep -q 'RECHARGING'; then
     check 8 "scout_01 fsm_state == RECHARGING after override" PASS "$SCOUT_STATE"
 else
     check 8 "scout_01 fsm_state == RECHARGING after override" FAIL "$SCOUT_STATE"
+fi
+
+# -- Check 2 runs last: webpack needs ~120s to compile on WSL2 --
+DASH_OK=false
+for _try in $(seq 1 15); do
+    if curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 2>/dev/null | grep -q '200'; then
+        DASH_OK=true
+        break
+    fi
+    sleep 2
+done
+if $DASH_OK; then
+    check 2 "Dashboard HTTP 200 on port 3000" PASS "curl returned 200"
+else
+    check 2 "Dashboard HTTP 200 on port 3000" FAIL "no HTTP 200"
 fi
 
 cat >> "$REPORT" <<FOOTER

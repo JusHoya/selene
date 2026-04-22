@@ -180,6 +180,10 @@ class AgentNode(Node):
         tick_period = 1.0 / self._tick_rate
         self._tick_timer = self.create_timer(tick_period, self._tick)
         self._state_timer = self.create_timer(0.5, self._publish_state)  # 2 Hz
+        self._tick_count = 0
+        # Grace period: skip ENERGY_CRITICAL for the first 5 s so DDS can
+        # deliver the first real battery reading over UDP transport.
+        self._startup_grace_ticks = int(5.0 * self._tick_rate)
 
         # -- Startup log ---------------------------------------------------------
         self.get_logger().info(
@@ -196,6 +200,7 @@ class AgentNode(Node):
 
     def _tick(self):
         dt = 1.0 / self._tick_rate
+        self._tick_count += 1
 
         # Read current state from HAL
         try:
@@ -207,9 +212,11 @@ class AgentNode(Node):
         # Update energy manager
         self._energy_manager.update(battery_state)
 
-        # Battery critical check (override unless already handling it)
+        # Battery critical check — skip during startup grace period so DDS
+        # can deliver the first real battery reading (avoids 0% phantom).
         if (
-            self._energy_manager.is_critical()
+            self._tick_count > self._startup_grace_ticks
+            and self._energy_manager.is_critical()
             and self._fsm.state
             not in (
                 AgentState.RETURNING,
@@ -444,6 +451,14 @@ class AgentNode(Node):
             return
 
         self._current_skill.update(dt)
+
+        if self._current_skill.has_failed():
+            self.get_logger().error(
+                f"[{self._robot_id}] Recharge failed: "
+                f"{self._current_skill.get_error()}"
+            )
+            self._fsm.handle_event(FSMEvent.FAULT)
+            return
 
         if self._current_skill.is_complete():
             charge = self._energy_manager.get_charge_fraction()
