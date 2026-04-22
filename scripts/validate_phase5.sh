@@ -50,7 +50,7 @@ cleanup() {
     echo "Tearing down launch process..."
     if [ -n "${LAUNCH_PID:-}" ]; then
         kill $LAUNCH_PID 2>/dev/null
-        sleep 2
+        wait $LAUNCH_PID 2>/dev/null || true
         pkill -f "ros2 launch selene_sim unified_sim" 2>/dev/null
         pkill -f "gz sim" 2>/dev/null
         pkill -f "gz-sim-server" 2>/dev/null
@@ -97,11 +97,13 @@ else
     check 3 "rosbridge listening on ws://localhost:9090" FAIL "TCP 9090 closed"
 fi
 
-ROBOT_TOPICS=$(ros2 topic list 2>/dev/null | grep -c '/state$' || true)
+TOPIC_LIST_ERR=/tmp/selene_topic_list.err
+ROBOT_TOPICS=$(ros2 topic list 2>"$TOPIC_LIST_ERR" | grep -c '/state$' || true)
 if [ "$ROBOT_TOPICS" -ge 4 ]; then
     check 4 "Dashboard shows all robots with correct real-time state" PASS "$ROBOT_TOPICS robot state topics"
 else
-    check 4 "Dashboard shows all robots with correct real-time state" FAIL "only $ROBOT_TOPICS state topics"
+    ERR_SNIP=$(head -c 120 "$TOPIC_LIST_ERR" 2>/dev/null | tr '\n' ' ')
+    check 4 "Dashboard shows all robots with correct real-time state" FAIL "only $ROBOT_TOPICS state topics (stderr: $ERR_SNIP)"
 fi
 
 INJECT_OUT=$(ros2 service call /orchestrator/inject_task selene_msgs/srv/InjectTask "{task_type: 'prospect', target_location: {x: -50.0, y: -100.0, z: 0.0}, quantity: 0.0, assigned_robot_id: ''}" 2>&1)
@@ -116,9 +118,9 @@ fi
 # which is not guaranteed this early — but the injected task must at least
 # be announced within seconds of injection.
 if timeout 15 ros2 topic echo /orchestrator/task_announcement --once 2>/dev/null | grep -q 'task_id'; then
-    check 6 "Task queue reflects orchestrator state within 1s" PASS "task_announcement emitted post-inject"
+    check 6 "Task announced within 15s of injection" PASS "task_announcement emitted post-inject"
 else
-    check 6 "Task queue reflects orchestrator state within 1s" FAIL "no task_announcement seen"
+    check 6 "Task announced within 15s of injection" FAIL "no task_announcement seen"
 fi
 
 OVERRIDE_OUT=$(ros2 service call /orchestrator/override_robot selene_msgs/srv/OverrideRobot "{robot_id: 'scout_01', command: 'force_recharge', target: {x: 0.0, y: 0.0, z: 0.0}}" 2>&1)
