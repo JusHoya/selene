@@ -1,0 +1,20 @@
+#!/bin/bash
+# SELENE pre-push hook: run the E2E integration test before allowing push.
+#
+# Install:
+#   ln -s ../../scripts/git-hooks/pre-push .git/hooks/pre-push
+#
+# Bypass (use sparingly — CI still runs):
+#   git push --no-verify
+#
+# Runtime: ~1s on a dev machine.
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/selene_orchestrator"
+
+echo "[selene pre-push] Running E2E integration test..."
+python3 -m pytest test/test_e2e_integration.py -q 2>&1 | tail -5
+
+echo "[selene pre-push] OK"

@@ -7,7 +7,32 @@ on:
     branches: [main]
 
 jobs:
+  # Fast pure-Python E2E integration test — Phase 6 entry criterion.
+  # Runs on every push/PR to block regressions in the coordination
+  # layer (inject_task -> auction -> assignment -> inventory). No ROS
+  # toolchain needed so it completes in well under a minute.
+  e2e-integration:
+    name: E2E integration test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run E2E test
+        run: |
+          cd selene_orchestrator
+          python -m pytest test/test_e2e_integration.py -v
+
   build-and-test:
+    needs: e2e-integration
     runs-on: ubuntu-22.04
     container:
       image: ros:humble-ros-base-jammy
