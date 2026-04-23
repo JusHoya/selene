@@ -41,3 +41,8 @@ docker/.env
 
 # Debug screenshots at repo root
 /selene-*.png
+
+# Patent / IP strategy working directories — private, not for public repo
+deliverables/
+docs/data/
+docs/prompts/
