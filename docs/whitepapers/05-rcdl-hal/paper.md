@@ -448,7 +448,7 @@ RCDL's design anticipates the transition from Gazebo simulation to physical hard
 
 3. **Backend selection.** The launch configuration switches from `backend="gazebo"` to `backend="hardware"`. The factory constructs the correct HAL; all downstream code -- the agent FSM, energy manager, skills, and orchestrator -- runs unchanged.
 
-This three-step process confines hardware-specific concerns to two artifacts: the RCDL file and the HAL backend module. The agent's ~1,100-line autonomy stack never imports a hardware-specific symbol.
+This three-step process confines hardware-specific concerns to two artifacts: the RCDL file and the HAL backend module. The agent's autonomy stack -- 2,986 lines across `selene_agent/selene_agent/` -- never imports a hardware-specific symbol.
 
 # 9. Comparison with Existing Robot Description Languages
 
@@ -480,18 +480,18 @@ RCDL and its companion HAL provide the hardware-agnostic foundation that enables
 3. **Thread-safe cached-read model** decouples sensor callback rates from agent tick rates via lock-protected pointer swaps on frozen dataclasses, providing non-blocking sensor access with minimal synchronization overhead.
 4. **Factory registry pattern** enables backend swapping (stub, Gazebo, hardware) via a single configuration parameter, confining all hardware-specific code to backend modules.
 
-The SELENE Sprint 0 prototype validates this design with three robot types (scout, excavator, hauler) running identical agent autonomy code against the Gazebo HAL backend. The simulation-to-hardware transfer path requires only a new RCDL file and a new HAL backend module -- the ~1,100-line agent stack and ~1,200-line orchestrator remain untouched.
+The SELENE Sprint 0 prototype exercises this design with three robot types (scout, excavator, hauler), each described by an RCDL file in `selene_hal/config/`, running identical agent autonomy code against a common HAL. Both the stub and Gazebo backends are implemented (363 and 682 lines respectively); the stub backend is covered by the Python unit-test suite, while the Gazebo backend has not been validated end to end in this repository -- no simulation run record is committed. The simulation-to-hardware transfer path is designed so that only a new RCDL file and a new HAL backend module are required -- the 2,986-line agent stack and 2,080-line orchestrator remain untouched. This claim follows from the interface structure and has not yet been demonstrated against physical hardware.
 
 Future work will extend RCDL to support multi-body articulated platforms (legged rovers), degraded-mode capability declarations (a robot with a failed drill can still haul), and runtime capability negotiation where robots advertise updated descriptors as their state changes (e.g., a half-depleted battery reduces effective range). These extensions will build on the existing Pydantic validation framework and HAL interface hierarchy without requiring architectural changes.
 
 # References
 
-1. J. A. Correct et al., "URDF: Unified Robot Description Format," ROS Wiki, Open Robotics, 2010.
+1. Open Source Robotics Foundation, "urdf --- Unified Robot Description Format," ROS Wiki. [Online]. Available: https://wiki.ros.org/urdf
 2. N. Koenig and A. Howard, "Design and Use Paradigms for Gazebo, an Open-Source Multi-Robot Simulator," IEEE/RSJ IROS, pp. 2149--2154, 2004.
 3. S. Balakirsky et al., "CRCL: A Canonical Robot Command Language," NIST Internal Report, 2016.
 4. "Space ROS: An Open-Source Framework for Space Robotics," AIAA SciTech 2023-2709, 2023.
 5. S. Macenski et al., "Robot Operating System 2: Design, Architecture, and Uses in the Wild," Science Robotics, vol. 7, no. 66, 2022.
-6. S. Pydantic, "Pydantic v2: Data Validation Using Python Type Hints," 2023. [Online]. Available: https://docs.pydantic.dev/latest/
+6. S. Colvin et al., "Pydantic --- Data Validation Using Python Type Hints," version 2. [Online]. Available: https://docs.pydantic.dev/latest/
 7. D. Nau et al., "SHOP2: An HTN Planning System," JAIR, vol. 20, pp. 379--404, 2003.
 8. R. Zlot and A. Stentz, "Market-Based Multirobot Coordination for Complex Tasks," Int. J. Robotics Research, vol. 25, no. 1, pp. 73--101, 2006.
 9. G. Sanders et al., "Progress Review: NASA In-Situ Resource Utilization (ISRU) Development & Incorporation -- 2019 to 2025," NASA TM, 2025.

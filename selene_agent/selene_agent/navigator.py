@@ -537,14 +537,24 @@ class Navigator:
     ros_node:
         Optional ROS 2 node handle.  When ``None`` (test mode), ROS
         publishing is silently skipped.
+    path_publisher:
+        Optional pre-built ``nav_msgs/Path`` publisher used by
+        ``publish_path()``.  Navigator deliberately does **not** create its
+        own publisher: it has no access to the robot id, so any topic it
+        created would be an unscoped relative name.  The owning node
+        (``AgentNode``) creates the correctly scoped
+        ``/<robot_id>/planned_path`` publisher and passes it in.  When
+        ``None``, ``publish_path()`` is a no-op.
     """
 
     MAX_REPLAN_ATTEMPTS = 3
 
-    def __init__(self, hal, grid: OccupancyGrid, ros_node=None):
+    def __init__(self, hal, grid: OccupancyGrid, ros_node=None,
+                 path_publisher=None):
         self._hal = hal
         self._grid = grid
         self._ros_node = ros_node
+        self._path_pub = path_publisher
         self._planner = AStarPlanner(grid)
         self._follower = PathFollower(
             hal.get_actuator("drive"),
@@ -651,18 +661,19 @@ class Navigator:
     # -- ROS publishing (optional) --------------------------------------------
 
     def publish_path(self) -> None:
-        """Publish the current path as a ``nav_msgs/Path`` if a ROS node
-        is available.  Silently skipped in test mode."""
-        if self._ros_node is None or not self._current_path:
+        """Publish the current path on the caller-supplied Path publisher.
+
+        No-op when no ``path_publisher`` was supplied, when there is no ROS
+        node (test mode), or when there is no path.  Navigator does not
+        create the publisher itself — see the ``path_publisher`` parameter
+        docs on ``__init__``.
+        """
+        if (self._ros_node is None or self._path_pub is None
+                or not self._current_path):
             return
         try:
             from nav_msgs.msg import Path
             from geometry_msgs.msg import PoseStamped
-
-            if not hasattr(self, "_path_pub"):
-                self._path_pub = self._ros_node.create_publisher(
-                    Path, "planned_path", 10,
-                )
 
             msg = Path()
             msg.header.frame_id = "map"

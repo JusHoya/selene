@@ -9,6 +9,12 @@ dist/
 build/
 *.egg
 
+# Test / coverage artifacts (pytest-cov writes one per package directory)
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
 # ROS 2 build artifacts
 install/
 log/
@@ -46,3 +52,9 @@ docker/.env
 deliverables/
 docs/data/
 docs/prompts/
+
+# Patent / prior-art analysis — private, not for public repo.
+# NOTE: this file is already tracked, so this rule alone does not untrack it.
+# To stop tracking while keeping the local copy, run:
+#   git rm --cached PATENT_PRIOR_ART_ANALYSIS.md
+/PATENT_PRIOR_ART_ANALYSIS.md

@@ -73,6 +73,20 @@ INJECT_BLOCKED_STATES: frozenset[str] = frozenset({
 # FSM states from which a robot cannot accept any operator override.
 OVERRIDE_BLOCKED_STATES: frozenset[str] = frozenset({'ERROR', 'OFFLINE'})
 
+# Overrides that are accepted even from an OVERRIDE_BLOCKED_STATES state.
+# ERROR must not be an inescapable state: the agent FSM already allows
+# OPERATOR_CANCEL from ERROR -> IDLE (see selene_agent/fsm.py
+# _build_full_table) and the agent's own operator_command_logic explicitly
+# permits cancel_task in ERROR. Blocking it here made that recovery path
+# unreachable from the dashboard, so a faulted robot could never be cleared.
+# OFFLINE stays fully blocked — an unreachable agent cannot service the call.
+OVERRIDE_BLOCKED_STATE_EXEMPT_COMMANDS: frozenset[str] = frozenset({
+    'cancel_task',
+})
+
+# States that block even the exempt commands (no agent to talk to).
+OVERRIDE_HARD_BLOCKED_STATES: frozenset[str] = frozenset({'OFFLINE'})
+
 VALID_OVERRIDE_COMMANDS: frozenset[str] = frozenset({
     'cancel_task', 'send_to_location', 'force_recharge',
 })
@@ -224,7 +238,9 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
     Validation order:
         1. Reject unknown ``request.command``.
         2. Reject unknown robot.
-        3. Reject robots in ERROR/OFFLINE.
+        3. Reject robots in OFFLINE (any command) and robots in ERROR for
+           every command except ``cancel_task`` — cancel is the operator's
+           only way out of ERROR, so it is always allowed through.
         4. For ``cancel_task`` and ``force_recharge``, interrupt the current
            task (if any) and re-PEND it so a future auction can re-dispatch
            the work to a healthy robot.
@@ -258,7 +274,14 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
     current_task_id = robot.get('current_task_id', '') if isinstance(robot, dict) \
         else getattr(robot, 'current_task_id', '')
 
-    if fsm_state in OVERRIDE_BLOCKED_STATES:
+    blocked = (
+        fsm_state in OVERRIDE_HARD_BLOCKED_STATES
+        or (
+            fsm_state in OVERRIDE_BLOCKED_STATES
+            and request.command not in OVERRIDE_BLOCKED_STATE_EXEMPT_COMMANDS
+        )
+    )
+    if blocked:
         response.success = False
         response.message = f"robot in {fsm_state}, override rejected"
         ctx.publish_alert(
@@ -653,7 +676,28 @@ class OrchestratorNode(Node):
         """
         msg = MissionProgress()
         msg.objective_description = 'PSR Ice Prospecting Survey'
-        msg.target_quantity = float(self._task_queue.get_total_count())
+        # MissionProgress.target_quantity is documented in kg at
+        # docs/PRD.md:685 (MSG-7). The .msg file itself carries no unit
+        # comments, which is how the mix-up below survived review. It
+        # previously carried TaskQueue.get_total_count() — a task count —
+        # which the dashboard then rendered through a kg formatter. Source
+        # the real mass objective from the HTN planner instead; its
+        # _target_kg is set from decompose_collect_ice(quantity_kg=...),
+        # which _generate_survey_tasks() calls with 100.0 kg.
+        mission_status = self._htn_planner.get_mission_status()
+        msg.target_quantity = float(mission_status.get('target_kg', 0.0))
+        # HONESTY NOTE (not yet wired): extracted / in_transit / deposited
+        # are read from MaterialInventory, which currently has NO production
+        # writers anywhere in the repo — register_site(), record_extraction(),
+        # record_load() and record_unload() are only ever called from tests.
+        # These three fields are therefore always 0.0 in a live run. They are
+        # deliberately left reading the (empty) real ledger rather than being
+        # back-filled with a plausible-looking estimate: HTNPlanner does
+        # expose a deposited_kg, but it is completed-haul-task-count x nominal
+        # hopper capacity, i.e. an assumption, not a measured mass. Publishing
+        # it here would fabricate a mass measurement the fleet never made.
+        # The corresponding dashboard tiles should stay hidden until the ISRU
+        # ledger is actually fed from excavate/haul skill results.
         progress = self._inventory.get_mission_progress()
         msg.extracted_quantity = float(progress.get('extracted', 0.0))
         msg.in_transit_quantity = float(progress.get('in_transit', 0.0))

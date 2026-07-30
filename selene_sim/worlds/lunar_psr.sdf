@@ -2,12 +2,19 @@
 <sdf version="1.9">
   <world name="lunar_psr">
 
-    <!-- Physics: Lunar gravity -->
+    <!-- Lunar gravity: 1.62 m/s^2.
+         MUST be a direct child of <world>. SDF 1.9 defines <gravity> at world
+         scope only; a <gravity> nested inside <physics> is ignored, which
+         silently left this world running at Earth gravity.
+         NOT YET VALIDATED in Gazebo (no Gazebo available in the authoring
+         environment) - only that the SDF still parses as XML. -->
+    <gravity>0 0 -1.62</gravity>
+
+    <!-- Physics: step size / real-time settings -->
     <physics name="lunar_physics" type="ode">
       <max_step_size>0.002</max_step_size>
       <real_time_factor>1.0</real_time_factor>
       <real_time_update_rate>500</real_time_update_rate>
-      <gravity>0 0 -1.62</gravity>
     </physics>
 
     <!-- Gazebo Harmonic system plugins -->

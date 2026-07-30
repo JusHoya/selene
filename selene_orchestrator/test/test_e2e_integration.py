@@ -30,7 +30,6 @@ What it does NOT catch (covered instead by ``validate_phase5.sh``):
 """
 from __future__ import annotations
 
-import sys
 import types
 from unittest.mock import MagicMock
 
@@ -38,185 +37,10 @@ import pytest
 
 
 # --------------------------------------------------------------------------- #
-#  Minimal sys.modules stubs so orchestrator_node imports cleanly in pytest.  #
-#  Same pattern as test_inject_task_handler.py — idempotent so the two test  #
-#  modules coexist in one pytest session.                                    #
+#  ROS 2 stubs + sys.path setup live in test/conftest.py so they are           #
+#  installed exactly once, only for modules that are really missing, and       #
+#  torn down at session end (no cross-package sys.modules pollution).          #
 # --------------------------------------------------------------------------- #
-
-def _ensure_stub(name: str) -> types.ModuleType:
-    if name in sys.modules:
-        return sys.modules[name]
-    mod = types.ModuleType(name)
-    sys.modules[name] = mod
-    return mod
-
-
-def _install_ros_stubs() -> None:
-    rclpy_mod = _ensure_stub('rclpy')
-    rclpy_mod.spin_until_future_complete = getattr(
-        rclpy_mod, 'spin_until_future_complete', lambda *a, **k: None)
-    rclpy_mod.init = getattr(rclpy_mod, 'init', lambda *a, **k: None)
-    rclpy_mod.shutdown = getattr(rclpy_mod, 'shutdown', lambda *a, **k: None)
-
-    rclpy_node = _ensure_stub('rclpy.node')
-    rclpy_cb = _ensure_stub('rclpy.callback_groups')
-    if not hasattr(rclpy_cb, 'ReentrantCallbackGroup'):
-        class _ReentrantCallbackGroup:
-            def __init__(self, *a, **k): pass
-        rclpy_cb.ReentrantCallbackGroup = _ReentrantCallbackGroup
-
-    rclpy_exec = _ensure_stub('rclpy.executors')
-    if not hasattr(rclpy_exec, 'MultiThreadedExecutor'):
-        class _MultiThreadedExecutor:
-            def __init__(self, *a, **k): pass
-            def add_node(self, *a, **k): pass
-            def spin(self): pass
-            def shutdown(self): pass
-        rclpy_exec.MultiThreadedExecutor = _MultiThreadedExecutor
-
-    if not hasattr(rclpy_node, 'Node'):
-        class _FakeNode:
-            def __init__(self, *a, **k): pass
-            def declare_parameter(self, *a, **k):
-                return types.SimpleNamespace(value=a[1] if len(a) > 1 else None)
-            def get_parameter(self, name):
-                return types.SimpleNamespace(value=None)
-            def create_subscription(self, *a, **k): return MagicMock()
-            def create_publisher(self, *a, **k): return MagicMock()
-            def create_timer(self, *a, **k): return MagicMock()
-            def create_service(self, *a, **k): return MagicMock()
-            def create_client(self, *a, **k): return MagicMock()
-            def get_clock(self):
-                clk = MagicMock()
-                now = MagicMock()
-                now.to_msg.return_value = MagicMock()
-                now.nanoseconds = 0
-                clk.now.return_value = now
-                return clk
-            def get_logger(self): return MagicMock()
-            def destroy_node(self): pass
-        rclpy_node.Node = _FakeNode
-
-    gm = _ensure_stub('geometry_msgs')
-    gm_msg = _ensure_stub('geometry_msgs.msg')
-    if not hasattr(gm_msg, 'Point'):
-        class _Point:
-            def __init__(self, x=0.0, y=0.0, z=0.0):
-                self.x = float(x); self.y = float(y); self.z = float(z)
-        gm_msg.Point = _Point
-    gm.msg = gm_msg
-
-    smsgs = _ensure_stub('selene_msgs')
-    smsgs_msg = _ensure_stub('selene_msgs.msg')
-
-    def _make_msg(name, fields):
-        def __init__(self):
-            for f, default in fields.items():
-                setattr(self, f, default() if callable(default) else default)
-        return type(name, (), {'__init__': __init__})
-
-    for msg_name, fields in [
-        ('BidResponse', {'task_id': '', 'robot_id': '', 'bid_score': 0.0,
-                         'estimated_arrival_time': 0.0, 'energy_after_task': 0.0}),
-        ('FleetAlert', {'alert_id': '', 'severity': '', 'source_robot_id': '',
-                        'message': '', 'stamp': lambda: MagicMock()}),
-        ('MissionProgress', {'objective_description': '', 'target_quantity': 0.0,
-                             'extracted_quantity': 0.0, 'in_transit_quantity': 0.0,
-                             'deposited_quantity': 0.0, 'fleet_distance_total': 0.0,
-                             'fleet_energy_total': 0.0, 'elapsed_sim_time': 0.0}),
-        ('ResourceMapUpdate', {'location': lambda: gm_msg.Point(),
-                               'ice_concentration': 0.0, 'sensor_uncertainty': 0.0}),
-        ('RobotState', {'robot_id': '', 'robot_type': '', 'fsm_state': '',
-                        'pose': lambda: gm_msg.Point(), 'battery_level': 1.0,
-                        'current_task_id': '', 'capabilities': lambda: []}),
-        ('TaskAnnouncement', {'task_id': '', 'task_type': '',
-                              'target_location': lambda: gm_msg.Point(),
-                              'estimated_energy_cost': 0.0,
-                              'required_capabilities': lambda: [],
-                              'priority': 0.0, 'estimated_duration': 0.0,
-                              'parent_task_id': '',
-                              'deadline': lambda: MagicMock()}),
-        ('TaskAssignment', {'task_id': '', 'robot_id': '', 'task_type': '',
-                            'target_location': lambda: gm_msg.Point(),
-                            'parameters': lambda: [],
-                            'assigned_at': lambda: MagicMock()}),
-    ]:
-        if not hasattr(smsgs_msg, msg_name):
-            setattr(smsgs_msg, msg_name, _make_msg(msg_name, fields))
-
-    smsgs_srv = _ensure_stub('selene_msgs.srv')
-
-    class _InjectTaskSrv:
-        class Request:
-            def __init__(self):
-                self.task_type = ''
-                self.target_location = gm_msg.Point()
-                self.quantity = 0.0
-                self.assigned_robot_id = ''
-        class Response:
-            def __init__(self):
-                self.success = False
-                self.task_id = ''
-                self.message = ''
-    if not hasattr(smsgs_srv, 'InjectTask'):
-        smsgs_srv.InjectTask = _InjectTaskSrv
-
-    class _OverrideRobotSrv:
-        class Request:
-            def __init__(self):
-                self.robot_id = ''
-                self.command = ''
-                self.target = gm_msg.Point()
-        class Response:
-            def __init__(self):
-                self.success = False
-                self.message = ''
-    if not hasattr(smsgs_srv, 'OverrideRobot'):
-        smsgs_srv.OverrideRobot = _OverrideRobotSrv
-
-    class _SetRobotCommandSrv:
-        class Request:
-            def __init__(self):
-                self.command = ''
-                self.target = gm_msg.Point()
-                self.sequence = 0
-        class Response:
-            def __init__(self):
-                self.accepted = False
-                self.reason = ''
-    if not hasattr(smsgs_srv, 'SetRobotCommand'):
-        smsgs_srv.SetRobotCommand = _SetRobotCommandSrv
-
-    smsgs.msg = smsgs_msg
-    smsgs.srv = smsgs_srv
-
-    sisru = _ensure_stub('selene_isru')
-    sisru_inv = _ensure_stub('selene_isru.inventory')
-    if not hasattr(sisru_inv, 'MaterialInventory'):
-        class _MaterialInventory:
-            def get_mission_progress(self):
-                return {'extracted': 0.0, 'in_transit': 0.0, 'deposited': 0.0}
-        sisru_inv.MaterialInventory = _MaterialInventory
-    sisru.inventory = sisru_inv
-
-
-_install_ros_stubs()
-
-import os  # noqa: E402
-_REPO_PKG_PARENT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
-if _REPO_PKG_PARENT not in sys.path:
-    sys.path.insert(0, _REPO_PKG_PARENT)
-
-# Also ensure selene_isru is importable so we test the REAL MaterialInventory,
-# not the stub. The inventory module is pure-Python with no rclpy deps.
-_ISRU_PARENT = os.path.normpath(os.path.join(os.path.dirname(__file__),
-                                             '..', '..', 'selene_isru'))
-if _ISRU_PARENT not in sys.path:
-    sys.path.insert(0, _ISRU_PARENT)
-
-# Drop the stubbed selene_isru so the real one loads.
-for _mod in ('selene_isru', 'selene_isru.inventory'):
-    sys.modules.pop(_mod, None)
 
 from selene_isru.inventory import MaterialInventory  # noqa: E402
 from selene_orchestrator.orchestrator_node import (  # noqa: E402
@@ -400,7 +224,10 @@ def test_e2e_happy_path_excavate_to_deposit():
     assert not orch.auction.is_active()
     assert orch.task_queue.get_task(task_id).status == TaskStatus.ASSIGNED
     assert orch.task_queue.get_task(task_id).assigned_robot == 'excavator_01'
-    assert ('excavator_01' in r for _, r in orch.assignments)
+    # NB: this used to read ``assert (... for ... in ...)`` — a generator
+    # expression, which is always truthy and therefore asserted nothing.
+    assert any(tid == task_id and rid == 'excavator_01'
+               for tid, rid in orch.assignments), orch.assignments
 
     # 5) Agent completes the task and records material flow.
     inv.record_extraction('site_A', 'excavator_01', kg=25.0)

@@ -14,11 +14,27 @@ Args:
   num_excavators (default 1)
   num_haulers    (default 1)
   headless       (default false) — skip the React dashboard (rosbridge still up)
+  prebuilt       (default false) — serve the prebuilt dashboard bundle instead of
+                 the react-scripts dev server (see dashboard.launch.py; requires
+                 `cd selene_dashboard && npm run build` beforehand)
 
 Note: Sprint 0's simulation.launch.py currently hardcodes a 2/1/1 fleet at the
-Gazebo spawn level. The args here flow through to all downstream stages
-(orchestrator, agents) and will fully drive the fleet once the spawn loop in
-simulation.launch.py is parameterized in Phase 6.
+Gazebo spawn level (its spawn loops are literal range(2)/range(1)/range(1)
+despite declaring the num_* arguments). The args here flow through to all
+downstream stages (orchestrator, agents) and will fully drive the fleet once the
+spawn loop in simulation.launch.py is parameterized.
+
+FLEET SIZE / DASHBOARD CAVEAT
+-----------------------------
+The num_scouts / num_excavators / num_haulers arguments below are honoured by
+this file: fleet_robot_ids is generated from them and handed to the orchestrator
+and to one agent launch per robot. The dashboard, however, must discover the
+fleet dynamically for any count other than the 2/1/1 default. A dashboard with a
+hardcoded robot list will not render the extra robots at all, yet those robots
+still bid on and get assigned tasks — so they appear as invisible "phantom"
+assignees in the task table while never showing up in the fleet view. Until the
+dashboard's discovery path is confirmed working, treat non-default counts as a
+headless / CLI-only configuration.
 """
 
 from launch import LaunchDescription
@@ -50,6 +66,7 @@ def _launch_setup(context, *args, **kwargs):
     num_excavators = int(LaunchConfiguration('num_excavators').perform(context))
     num_haulers = int(LaunchConfiguration('num_haulers').perform(context))
     headless = LaunchConfiguration('headless').perform(context).lower() in ('true', '1')
+    prebuilt = LaunchConfiguration('prebuilt').perform(context).lower() in ('true', '1')
 
     fleet_ids = _build_fleet_robot_ids(num_scouts, num_excavators, num_haulers)
     fleet_ids_str = "[" + ",".join(f"'{rid}'" for rid in fleet_ids) + "]"
@@ -106,7 +123,10 @@ def _launch_setup(context, *args, **kwargs):
             FindPackageShare('selene_sim'),
             '/launch/dashboard.launch.py',
         ]),
-        launch_arguments={'headless': 'true' if headless else 'false'}.items(),
+        launch_arguments={
+            'headless': 'true' if headless else 'false',
+            'prebuilt': 'true' if prebuilt else 'false',
+        }.items(),
     ))
 
     # 12s delay lets Gazebo finish robot spawning before agents start polling /odom
@@ -119,5 +139,9 @@ def generate_launch_description():
         DeclareLaunchArgument('num_excavators', default_value='1'),
         DeclareLaunchArgument('num_haulers', default_value='1'),
         DeclareLaunchArgument('headless', default_value='false'),
+        DeclareLaunchArgument(
+            'prebuilt', default_value='false',
+            description='Serve the prebuilt dashboard bundle (fast) instead of '
+                        'the react-scripts dev server. Requires `npm run build`.'),
         OpaqueFunction(function=_launch_setup),
     ])

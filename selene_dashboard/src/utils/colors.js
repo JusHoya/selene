@@ -38,13 +38,31 @@ export const TYPE_LABELS = {
   hauler: 'Hauler',
 };
 
+// A10: Visible floor for zero-ice readings.
+//
+// The old ramp started at rgb(0,0,0), so a genuine 0 wt% reading rendered as
+// black. The heatmap composites with 'screen', where black is a no-op, making
+// a real "we sampled here and found nothing" reading indistinguishable from
+// terrain that was never sampled. Starting the ramp at a dark-but-visible blue
+// keeps zero readings on screen.
+//
+// Value chosen empirically against the running dashboard: a single 0 wt%
+// reading at rgb(10,30,90) was still only a faint smudge once 'screen'
+// compositing and the sensor-uncertainty alpha were applied.
+const ICE_FLOOR_RGB = [20, 55, 150];
+
 // Ice concentration -> color (0-10 wt%)
 export function iceConcentrationColor(value, alpha = 0.7) {
-  const t = Math.min(value / 10, 1);
-  // Transparent -> Blue -> Cyan -> Yellow -> Red
+  const t = Math.min(Math.max(value || 0, 0) / 10, 1);
+  // Dark blue floor -> Blue -> Cyan -> Yellow -> Red
   let r, g, b;
   if (t < 0.25) {
-    r = 0; g = 0; b = Math.round(255 * (t / 0.25));
+    const s = t / 0.25;
+    // Ramp from the visible floor up to pure blue, so the segment boundary at
+    // t=0.25 still lands exactly on rgb(0,0,255).
+    r = Math.round(ICE_FLOOR_RGB[0] * (1 - s));
+    g = Math.round(ICE_FLOOR_RGB[1] * (1 - s));
+    b = Math.round(ICE_FLOOR_RGB[2] + (255 - ICE_FLOOR_RGB[2]) * s);
   } else if (t < 0.5) {
     const s = (t - 0.25) / 0.25;
     r = 0; g = Math.round(255 * s); b = 255;

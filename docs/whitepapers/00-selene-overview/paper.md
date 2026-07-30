@@ -6,7 +6,7 @@ affiliation: "Spacecraft & Extraterrestrial Logistics for Extraction, Navigation
 date: "April 2026"
 paper-number: "WP-00"
 abstract: |
-  Sustainable human presence on the Moon demands autonomous extraction, processing, and transportation of lunar resources — a discipline known as In-Situ Resource Utilization (ISRU). Current approaches address individual facets of the ISRU pipeline — prospecting, excavation, or transport — but no operational system integrates the full value chain under a unified, delay-tolerant, multi-robot coordination framework. We present SELENE (Spacecraft & Extraterrestrial Logistics for Extraction, Navigation & Exploitation), a software architecture that orchestrates a heterogeneous fleet of autonomous lunar surface robots across the complete ISRU pipeline. SELENE introduces six novel technical contributions: (1) a Hierarchical Task Network planner with virtual task resolution for mission decomposition, (2) a market-based auction mechanism with energy-aware bid scoring, (3) a Bayesian spatial grid fusion algorithm for probabilistic resource mapping, (4) an information-gain adaptive survey planner, (5) a Robot Capability Descriptor Language for hardware-agnostic fleet management, and (6) a conservation-invariant material tracking ledger. Implemented in approximately 5,000 lines of Python atop ROS 2, SELENE has been validated in Gazebo Harmonic simulation with a four-robot heterogeneous fleet performing autonomous ice prospecting, site selection, excavation, and hauling in a permanently shadowed crater environment. This paper presents the integrated system architecture, design rationale, and positions each contribution against the current state of the art.
+  Sustainable human presence on the Moon demands autonomous extraction, processing, and transportation of lunar resources — a discipline known as In-Situ Resource Utilization (ISRU). Current approaches address individual facets of the ISRU pipeline — prospecting, excavation, or transport — but no operational system integrates the full value chain under a unified, delay-tolerant, multi-robot coordination framework. We present SELENE (Spacecraft & Extraterrestrial Logistics for Extraction, Navigation & Exploitation), a software architecture that orchestrates a heterogeneous fleet of autonomous lunar surface robots across the complete ISRU pipeline. SELENE introduces six novel technical contributions: (1) a Hierarchical Task Network planner with virtual task resolution for mission decomposition, (2) a market-based auction mechanism with energy-aware bid scoring, (3) a Bayesian spatial grid fusion algorithm for probabilistic resource mapping, (4) an information-gain adaptive survey planner, (5) a Robot Capability Descriptor Language for hardware-agnostic fleet management, and (6) a conservation-invariant material tracking ledger. SELENE is implemented in approximately 6,600 lines of production Python atop ROS 2 (plus a 4,000-line React dashboard), targeting a four-robot heterogeneous fleet performing ice prospecting, site selection, excavation, and hauling in a permanently shadowed crater environment. All components are covered by a passing Python unit-test suite. We are explicit about maturity: the system has not yet cleared its integration exit gate in Gazebo Harmonic, and two of the six contributions --- the adaptive survey planner and the material conservation ledger --- are implemented and unit-tested but not yet invoked by the running orchestrator. This paper presents the integrated system architecture, design rationale, per-contribution implementation status, and positions each contribution against the current state of the art.
 keywords: "lunar ISRU, multi-robot systems, fleet management, hierarchical task network, auction-based task allocation, Bayesian resource mapping, ROS 2"
 ---
 
@@ -44,11 +44,11 @@ Section 2 presents the system architecture. Section 3 describes the fleet orches
 
 SELENE's architecture is governed by five principles derived from the operational constraints of lunar surface operations:
 
-**Delay Tolerance.** The 1.3-second one-way light delay between Earth and Moon renders synchronous teleoperation infeasible for real-time robot control. SELENE's fleet must operate autonomously for extended periods, with Earth-side operators providing supervisory oversight rather than direct commands. All coordination protocols are designed with timeouts exceeding twice the round-trip communication delay.
+**Delay Tolerance.** The 1.3-second one-way light delay between Earth and Moon renders synchronous teleoperation infeasible for real-time robot control. SELENE's fleet must operate autonomously for extended periods, with Earth-side operators providing supervisory oversight rather than direct commands. All coordination protocols are designed with timeouts far exceeding the round-trip delay of the link they traverse — for the lunar-surface protocols (auction, heartbeat) that is the surface mesh, not the Earth-Moon link.
 
 **Graceful Degradation.** No single robot failure should halt the mission. When a robot becomes unresponsive, its assigned tasks must be automatically recovered and re-allocated to remaining fleet members. The system must degrade proportionally — losing one of four robots should reduce throughput by approximately 25%, not 100%.
 
-**Resource Awareness.** Lunar robots operate under severe energy constraints. Battery capacity ranges from 65 Wh (hauler) to 500 Wh (scout), and solar recharging is unavailable in permanently shadowed regions. Every task allocation decision must account for whether a robot can reach the task, execute it, *and return to a recharging station* before its battery reaches critical levels.
+**Resource Awareness.** Lunar robots operate under severe energy constraints. In the modelled fleet, battery capacity ranges from 50 Wh (scout) through 65 Wh (hauler) to 80 Wh (excavator), declared in `selene_hal/config/{scout,hauler,excavator}.yaml`; solar recharging is unavailable in permanently shadowed regions. Every task allocation decision must account for whether a robot can reach the task, execute it, *and return to a recharging station* before its battery reaches critical levels.
 
 **Hardware Agnosticism.** The same orchestration software must coordinate robots with fundamentally different capabilities — from neutron spectrometers on scouts to 200W drills on excavators to 50 kg transport bins on haulers. The software architecture must abstract hardware differences behind uniform interfaces.
 
@@ -60,7 +60,7 @@ SELENE employs a four-layer architecture, illustrated in Figure 1.
 
 ![SELENE System Architecture. The four-layer design separates concerns between Earth-side supervision, lunar-side fleet coordination, per-robot autonomy, and hardware abstraction.](figures/system_architecture.png){width=100%}
 
-**Mission Control Layer (Earth-Side).** Provides a web-based dashboard (React + Three.js) for supervisory control, mission planning, and digital twin visualization. Operators can monitor fleet state, inject tasks, override robot behavior, and analyze resource maps. This layer operates asynchronously — commands are queued and executed when communication windows permit.
+**Mission Control Layer (Earth-Side).** Provides a web-based dashboard (React 18, 2D HTML canvas rendering) for supervisory control and mission monitoring. Operators can monitor fleet state, inject tasks, override robot behavior, and view a heatmap built from incoming scout readings. A 3D digital-twin view is planned but not built: `three` is declared as a dashboard dependency but is imported by no source file, and the current fleet map is a top-down 2D canvas. This layer operates asynchronously — commands are queued and executed when communication windows permit.
 
 **Fleet Orchestration Layer (Lunar-Side).** The central coordination engine running on a lunar surface compute node. Comprises the HTN planner, task auction mechanism, resource map, fleet monitor, and adaptive survey planner. Operates at 2 Hz for auction ticks and 1 Hz for heartbeat monitoring and mission progress reporting.
 
@@ -70,18 +70,20 @@ SELENE employs a four-layer architecture, illustrated in Figure 1.
 
 ## Technology Stack
 
-SELENE is implemented in Python atop ROS 2 (Humble+), using DDS (Cyclone/FastDDS) for inter-node communication. The simulation environment uses Gazebo Harmonic with custom lunar terrain and sensor plugins. The dashboard is a React application communicating via rosbridge WebSocket. Safety-critical components are designated for Rust implementation in future phases.
+SELENE is implemented entirely in Python atop ROS 2, using Fast DDS (the default RMW) for inter-node communication. Continuous integration builds against Humble; the WSL2 development and validation path targets Jazzy. The simulation environment uses Gazebo Harmonic with custom lunar terrain and sensor configuration. The dashboard is a React application communicating via rosbridge WebSocket. Rust for safety-critical components, C++ for real-time paths, Isaac Sim, OpenUSD, and ONNX-based onboard inference are all part of the forward plan; none of them exist in the codebase today, and no claim in this paper depends on them.
+
+Line counts below are `wc -l` over the non-test package source, measured at the time of writing.
 
 | Component | Technology | Lines of Code |
 |---|---|---|
-| Orchestrator | Python / ROS 2 | ~1,200 |
-| Agent | Python / ROS 2 | ~1,100 |
-| HAL | Python / Pydantic | ~800 |
-| ISRU Process | Python | ~200 |
-| Messages | ROS 2 IDL | ~100 |
-| Dashboard | React / JSX | ~2,500 |
+| Orchestrator (`selene_orchestrator/selene_orchestrator/`) | Python / ROS 2 | 2,080 |
+| Agent (`selene_agent/selene_agent/`) | Python / ROS 2 | 2,986 |
+| HAL (`selene_hal/selene_hal/`) | Python / Pydantic | 1,559 |
+| ISRU Process (`selene_isru/selene_isru/`) | Python | 157 |
+| Messages (`selene_msgs/{msg,srv}/`) | ROS 2 IDL | 68 |
+| Dashboard (`selene_dashboard/src/`) | React / JSX | 4,020 (+1,782 CSS) |
 
-Table: SELENE implementation breakdown by component.
+Table: SELENE implementation breakdown by component. Production package source only. Not counted here: 4,855 lines of Python unit tests across the four packages' `test/` directories, and 1,612 lines of Python in `selene_sim` (launch files, world generation, and sensor bridging).
 
 # Fleet Orchestration Layer
 
@@ -107,13 +109,13 @@ Task allocation uses a market-based auction protocol designed for delay-tolerant
 
 1. The orchestrator detects idle robots and pending tasks with satisfied dependencies.
 2. A `TaskAnnouncement` is broadcast containing the task location, energy cost estimate, required capabilities, priority, and deadline.
-3. Agents compute a bid score: $b = w_d \cdot e^{-d^2/2\sigma^2} + w_e \cdot E_{\text{afford}} + w_c \cdot C_{\text{match}}$
-4. After a 5-second timeout (exceeding $2 \times$ the Earth-Moon round-trip time), the orchestrator selects the highest-scoring bidder.
+3. Agents compute a bid score: $b = w_d \cdot \frac{1}{1 + d/\sigma_d} + w_e \cdot E_{\text{afford}} + w_c \cdot C_{\text{match}}$ with $\sigma_d = 100$ m and default weights $w_d = 0.4$, $w_e = 0.35$, $w_c = 0.25$ (`_on_task_announced` in `selene_agent/selene_agent/agent_node.py`, where `dist_score = 1.0 / (1.0 + distance / 100.0)`; weights are the `bid_weight_*` ROS parameters, set in `selene_orchestrator/config/orchestrator_params.yaml`). WP-02 explains why the inverse-linear proximity term was preferred over a Gaussian $e^{-d^2/2\sigma^2}$.
+4. After a 5-second timeout, the orchestrator selects the highest-scoring bidder. Note that the auction is entirely lunar-surface-local, so the relevant latency budget is the surface mesh round-trip (sub-100 ms), not the 2.6-second Earth-Moon round trip; the 5-second window is sized for DDS re-discovery after a blackout rather than for Earth-in-the-loop bidding. WP-02 derives the figure.
 5. If no bids are received, the task is re-queued for future auction.
 
-The bid score integrates three factors: spatial proximity (Gaussian decay with distance), energy affordability (whether the robot can execute the task and return to base with a 10% safety margin), and capability match (binary: does the robot's RCDL descriptor include the required capability?). See WP-02 for the energy model and scoring analysis.
+The bid score integrates three factors: spatial proximity (inverse-linear decay with distance), energy affordability (whether the robot can execute the task and return to base with a 10% safety margin), and capability match (binary: does the robot's RCDL descriptor include the required capability?). See WP-02 for the energy model and scoring analysis.
 
-![Task Auction Protocol. The 5-second timeout exceeds twice the Earth-Moon round-trip time, enabling delay-tolerant operation.](figures/auction_sequence.png){width=80%}
+![Task Auction Protocol. The 5-second bid window is set two orders of magnitude above the lunar-surface mesh round-trip time, so bidding survives transient DDS re-discovery after a communication blackout.](figures/auction_sequence.png){width=80%}
 
 ## Probabilistic Resource Map
 
@@ -131,7 +133,9 @@ Rather than surveying on a static grid, SELENE's adaptive survey planner selects
 
 $$S = w_v \cdot \hat{\sigma}^2 + w_s \cdot \hat{N} - w_d \cdot \hat{d}$$
 
-where $\hat{\sigma}^2$ is the normalized posterior variance (exploration), $\hat{N}$ is the normalized average neighbor ice concentration (exploitation), and $\hat{d}$ is the normalized distance from the robot (cost). Hats denote cross-candidate normalization. This three-term formulation explicitly balances exploration of unknown regions, exploitation near detected deposits, and energy-efficient routing. See WP-04 for the complete formulation and comparison with pure information-gain approaches.
+where $\hat{\sigma}^2$ is the normalized posterior variance (exploration), $\hat{N}$ is the normalized average neighbor ice concentration (exploitation), and $\hat{d}$ is the normalized distance from the robot (cost). Hats denote cross-candidate normalization. This three-term formulation explicitly balances exploration of unknown regions, exploitation near detected deposits, and energy-efficient routing.
+
+**Status: implemented and unit-tested, not yet integrated.** The planner is a standalone module with 8 passing unit tests, and `OrchestratorNode.__init__` assigns `self._adaptive_survey = AdaptiveSurveyPlanner(self._resource_map)` — but that is the attribute's only appearance in the file; no method on it is ever called, and `select_next_waypoint` has no call site outside its own tests. Every survey waypoint in the current build comes from the static hexagonal grid described above, capped at `SURVEY_WAYPOINT_COUNT = 10` (`htn_planner.py:28`). Wiring the planner into the survey phase is outstanding work and is not yet validated in simulation. See WP-04 for the complete formulation and comparison with pure information-gain approaches.
 
 ## Fleet Monitor
 
@@ -141,7 +145,7 @@ The fleet monitor tracks robot state via heartbeat messages at 2 Hz. If a robot'
 
 ## Finite State Machine
 
-Each robot's lifecycle is governed by an event-driven FSM with 11 states and explicit transition rules. The FSM supports *wildcard transitions* for cross-cutting concerns: an `ENERGY_CRITICAL` event from any active state immediately transitions to `RETURNING`, and a `FAULT` event transitions to `ERROR`. This ensures safety-critical behaviors override task execution regardless of the agent's current activity.
+Each robot's lifecycle is governed by an event-driven FSM with 9 states (`IDLE`, `BIDDING`, `ASSIGNED`, `NAVIGATING`, `WORKING`, `RETURNING`, `RECHARGING`, `ERROR`, `OFFLINE`) and 17 events, with explicit transition rules (`selene_agent/selene_agent/fsm.py`). The FSM supports *wildcard transitions* for cross-cutting concerns: an `ENERGY_CRITICAL` event from any active state immediately transitions to `RETURNING`, and a `FAULT` event transitions to `ERROR`. This ensures safety-critical behaviors override task execution regardless of the agent's current activity.
 
 The FSM is implemented as a pure Python module with zero ROS dependencies, enabling isolated unit testing of the complete state space.
 
@@ -184,7 +188,9 @@ The ISRU process control layer maintains a material conservation ledger tracking
 
 $$m_{\text{extracted}} = m_{\text{in\_transit}} + m_{\text{deposited}} \pm \epsilon$$
 
-where $\epsilon = 0.01$ kg is the numerical tolerance. Violations trigger alerts, enabling early detection of accounting errors or sensor drift. The extraction rate model incorporates ice concentration, drill power fraction, and depth penalty. See WP-06 for the conservation proof and rate model analysis.
+where $\epsilon = 0.01$ kg is the numerical tolerance. The intent is that violations trigger alerts, enabling early detection of accounting errors or sensor drift. The extraction rate model incorporates ice concentration, drill power fraction, and depth penalty.
+
+**Status: implemented and unit-tested, not yet integrated.** No production code path calls `record_extraction`, `record_load`, or `record_unload`, so the ledger holds zeros at runtime and the `extracted`/`in_transit`/`deposited` fields of `MissionProgress` publish 0.0. `check_conservation` has no production caller, and as written it would report a violation throughout extraction because the three-account model has no *at-site* term (`selene_isru/selene_isru/inventory.py:142`--`149`). WP-06 gives the conservation proof, the rate model analysis, and the four-account correction required to close that gap.
 
 # Integrated Mission Execution
 
@@ -196,17 +202,19 @@ A complete SELENE mission proceeds as follows:
 
 2. **Survey phase.** Survey tasks are auctioned to scouts. Each scout navigates to its assigned waypoint, activates the neutron spectrometer, records ice concentration readings, and publishes `ResourceMapUpdate` messages. The Bayesian resource map fuses these readings, progressively reducing uncertainty.
 
-3. **Adaptive replanning.** Between auctions, the adaptive survey planner evaluates whether additional waypoints should be generated based on the current knowledge map state.
+3. **Adaptive replanning** *(designed, not yet in the loop)*. The intent is that between auctions the adaptive survey planner evaluates whether additional waypoints should be generated based on the current knowledge map state. In the current build this step does not execute: the planner is constructed but never invoked, so the survey consists solely of the 10 fixed hexagonal waypoints produced in step 1.
 
 4. **Site selection.** When all survey dependencies are satisfied, the virtual `select_site` task resolves by querying the resource map. The cell with the highest $\mu/(1+\sigma^2)$ score is selected as the extraction site.
 
-5. **Extraction-transport cycles.** Excavate tasks are auctioned to excavators; haul tasks to haulers. Each excavate-haul cycle is dependency-linked, enforcing temporal ordering. The material ledger tracks mass flow.
+5. **Extraction-transport cycles.** Excavate tasks are auctioned to excavators; haul tasks to haulers. Each excavate-haul cycle is dependency-linked, enforcing temporal ordering. The material ledger is intended to track mass flow here; today no code path writes to it (see the ledger status note above).
 
-6. **Dynamic cycle expansion.** After each haul completion, the HTN planner checks whether deposited mass meets the target. If not, additional excavate-haul cycles are generated on demand.
+6. **Dynamic cycle expansion.** At 1 Hz, the HTN planner checks whether deposited mass meets the target and generates additional excavate-haul cycles on demand if not. Its deposited-mass figure is currently derived as (completed haul tasks) $\times$ 20 kg (`htn_planner.py:325`--`333`), not read from the ledger, so it assumes every completed haul delivered a full hopper.
 
 7. **Mission completion.** When $m_{\text{deposited}} \geq m_{\text{target}}$, the mission is marked complete. All robots return to idle.
 
-Throughout execution, the fleet monitor detects unresponsive robots and recovers their tasks. Energy-critical robots abort tasks and recharge autonomously. The dashboard provides real-time visualization of fleet state, resource map evolution, and mission progress.
+Throughout execution, the fleet monitor detects unresponsive robots and recovers their tasks. Energy-critical robots abort tasks and recharge autonomously. The dashboard visualizes fleet state, mission progress, and task auctions in real time.
+
+One point about the resource map deserves precision, because it is easy to overstate. **The orchestrator's fused Bayesian posterior grid is not published on any topic.** `selene_orchestrator/selene_orchestrator/orchestrator_node.py` contains exactly four `create_publisher` calls — `task_announcement`, `task_assignment`, `alerts`, and `mission_progress`. A `resource_map_publish_rate` parameter is declared in the same file but never read, and no publisher consumes it. What the dashboard heatmap renders is the stream of raw per-reading `ResourceMapUpdate` messages emitted by scouts on `/orchestrator/map_update` (`_publish_map_update` in `selene_agent/selene_agent/agent_node.py`), re-binned client-side from the `resourceReadings` array in `selene_dashboard/src/hooks/useFleetState.js`. Operators therefore see where readings were taken and their values, but not the map's posterior mean or variance. Nor is the map available in RViz2: `selene_sim/rviz/selene_sim.rviz` contains only Grid and TF displays. FR-MAP-4 (RViz2 resource-map visualization) is unimplemented and was descoped as P1; the "Known deviation" note in `scripts/validate_phase5.sh` attributes the descope to "plan decision D9", but no document defining D9 exists in the repository, so that descope is currently undocumented. Exposing the fused posterior — as a ROS topic, to the dashboard, or to RViz2 — is outstanding work.
 
 ![SELENE Mission Control Dashboard showing fleet map with robot positions, PSR survey zone, depot location, mission status metrics, and fleet status cards.](screenshots/dashboard_full.png){width=100%}
 
@@ -226,7 +234,7 @@ Table 2 compares SELENE against the most relevant existing systems across five a
 | DARPA SubT | Yes | Partial | No | Yes | Yes |
 | Cat/Rio Tinto | Yes | No (MILP) | Yes (terr.) | No (GPS) | No |
 
-Table: Comparison of SELENE with existing multi-robot coordination systems. No existing system occupies SELENE's complete design space.
+Table: Comparison of SELENE with existing multi-robot coordination systems. No existing system occupies SELENE's complete design space. The SELENE row describes implemented architecture, not validated field performance — the comparison systems have flight or field records that SELENE does not.
 
 **NASA CADRE** (launching 2026) demonstrates multi-robot autonomy with leader election and shared state, but operates a homogeneous fleet for mapping — not ISRU. **NASA SRCP2** (2019–2021) is the closest problem-domain match, using Scout/Excavator/Hauler roles in Gazebo, but employed centralized task assignment without HTN planning, Bayesian mapping, or auction-based allocation. **OffWorld Inc.** pursues heterogeneous swarm mining but uses multi-agent reinforcement learning rather than symbolic planning — a fundamentally different architectural approach. **DARPA SubT Challenge** teams independently validated SELENE's core component choices: CERBERUS used distributed auction, CoSTAR used Bayesian belief-space planning, and all teams designed for communication-degraded operation. However, no SubT team combined all three approaches, and none addressed the ISRU value chain.
 
@@ -242,15 +250,19 @@ SELENE's primary novelty is the *system-level integration* of components that in
 
 # Limitations and Future Work
 
-**Current limitations.** SELENE has been validated only in simulation (Gazebo Harmonic). The flat-terrain model does not capture the full complexity of PSR terrain (boulders, steep crater walls, permanent shadow). The communication model assumes reliable DDS messaging without modeling RF propagation, signal attenuation, or multi-path effects. The fleet size (4 robots) is small; scalability to dozens of agents remains untested.
+**Validation status --- stated plainly.** Every component is covered by a passing Python unit-test suite, run per-package. SELENE has *not* yet cleared its integration exit gate. The Sprint 0 plan (`docs/PRD.md`) defines six phases; Phases 1--4 are implemented, Phase 5 (dashboard and integration) is implemented in code but its exit gate has not been passed, and Phase 6 (polish, hardening, NFR validation, integration demos) has not started. The Phase 5 gate is an executable script, `scripts/validate_phase5.sh`, requiring WSL2 with ROS 2 Jazzy and a built colcon workspace; no `phase5_validation_report.md` is committed, so this repository contains no recorded evidence of an end-to-end Gazebo run. Readers should treat every behavioural claim in this series as either unit-tested (where stated) or as design intent (where stated), and none as simulation-validated.
 
-**Planned extensions.** Phase 4 will introduce multi-mission planning (concurrent ice and regolith oxygen extraction). Phase 5 will add predictive maintenance and learned terrain cost models via onboard ML inference. Phase 6 will port safety-critical components to Rust and begin integration with Space ROS for flight qualification pathways.
+**Known integration gaps.** Three items are implemented but not wired into the running system, and each is called out in the relevant section above: (1) the adaptive survey planner is never invoked, so surveys use a fixed 10-waypoint hexagonal sample; (2) the material conservation ledger has no production writers, so it reports zeros at runtime, and its conservation check would in any case misfire during extraction for want of an at-site account; (3) the fused Bayesian resource map is not published on any topic, so neither the dashboard nor RViz2 can display posterior mean or variance (FR-MAP-4 is unimplemented).
+
+**Other limitations.** The flat-terrain model does not capture the full complexity of PSR terrain (boulders, steep crater walls, permanent shadow). The communication model assumes reliable DDS messaging without modeling RF propagation, signal attenuation, or multi-path effects. The fleet size (4 robots) is small; scalability to dozens of agents remains untested. There is no benchmark harness in the repository, so no comparative performance figures are reported anywhere in this series.
+
+**Planned extensions (Sprint 1 and beyond).** The items below are *not* the Phase 4/5/6 of the Sprint 0 plan --- that numbering is reserved and defined in `docs/PRD.md`. These are post-Sprint-0 candidates, in rough priority order: closing the three integration gaps above; multi-mission planning (concurrent ice and regolith oxygen extraction); predictive maintenance and learned terrain cost models via onboard ML inference; and porting safety-critical components to Rust alongside integration with Space ROS for flight qualification pathways. No code exists for any of these.
 
 **Toward flight readiness.** The path from simulation prototype to flight software requires: (1) integration with Space ROS and F-Prime for DO-178C alignment, (2) hardware-in-the-loop testing with physical rover platforms, (3) terrain model validation using orbital data (LOLA, Diviner, Mini-RF), and (4) communication protocol alignment with NASA LunaNet DTN specifications.
 
 # Conclusion
 
-SELENE demonstrates that the complete ISRU value chain — from prospecting through deposition — can be autonomously orchestrated by a heterogeneous robotic fleet using a combination of HTN planning, market-based task allocation, Bayesian resource mapping, and information-gain adaptive surveying. The architecture's delay-tolerant, fault-resilient design addresses the fundamental operational constraints of lunar surface operations. While currently validated in simulation, the modular, hardware-agnostic design provides a clear pathway toward flight-qualified deployment. The six companion white papers in this series provide detailed algorithmic treatments of each core technical contribution.
+SELENE sets out an architecture in which the complete ISRU value chain — from prospecting through deposition — is autonomously orchestrated by a heterogeneous robotic fleet, combining HTN planning with virtual task resolution, market-based task allocation with energy-aware bidding, Bayesian resource mapping, and information-gain adaptive surveying. Four of the six contributions are implemented and integrated end to end in code; two (adaptive survey planning and the conservation ledger) are implemented and unit-tested but not yet invoked by the orchestrator. The architecture's delay-tolerant, fault-resilient design addresses the fundamental operational constraints of lunar surface operations, and the hardware-agnostic HAL and RCDL layers give a concrete path toward physical platforms. What remains is the work that turns an architecture into evidence: closing the three integration gaps, passing the Phase 5 exit gate in Gazebo Harmonic, and building the benchmark harness that would let the design claims in the six companion white papers be measured rather than argued. Those papers provide the detailed algorithmic treatment of each contribution, each with its own implementation-status statement.
 
 # References
 

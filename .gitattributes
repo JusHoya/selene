@@ -3,3 +3,8 @@
 *.py text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+
+# Git hooks are extensionless, so the *.sh rule above does not cover them.
+# Without this they are checked out CRLF on Windows and then fail under
+# WSL2 / Linux with "bad interpreter: /bin/bash^M".
+scripts/git-hooks/** text eol=lf

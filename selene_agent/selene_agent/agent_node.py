@@ -104,8 +104,19 @@ class AgentNode(Node):
             nav_config = yaml.safe_load(f)
 
         # -- Create occupancy grid and navigator ---------------------------------
+        # The planned-path publisher is created here (ahead of the other
+        # publishers) because Navigator needs it at construction time. The
+        # dashboard subscribes to '/<robot_id>/planned_path' (see
+        # selene_dashboard/src/utils/rosTopics.js PLANNED_PATH), so the
+        # publisher must be owned here where robot_id is known; Navigator no
+        # longer creates its own relative-name 'planned_path' publisher.
         grid = OccupancyGrid.from_config(nav_config)
-        self._navigator = Navigator(self._hal, grid, ros_node=self)
+        self._path_pub = self.create_publisher(
+            Path, f"/{self._robot_id}/planned_path", 10
+        )
+        self._navigator = Navigator(
+            self._hal, grid, ros_node=self, path_publisher=self._path_pub,
+        )
 
         # -- Create energy manager -----------------------------------------------
         recharge_station = (self._recharge_x, self._recharge_y)
@@ -147,9 +158,8 @@ class AgentNode(Node):
         self._state_pub = self.create_publisher(
             RobotState, f"/{self._robot_id}/state", 10
         )
-        self._path_pub = self.create_publisher(
-            Path, f"/{self._robot_id}/planned_path", 10
-        )
+        # NOTE: self._path_pub is created earlier, next to the Navigator it
+        # is handed to (see the occupancy-grid/navigator block above).
         self._map_update_pub = self.create_publisher(
             ResourceMapUpdate, "/orchestrator/map_update", 10
         )
@@ -342,6 +352,11 @@ class AgentNode(Node):
             self.get_logger().error(
                 f"[{self._robot_id}] Navigation failed: {self._current_skill.get_error()}"
             )
+            # Release the task id BEFORE entering ERROR. The orchestrator only
+            # re-queues an interrupted task when it sees fsm_state == 'ERROR'
+            # AND current_task_id == '' (orchestrator_node._on_robot_state);
+            # holding the id here strands the task on a faulted robot forever.
+            self._current_task_id = ""
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
@@ -436,6 +451,8 @@ class AgentNode(Node):
                 f"[{self._robot_id}] Return navigation failed: "
                 f"{self._current_skill.get_error()}"
             )
+            # Release the task id before entering ERROR (see _handle_navigating).
+            self._current_task_id = ""
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
@@ -457,6 +474,8 @@ class AgentNode(Node):
                 f"[{self._robot_id}] Recharge failed: "
                 f"{self._current_skill.get_error()}"
             )
+            # Release the task id before entering ERROR (see _handle_navigating).
+            self._current_task_id = ""
             self._fsm.handle_event(FSMEvent.FAULT)
             return
 
@@ -592,6 +611,8 @@ class AgentNode(Node):
             skill.start(self._hal, self._navigator, pickup=target, depot=depot)
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
+            # Release the task id before entering ERROR (see _handle_navigating).
+            self._current_task_id = ""
             self._fsm.handle_event(FSMEvent.FAULT)
             return
         if skill.has_failed():
@@ -643,6 +664,27 @@ class AgentNode(Node):
             return
         self._navigator.start_following(result.path)
 
+    def _stop_navigation(self):
+        """Unconditionally halt motion: stop path following, zero cmd_vel.
+
+        Safe to call in any state, with or without an active skill or path.
+        Used by the operator-command handler so a cancel can never leave a
+        latched velocity command driving the wheels.
+        """
+        try:
+            self._navigator.stop()
+        except Exception as e:  # pragma: no cover - defensive
+            self.get_logger().warn(
+                f"[{self._robot_id}] navigator.stop() failed: {e}"
+            )
+        # Belt-and-braces: command zero velocity directly on the HAL even if
+        # the navigator had no path (in which case its follower.stop() still
+        # publishes 0, but we do not want to depend on that internal detail).
+        try:
+            self._hal.get_actuator("drive").stop()
+        except (KeyError, AttributeError):
+            pass
+
     def _publish_bid_withdrawal(self, task_id: str, robot_id: str):
         """Publish a negative-score bid so the orchestrator drops us."""
         bid = BidResponse()
@@ -671,6 +713,7 @@ class AgentNode(Node):
             get_last_seq=lambda: self._last_operator_seq,
             set_last_seq=lambda s: setattr(self, '_last_operator_seq', s),
             log_warn=self.get_logger().warn,
+            stop_navigation=self._stop_navigation,
         )
         return operator_command_logic(ctx, request, response)
 
@@ -711,13 +754,33 @@ class AgentNode(Node):
     # ===================================================================
 
     def _publish_map_update(self, result):
+        # Guard the uncertainty before it reaches the wire. ResourceMapUpdate.
+        # sensor_uncertainty is a float32 sigma consumed by the orchestrator's
+        # Bayesian ResourceMap.update():
+        #   - inf/NaN (ProspectSkill's "no usable sigma" sentinel) would put a
+        #     non-finite value on a DDS float32 field and, via rosbridge, into
+        #     JSON, which cannot represent it;
+        #   - 0.0 would assert a noise-free measurement and collapse the
+        #     posterior variance to ~1e-6.
+        # In both cases the reading carries no usable information, so drop it
+        # rather than corrupting the map with a fabricated confidence.
+        uncertainty = float(result.uncertainty)
+        if not math.isfinite(uncertainty) or uncertainty <= 0.0:
+            self.get_logger().warn(
+                f"[{self._robot_id}] Dropping map update at "
+                f"({result.position[0]:.1f}, {result.position[1]:.1f}): "
+                f"unusable sensor uncertainty {uncertainty!r}. Check the RCDL "
+                f"noise_stddev for this robot's scalar-field sensor."
+            )
+            return
+
         msg = ResourceMapUpdate()
         msg.scout_id = self._robot_id
         msg.location = Point(
             x=result.position[0], y=result.position[1], z=0.0
         )
         msg.ice_concentration = float(result.ice_concentration)
-        msg.sensor_uncertainty = float(result.uncertainty)
+        msg.sensor_uncertainty = uncertainty
         msg.stamp = self.get_clock().now().to_msg()
         self._map_update_pub.publish(msg)
 

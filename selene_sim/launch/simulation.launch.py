@@ -51,7 +51,6 @@ def generate_launch_description():
     gz_resource_path = SetEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH', models_path)
 
-
     # Start Gazebo
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(

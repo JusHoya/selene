@@ -6,6 +6,33 @@ on:
   pull_request:
     branches: [main]
 
+# ---------------------------------------------------------------------------
+# KNOWN LIMITATION — ROS distro gap (unresolved, deliberately not papered over)
+#
+# `build-and-test` below builds and tests against ROS 2 **Humble** on Ubuntu
+# 22.04 (image `ros:humble-ros-base-jammy`). The project's own tooling and docs
+# target ROS 2 **Jazzy** on Ubuntu 24.04 (see scripts/setup_wsl2.sh and
+# README.md), and commit 940f6f7 was specifically a Jazzy rclpy-executor fix.
+#
+# Consequence: the Jazzy code path — the one a live demo actually runs on — is
+# NOT covered by CI. A green pipeline here does not mean the Jazzy build works.
+#
+# This was left as-is on purpose: switching the image to
+# `ros:jazzy-ros-base-noble` could not be built or executed in the environment
+# where this file was edited, so it would be an unvalidated change to the only
+# job that currently builds the workspace. Adding a Jazzy job is the right fix
+# and needs to be done by someone who can actually run it.
+#
+# PARTIAL EVIDENCE (2026-07-29): the workspace at commit a8d711a was built
+# successfully under ROS 2 Jazzy on Ubuntu 24.04.3 (noble) — `colcon build` exit
+# 0, all 6 packages, and `selene_msgs` imported with all 10 RobotState fields
+# intact. So the Jazzy *build* is not believed to be the risk. That was a local
+# WSL2 install of `ros-jazzy-desktop` plus the deps listed in the apt step below,
+# NOT the `ros:jazzy-ros-base-noble` container this job would use, and Docker was
+# unavailable — so a Jazzy CI job is still an unvalidated change and is still the
+# right next step for whoever can run a container.
+# ---------------------------------------------------------------------------
+
 jobs:
   # Fast pure-Python E2E integration test — Phase 6 entry criterion.
   # Runs on every push/PR to block regressions in the coordination
@@ -23,17 +50,40 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install pytest
-        run: pip install pytest
+      # numpy is REQUIRED, not optional: test_e2e_integration.py imports
+      # selene_orchestrator.orchestrator_node, which imports resource_map,
+      # htn_planner and adaptive_survey — all three do `import numpy as np`.
+      # A fresh setup-python container has no numpy, so `pip install pytest`
+      # alone made this job fail at collection with
+      #     ImportError: No module named 'numpy'
+      # and, because build-and-test declares `needs: e2e-integration`, that
+      # reddened the entire pipeline on every commit since c0aff23.
+      #
+      # numpy is the only third-party package this test's import graph needs:
+      # verified locally by blocking scipy / pyyaml / pydantic / pandas in
+      # sys.meta_path and re-running the test (3 passed), and by blocking
+      # numpy alone (collection error, reproducing the CI failure exactly).
+      - name: Install test dependencies
+        run: pip install pytest numpy
 
+      # Be explicit about import paths rather than relying on the interpreter
+      # happening to have the right cwd on sys.path. There is no colcon
+      # install in this job, so the parent directory of each Python package
+      # has to be on PYTHONPATH. selene_orchestrator/test/conftest.py adds the
+      # same two entries itself; keeping both means neither is load-bearing
+      # alone.
       - name: Run E2E test
+        env:
+          PYTHONPATH: >-
+            ${{ github.workspace }}/selene_orchestrator:${{ github.workspace }}/selene_isru
         run: |
-          cd selene_orchestrator
-          python -m pytest test/test_e2e_integration.py -v
+          python -m pytest selene_orchestrator/test/test_e2e_integration.py -v
 
   build-and-test:
     needs: e2e-integration
     runs-on: ubuntu-22.04
+    # See the "ROS distro gap" note at the top of this file: this is Humble,
+    # while the project targets Jazzy.
     container:
       image: ros:humble-ros-base-jammy
 
@@ -68,14 +118,26 @@ jobs:
           source /opt/ros/humble/setup.bash
           colcon build --event-handlers console_direct+
 
+      # Lint configuration lives in the repo's .flake8 file (max-line-length,
+      # exclude list, extend-ignore = W503,W504) and is picked up automatically
+      # because flake8 runs from the repo root. Only the extra build-artifact
+      # exclusion and the output flags are passed here.
+      #
+      # `--select=E,W,F` used to be passed as well, and it made the CLI
+      # contradict .flake8: an explicit --select replaces flake8's
+      # extend-default-ignore set, so E121/E123/E126/E226/E24/E704 were
+      # silently re-enabled (measured locally on this repo: 73 findings with
+      # --select vs 34 without, the difference being 39 E704s). Note the
+      # W503/W504 part of the original diagnosis did NOT reproduce on flake8
+      # 7.3.0 — `--select=E,W,F --extend-ignore=W503,W504` does keep W503/W504
+      # suppressed; it is the *default* ignore list that --select discards.
+      # `--extend-exclude` (not `--exclude`) is used so the .flake8 exclude
+      # list is extended rather than replaced.
       - name: Lint Python
         run: |
           python3 -m flake8 --version
           python3 -m flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ \
-            --max-line-length=100 \
-            --exclude=__pycache__,build,install,log,.git,node_modules,*.egg-info \
-            --extend-ignore=W503,W504 \
-            --select=E,W,F \
+            --extend-exclude='*.egg-info' \
             --show-source \
             --statistics \
             --count

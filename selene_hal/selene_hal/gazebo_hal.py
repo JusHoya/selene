@@ -54,12 +54,29 @@ def _stamp_to_ts(stamp) -> Timestamp:
 # ---------------------------------------------------------------------------
 
 class GazeboScalarFieldSensor(ScalarFieldSensor):
-    """Subscribes to a std_msgs/Float32 topic and caches the latest value."""
+    """Subscribes to a std_msgs/Float32 topic and caches the latest value.
+
+    The Gazebo sensor bridge carries only the scalar value, so the
+    measurement uncertainty is taken from the RCDL descriptor's
+    ``noise_stddev`` (plumbed through ``SensorConfig.extra``). Leaving it at
+    the dataclass default of 0.0 claims a noise-free instrument and collapses
+    the orchestrator's Bayesian resource-map update to last-sample-wins
+    (``ResourceMap.update`` floors sensor variance at 1e-6).
+
+    Caveat, stated plainly: ``noise_stddev`` is a single static figure. The
+    simulated neutron spectrometer
+    (``selene_sim/selene_sim/neutron_spectrometer_node.py``) applies
+    distance-dependent noise, ``noise_base_stddev + coeff * distance``, which
+    can exceed the declared constant. This HAL does not model that
+    dependence, so the reported sigma is the declared nominal, not a
+    per-sample estimate. Not yet validated against simulation.
+    """
 
     def __init__(self, config: SensorConfig, node, qos):
         self._config = config
         self._active = True
         self._lock = threading.Lock()
+        self._noise_stddev = self._resolve_noise_stddev(config, node)
         self._cached = ScalarFieldReading(
             sensor_name=config.name, is_valid=False,
         )
@@ -67,11 +84,38 @@ class GazeboScalarFieldSensor(ScalarFieldSensor):
             Float32, config.topic, self._cb, qos,
         )
 
+    @staticmethod
+    def _resolve_noise_stddev(config: SensorConfig, node) -> float:
+        """Return the RCDL-declared sigma, or 0.0 if none was declared.
+
+        A missing / non-positive / non-finite declaration is logged loudly,
+        because 0.0 means downstream consumers will treat this sensor as
+        exact.
+        """
+        raw = getattr(config, "extra", {}).get("noise_stddev")
+        try:
+            sigma = float(raw)
+        except (TypeError, ValueError):
+            sigma = 0.0
+        if not math.isfinite(sigma) or sigma <= 0.0:
+            try:
+                node.get_logger().warn(
+                    f"Sensor '{config.name}' declares no usable noise_stddev "
+                    f"in its RCDL descriptor (got {raw!r}); readings will "
+                    f"report uncertainty 0.0 and any Bayesian consumer will "
+                    f"treat them as noise-free."
+                )
+            except AttributeError:  # pragma: no cover - node without logger
+                pass
+            return 0.0
+        return sigma
+
     def _cb(self, msg: Float32) -> None:
         reading = ScalarFieldReading(
             sensor_name=self._config.name,
             is_valid=self._active,
             value=msg.data,
+            uncertainty=self._noise_stddev,
         )
         with self._lock:
             self._cached = reading
@@ -540,6 +584,9 @@ class GazeboHal(HalInterface):
                 sensor_type=SensorType(sd.type.value),
                 topic=f"/{robot_id}/{sd.topic}",
                 power_draw=sd.power_draw,
+                # Forwarded via SensorConfig.extra so scalar-field sensors can
+                # report a real measurement sigma instead of 0.0.
+                noise_stddev=sd.noise_stddev,
             )
             sensor_cls = _GAZEBO_SENSOR_MAP.get(SensorType(sd.type.value))
             if sensor_cls:

@@ -1,15 +1,20 @@
 #!/bin/bash
 # SELENE Phase 1 Exit Gate Verification
 set -e
+
+# Workspace root. Defaults to the repo this script lives in; override with
+# SELENE_WS (e.g. SELENE_WS=$HOME/selene when verifying the synced ext4 copy).
+SELENE_WS="${SELENE_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
 source /opt/ros/jazzy/setup.bash
-cd /mnt/c/Users/hoyer/WorkSpace/Projects/selene
+cd "$SELENE_WS"
 source install/setup.bash
 
-MODELS=/mnt/c/Users/hoyer/WorkSpace/Projects/selene/selene_sim/models
+MODELS=$SELENE_WS/selene_sim/models
 export GZ_SIM_RESOURCE_PATH=$MODELS
-WORLD=/mnt/c/Users/hoyer/WorkSpace/Projects/selene/selene_sim/worlds/lunar_psr.sdf
-ICE_CFG=/mnt/c/Users/hoyer/WorkSpace/Projects/selene/selene_sim/config/ice_deposits.yaml
-WORLD_CFG=/mnt/c/Users/hoyer/WorkSpace/Projects/selene/selene_sim/config/world_params.yaml
+WORLD=$SELENE_WS/selene_sim/worlds/lunar_psr.sdf
+ICE_CFG=$SELENE_WS/selene_sim/config/ice_deposits.yaml
+WORLD_CFG=$SELENE_WS/selene_sim/config/world_params.yaml
 
 PASS=0
 FAIL=0
@@ -126,7 +131,7 @@ kill $BATT_PID $SPEC_PID $BRIDGE_PID $GZ_PID 2>/dev/null
 wait 2>/dev/null
 sleep 1
 
-cd /mnt/c/Users/hoyer/WorkSpace/Projects/selene
+cd "$SELENE_WS"
 PYTHONPATH="$PWD/selene_hal:$PYTHONPATH" python3 -m pytest selene_hal/test/ -q 2>&1
 check $? "HAL tests pass"
 

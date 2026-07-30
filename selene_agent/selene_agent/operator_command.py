@@ -46,6 +46,11 @@ class _OperatorCommandContext:
     get_last_seq: Callable[[], int]
     set_last_seq: Callable[[int], None]
     log_warn: Callable[[str], None]
+    # Unconditional motion kill: stop path following and zero the drive
+    # command. Optional (defaults to None) purely so existing callers and
+    # test fixtures that predate it keep constructing successfully; the
+    # production AgentNode always supplies it.
+    stop_navigation: Optional[Callable[[], None]] = None
 
 
 def operator_command_logic(ctx: _OperatorCommandContext, request, response):
@@ -59,9 +64,9 @@ def operator_command_logic(ctx: _OperatorCommandContext, request, response):
            a bogus request.
         5. Withdraw any pending bid (BIDDING state) so the orchestrator
            does not hang waiting for a winner.
-        6. Abort the current skill, mirroring the critical-battery
-           pattern from ``AgentNode._tick`` so actuators are torn down
-           cleanly.
+        6. Unconditionally stop navigation / zero the drive command, then
+           abort the current skill if one is running, so no operator
+           command can ever leave a latched velocity behind.
         7. Dispatch the FSM event + start the appropriate side-effect
            (navigation or recharge) and bump the dedupe counter.
     """
@@ -105,8 +110,22 @@ def operator_command_logic(ctx: _OperatorCommandContext, request, response):
             ctx.publish_bid_withdrawal(pending, ctx.robot_id)
             ctx.set_pending_task_id('')
 
-    # 6. Abort the current skill (mirror critical-battery pattern from
-    #    AgentNode._tick at agent_node.py:192-195).
+    # 6. Stop motion, then abort the current skill.
+    #
+    #    The stop must be UNCONDITIONAL and must not depend on there being
+    #    a running skill. Previously only ``skill.abort()`` ran, so two
+    #    cases left the last cmd_vel latched and the robot driving:
+    #      - an operator ``send_to_location`` drives the navigator directly
+    #        with no wrapping skill (``_current_skill`` is None), so a
+    #        following cancel_task aborted nothing;
+    #      - a skill whose ``is_running()`` is already False (failed /
+    #        complete) is never aborted, but its last velocity command has
+    #        still been published.
+    #    Ordering: stop first, so the wheels are commanded to zero before
+    #    any FSM/skill teardown can raise.
+    if ctx.stop_navigation is not None:
+        ctx.stop_navigation()
+
     skill = ctx.get_current_skill()
     if skill is not None and skill.is_running():
         skill.abort()

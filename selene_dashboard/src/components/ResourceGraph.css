@@ -31,8 +31,13 @@
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 2px;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   text-transform: uppercase;
+  /* A-polish: legible over the node field */
+  padding: 5px 10px;
+  background: rgba(10, 14, 26, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
 .resource-graph__close {
@@ -128,22 +133,47 @@
   color: var(--text-muted);
 }
 
+/* A-polish: the stats used to be bare 11px muted text drawn straight over the
+   node field, which was unreadable wherever a bright node sat behind it. */
 .resource-graph__stats {
   position: absolute;
   bottom: 16px;
   left: 16px;
+  min-width: 190px;
+  padding: 10px 14px;
+  background: rgba(10, 14, 26, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 12px;
+  color: var(--text-secondary);
   z-index: 5;
 }
 
 .resource-graph__stats-row {
-  line-height: 1.6;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 1.7;
+}
+
+.resource-graph__stats-label {
+  color: var(--text-muted);
 }
 
 .resource-graph__stats-value {
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.resource-graph__stats-note {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  max-width: 220px;
 }
 
 .resource-graph__empty {

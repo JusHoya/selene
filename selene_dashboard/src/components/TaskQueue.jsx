@@ -121,11 +121,14 @@ function TaskRow({ task, selected, onClick }) {
 }
 
 function TaskQueue({ state, dispatch }) {
-  const tasksById = state?.tasksById || {};
+  // Depend on the reducer's object directly. `state?.tasksById || {}` would mint
+  // a fresh {} on every render whenever tasksById is absent, which makes the
+  // useMemo below recompute every render; the `|| {}` fallback moves inside.
+  const tasksById = state?.tasksById;
   const selectedTaskId = state?.selectedTaskId || null;
 
   const { activeTasks, finishedTasks } = useMemo(() => {
-    const all = Object.values(tasksById);
+    const all = Object.values(tasksById || {});
     const active = [];
     const finished = [];
     for (const t of all) {

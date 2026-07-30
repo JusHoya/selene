@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ROSLIB from 'roslib';
 import './App.css';
 
@@ -6,7 +6,9 @@ import useRosBridge from './hooks/useRosBridge';
 import useFleetState from './hooks/useFleetState';
 // Wave2-A4: ROSLIB service client wrapper hook
 import useRosService from './hooks/useRosService';
-import { ROBOT_IDS, TOPICS, MSG_TYPES } from './utils/rosTopics';
+// A15: dynamic fleet discovery (replaces the hardcoded ROBOT_IDS list)
+import useFleetDiscovery from './hooks/useFleetDiscovery';
+import { TOPICS, MSG_TYPES } from './utils/rosTopics';
 
 import Header from './components/Header';
 import FleetMap from './components/FleetMap';
@@ -22,8 +24,14 @@ import TaskInjector from './components/TaskInjector';
 function App() {
   const { ros, connected } = useRosBridge();
   const [state, dispatch] = useFleetState();
-  // Wave2-A4: Service caller wrapper used by TaskInjector + RobotDetail
+  // Wave2-A4: Service caller wrapper used by TaskInjector + RobotDetail.
+  // A8: null while disconnected, so callers can tell "unavailable" from "failed".
   const callService = useRosService(ros, connected);
+  // A15: robot ids discovered from rosapi, or the labelled fallback list
+  const { robotIds } = useFleetDiscovery(ros, connected);
+  // Stable primitive key so the per-robot subscribe effect only re-runs when the
+  // *contents* of the fleet change, not on every discovery poll.
+  const robotIdsKey = robotIds.join(',');
 
   const [showResourceGraph, setShowResourceGraph] = useState(false);
 
@@ -51,13 +59,37 @@ function App() {
     dispatch({ type: 'SET_PICKER_RESULT', payload: point });
   }, [dispatch]);
 
-  // Subscribe to ROS topics when connected
+  // A-reconnect: clear the previous backend session's state when the bridge
+  // comes back. Declared before the subscribe effects so the clear lands before
+  // any new message can be dispatched.
+  //
+  // The ref starts false, so the FIRST successful connect does NOT reset — only
+  // a true reconnect (connected true -> false -> true) does. Because the effect
+  // depends only on `connected`, dispatching RESET here cannot re-trigger it.
+  const hasConnectedBeforeRef = useRef(false);
   useEffect(() => {
-    if (!ros || !connected) return;
+    if (!connected) return;
+    if (hasConnectedBeforeRef.current) {
+      dispatch({ type: 'RESET' });
+    }
+    hasConnectedBeforeRef.current = true;
+  }, [connected, dispatch]);
+
+  // A15: Per-robot subscriptions for the *discovered* fleet.
+  //
+  // Keyed on robotIdsKey: whenever the fleet set changes, every per-robot topic
+  // is unsubscribed and rebuilt from the new list. That is deliberately a full
+  // teardown rather than an incremental diff — it makes duplicate or leaked
+  // ROSLIB.Topic subscriptions structurally impossible. The discovery set
+  // converges within a few polls and is stable after that, so the churn is
+  // bounded to fleet-composition changes.
+  useEffect(() => {
+    if (!ros || !connected) return undefined;
+    const ids = robotIdsKey ? robotIdsKey.split(',') : [];
     const listeners = [];
 
-    // Per-robot state subscriptions
-    ROBOT_IDS.forEach((id) => {
+    ids.forEach((id) => {
+      // RobotState
       const stateTopic = new ROSLIB.Topic({
         ros,
         name: TOPICS.ROBOT_STATE(id),
@@ -68,11 +100,8 @@ function App() {
         dispatch({ type: 'UPDATE_ROBOT', payload: msg });
       });
       listeners.push(stateTopic);
-    });
 
-    // Wave2-A4: Per-robot planned_path subscriptions (nav_msgs/Path)
-    // Extract world x/y from each pose and dispatch UPDATE_ROBOT_PATH.
-    ROBOT_IDS.forEach((id) => {
+      // Wave2-A4: planned_path (nav_msgs/Path) — extract world x/y per pose
       const pathTopic = new ROSLIB.Topic({
         ros,
         name: TOPICS.PLANNED_PATH(id),
@@ -97,6 +126,17 @@ function App() {
       });
       listeners.push(pathTopic);
     });
+
+    return () => {
+      listeners.forEach((l) => l.unsubscribe());
+    };
+  }, [ros, connected, dispatch, robotIdsKey]);
+
+  // Fleet-wide (non per-robot) subscriptions. Kept in their own effect so a
+  // change in fleet composition does not tear these down.
+  useEffect(() => {
+    if (!ros || !connected) return undefined;
+    const listeners = [];
 
     // Resource map updates
     const mapTopic = new ROSLIB.Topic({
@@ -205,16 +245,20 @@ function App() {
 
       <div className="app__sidebar">
         {/* Wave2-A4: pass state/dispatch/callService for override buttons + time-to-empty */}
+        {/* A8: key by robot_id so per-robot local state (recent actions,
+            battery rolling window, pending confirmation) does not bleed
+            across robot selections. */}
         <RobotDetail
+          key={selectedRobot?.robot_id || 'no-robot'}
           robot={selectedRobot}
           state={state}
           dispatch={dispatch}
           callService={callService}
         />
+        {/* A4: `readings` removed — MissionProgress never accepted it. */}
         <MissionProgress
           progress={state.missionProgress}
           robots={state.robots}
-          readings={state.resourceReadings}
         />
         {/* Wave2-A3: TaskQueue panel */}
         <TaskQueue state={state} dispatch={dispatch} />

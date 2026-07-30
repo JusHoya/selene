@@ -6,7 +6,7 @@ affiliation: "Spacecraft & Extraterrestrial Logistics for Extraction, Navigation
 date: "April 2026"
 paper-number: "WP-06"
 abstract: |
-  Autonomous In-Situ Resource Utilization (ISRU) on the lunar surface requires reliable accounting of extracted material as it flows through a multi-stage pipeline operated by a heterogeneous robotic fleet. Without rigorous tracking, mass discrepancies accumulate silently, leading to mission shortfalls and wasted energy. This paper presents a conservation-invariant material ledger implemented within the SELENE fleet management system. The ledger enforces an algebraic invariant --- total extracted mass equals mass in transit plus mass deposited, within a configurable tolerance --- across every state transition in the extraction pipeline. We formalize the invariant as a closed system property, prove that it is preserved under all legal ledger operations, and analyze its behavior under fault scenarios including robot loss and partial unload. We further derive the extraction rate model that governs material inflow, incorporating ice concentration, power allocation, and depth-dependent penalty terms. The ledger integrates with the HTN planner via dynamic cycle expansion, enabling closed-loop mission control. Comparison with terrestrial mining material tracking highlights the unique constraints imposed by autonomous, delay-tolerant lunar operations.
+  Autonomous In-Situ Resource Utilization (ISRU) on the lunar surface requires reliable accounting of extracted material as it flows through a multi-stage pipeline operated by a heterogeneous robotic fleet. Without rigorous tracking, mass discrepancies accumulate silently, leading to mission shortfalls and wasted energy. This paper presents a conservation-invariant material ledger implemented within the SELENE fleet management system. The ledger is designed to enforce an algebraic invariant --- total extracted mass equals mass in transit plus mass deposited, within a configurable tolerance --- across every state transition in the extraction pipeline. We formalize the invariant as a closed system property, prove that it is preserved under all legal ledger operations given atomic extract-load pairing, and identify the missing at-site account that makes that hypothesis necessary in the first place. We analyze behavior under fault scenarios including robot loss and partial unload, and derive the extraction rate model that governs material inflow, incorporating ice concentration, power allocation, and depth-dependent penalty terms. Comparison with terrestrial mining material tracking highlights the unique constraints imposed by autonomous, delay-tolerant lunar operations. We report implementation status honestly: the ledger and rate model are implemented and unit-tested, but they are not yet wired into the running fleet --- no production code path records material movements, the conservation check is never invoked at runtime, and the HTN planner's dynamic cycle expansion currently infers deposited mass from completed haul counts rather than from the ledger. Closing that gap, and adding the at-site account, are the identified next steps.
 keywords: "material tracking, conservation invariant, ISRU operations, extraction rate model, fleet logistics, autonomous mining"
 ---
 
@@ -32,7 +32,7 @@ In practice, reconciliation is performed daily or weekly by comparing truck disp
 
 The conservation invariant in material tracking is analogous to double-entry bookkeeping in accounting, where every transaction simultaneously debits one account and credits another. The sum of all debits must equal the sum of all credits. In the material ledger, extraction is the "debit" (material leaves the ground), and the combination of in-transit cargo and depot deposits constitutes the "credits." Any imbalance signals an error --- exactly as an unbalanced ledger signals a financial discrepancy.
 
-This analogy is not merely illustrative. The `MaterialInventory` implementation in SELENE explicitly structures every material movement as a paired operation: `record_extraction` debits the site, while `record_load` and `record_unload` credit the transit and depot accounts respectively. The `check_conservation` method performs the trial balance.
+This analogy shaped the API. The `MaterialInventory` implementation in SELENE offers one method per movement: `record_extraction` debits the site, while `record_load` and `record_unload` credit the transit and depot accounts respectively, and `check_conservation` performs the trial balance. The analogy is imperfect in one important respect, discussed later in this paper: unlike double-entry bookkeeping, the implementation does not make each movement a single atomic two-sided entry, so a caller can leave the books unbalanced between calls.
 
 # Problem Formulation
 
@@ -86,7 +86,7 @@ Four operations mutate the ledger state:
 
 ## Statement
 
-**Theorem.** If the conservation invariant holds at time $t_0$ and only legal ledger operations are applied, then the invariant holds at all subsequent times.
+**Theorem.** If the conservation invariant holds at time $t_0$, only legal ledger operations are applied, and every `record_extraction` is paired with a `record_load` of equal mass before the invariant is next evaluated, then the invariant holds at all subsequent evaluation points. The pairing hypothesis is load-bearing and is *not* discharged by the current implementation; see "Known Gap" below.
 
 ## Proof
 
@@ -100,7 +100,7 @@ The invariant requires $|\delta(t)| \leq \epsilon$ for all $t$. At initializatio
 
 $$\delta(t^+) = \delta(t^-) + \Delta m$$
 
-This increases the imbalance. However, `record_extraction` is always followed by a corresponding `record_load` of the same quantity $\Delta m$ (the excavation skill performs both atomically).
+This increases the imbalance, and it is the weak point of the current formulation. The invariant as implemented (`check_conservation`, `selene_isru/selene_isru/inventory.py:142`) compares $M_{\text{extracted}}$ against $M_{\text{transit}} + M_{\text{deposited}}$ only --- there is no *at-site* account, even though `record_extraction`'s own docstring states that material "is considered to be at the site awaiting pickup until `record_load` is called" (`inventory.py:85`--`89`). The proof below therefore requires that every `record_extraction` be immediately paired with a `record_load` of the same $\Delta m$. Nothing in the ledger enforces that pairing, and no caller currently establishes it: `record_extraction`, `record_load`, and `record_unload` have no production call sites --- only the excavation skill's local `_extracted_kg` accumulator (`selene_agent/selene_agent/skills/excavate.py:151`) tracks mined mass, and it never writes to the ledger. The subsection "Known Gap: the Missing At-Site Account" below states the correction this implies.
 
 **Case 2: record_load.** The operation adds $\Delta m$ to $M_{\text{transit}}$:
 
@@ -116,7 +116,21 @@ The transit-to-depot transfer is balanced by construction: the same quantity is 
 
 **Case 4: register_site.** This operation sets $E_k = 0$ for a new site. Since $E_k = 0$, the contribution to $M_{\text{extracted}}$ is zero, and $\delta$ is unchanged.
 
-Since each legal operation either preserves $\delta$ exactly (Cases 3, 4) or preserves it when extraction and load are paired (Cases 1, 2), and since the skill execution layer guarantees atomic pairing, the invariant is maintained. $\square$
+Since each legal operation either preserves $\delta$ exactly (Cases 3, 4) or preserves it when extraction and load are paired (Cases 1, 2), the invariant is maintained *under the assumption of atomic extract-load pairing*. $\square$
+
+## Known Gap: the Missing At-Site Account
+
+The pairing assumption on which the proof rests is not satisfied by the current implementation, and this is a genuine defect rather than a presentational one. The three-account model omits material that has been mined but not yet loaded. Because `check_conservation` evaluates
+
+$$\left| M_{\text{extracted}} - \left( M_{\text{transit}} + M_{\text{deposited}} \right) \right| \leq \epsilon$$
+
+with no at-site term, any interval during which extracted mass has not yet been transferred to a hopper registers as a violation. Excavation is a continuous process --- the extraction rate model below yields on the order of $10^{-3}$ kg/s --- so if `record_extraction` were called incrementally as drilling proceeds, the check would report `False` for essentially the whole extraction phase. It would return `True` only at the instants when the site account and the hopper account happen to agree.
+
+The correct formulation adds a fourth account $M_{\text{at-site}}$, with `record_extraction` crediting it and `record_load` debiting it:
+
+$$M_{\text{extracted}} = M_{\text{at-site}} + M_{\text{transit}} + M_{\text{deposited}} \pm \epsilon$$
+
+Under this four-account model each operation preserves $\delta$ exactly and no pairing assumption is required, restoring the proof unconditionally. Implementing it requires an `_at_site_kg` field on `SiteInventory`, corresponding updates in `record_extraction` and `record_load`, and a revised `check_conservation`. This is known future work; it has not been done. Until it is, the invariant should be understood as holding only for the coarse-grained, atomically-paired call sequence exercised by the unit tests (`selene_isru/test/test_inventory.py`), not for arbitrary interleavings.
 
 ## Tolerance Rationale
 
@@ -181,7 +195,11 @@ $$n_{\text{cycles}} = \left\lceil \frac{m_{\text{target}}}{m_{\text{hopper}}} \r
 
 where $m_{\text{hopper}} = 20.0$ kg is the per-trip hopper capacity.
 
-The HTN planner's `check_and_advance` method, called at 1 Hz, queries the material ledger to determine total deposited mass. If $M_{\text{deposited}} < m_{\text{target}}$ and the number of active cycles is insufficient to close the gap, additional excavate-haul cycle pairs are generated dynamically:
+The HTN planner's `check_and_advance` method is called at 1 Hz by the orchestrator's `_htn_advance` timer. It is worth being precise about what it reads, because it is *not* the ledger. `HTNPlanner._update_deposited` (`htn_planner.py:325`--`333`) counts haul tasks belonging to the mission whose status is `COMPLETED` and multiplies by `HOPPER_CAPACITY_KG`:
+
+$$M_{\text{deposited}}^{\text{HTN}} = n_{\text{haul,completed}} \times m_{\text{hopper}}$$
+
+This is a proxy for the ledger, not a query against it, and it assumes every completed haul delivered a full 20 kg hopper --- so it cannot represent the partial loads that the closed loop is supposed to compensate for. Coupling `check_and_advance` to `MaterialInventory.get_total_deposited()` is a straightforward change that has not been made. With that caveat, if $M_{\text{deposited}} < m_{\text{target}}$ and the number of active cycles is insufficient to close the gap, additional excavate-haul cycle pairs are generated dynamically:
 
 $$n_{\text{additional}} = \left\lceil \frac{m_{\text{target}} - M_{\text{deposited}}}{m_{\text{hopper}}} \right\rceil - n_{\text{generated}}$$
 
@@ -189,7 +207,11 @@ This closed-loop mechanism compensates for partial loads (when a hopper is not f
 
 ## Mission Progress Reporting
 
-The material ledger's `get_mission_progress` method provides the data source for the `MissionProgress` ROS 2 message, which carries the fields `target_quantity`, `extracted_quantity`, `in_transit_quantity`, and `deposited_quantity`. This message is published at 1 Hz by the orchestrator node and consumed by the web-based dashboard for real-time mission visualization and by the HTN planner for cycle expansion decisions. The message also includes fleet-level telemetry (`fleet_distance_total`, `fleet_energy_total`, `elapsed_sim_time`) for operational monitoring.
+The material ledger's `get_mission_progress` method is wired as the data source for three fields of the `MissionProgress` ROS 2 message --- `extracted_quantity`, `in_transit_quantity`, and `deposited_quantity`, assigned in `OrchestratorNode._publish_mission_progress`. The message is published at 1 Hz and consumed by the web dashboard. One qualification matters:
+
+**The ledger is never written to in a live run.** `register_site`, `record_extraction`, `record_load`, and `record_unload` are exercised only by unit tests; no orchestrator, agent, or skill code path calls them. The ledger consequently holds all zeros at runtime, and those three `MissionProgress` fields publish 0.0 regardless of mission state. Wiring the excavate and haul skills' completion reports through to the ledger is the missing integration step. We note that the orchestrator deliberately leaves these fields reading the empty ledger rather than substituting the HTN planner's completed-haul estimate, on the grounds that publishing the estimate in a field named `deposited_quantity` would present an assumption as a measurement --- a judgement we endorse.
+
+The remaining fields are populated independently of the ledger: `target_quantity` from the HTN planner's mission target (`HTNPlanner.get_mission_status()['target_kg']`, 100.0 kg as configured), and `fleet_distance_total`, `fleet_energy_total`, and `elapsed_sim_time` from `FleetMonitor` and the node clock. The HTN planner does not consume this message; it computes deposited mass independently, as described above.
 
 ## Dependency Chain
 
@@ -209,7 +231,7 @@ If robot $i$ becomes permanently unresponsive while carrying cargo $C_i > 0$, th
 
 $$M_{\text{transit}} \text{ includes } C_i \text{, but the material is irrecoverable.}$$
 
-The conservation invariant still holds --- the material is correctly accounted for as "in transit." However, the HTN planner's deposited-quantity check will detect that the mission target has not been met and will generate additional excavate-haul cycles to compensate. This self-healing behavior arises naturally from the closed-loop integration between the ledger and the planner, without requiring explicit robot-loss handling logic in the material tracking layer.
+The conservation invariant still holds --- the material is correctly accounted for as "in transit." The HTN planner's deposited-quantity check will detect that the mission target has not been met and will generate additional excavate-haul cycles to compensate. Note that this compensation works today only because the planner counts *completed* haul tasks: a robot lost mid-haul never marks its haul COMPLETED, so the shortfall is visible without any ledger involvement. The self-healing behaviour is therefore real but is a property of the task-queue accounting, not of ledger integration --- the two are not yet connected. Once they are, the same recovery would be driven by measured deposited mass rather than by an assumed full hopper per completed haul, which is the more robust formulation.
 
 For operational awareness, a future extension could track cargo age (time since loading) and flag stale cargo records whose associated robots are offline, enabling operators to write off irrecoverable material and adjust mission estimates.
 
@@ -227,20 +249,22 @@ In both cases, the return value of `record_unload` provides feedback to the call
 
 The SELENE material ledger differs from terrestrial mining material balance systems along several dimensions:
 
-| Dimension | Terrestrial Mining | SELENE Ledger |
-|---|---|---|
-| Reconciliation frequency | Daily/weekly batch | Continuous (per-operation) |
-| Measurement source | Weigh bridges, belt scales, LiDAR surveys | Software-reported mass values |
-| Communication | Reliable, low-latency | 1.3s delay, potential blackouts |
-| Tolerance | 1--3% of total throughput | 0.01 kg absolute |
-| Error detection latency | Hours to days | Immediate (per-operation check) |
-| Recovery mechanism | Manual investigation | Automatic cycle expansion |
-| Multi-product tracking | Yes (ore grades, waste streams) | Single product (current phase) |
-| Infrastructure required | Scales, conveyors, databases, GPS | None (software-only) |
+The SELENE column below describes the ledger *as designed*. Where the current build does not yet deliver a property, that is marked explicitly.
 
-Table: Comparison of SELENE material ledger with terrestrial mining material balance systems.
+| Dimension | Terrestrial Mining | SELENE Ledger (designed) | Implemented? |
+|---|---|---|---|
+| Reconciliation frequency | Daily/weekly batch | Per-operation | No --- `check_conservation` has no production caller |
+| Measurement source | Weigh bridges, belt scales, LiDAR surveys | Software-reported mass values | Design only --- no caller writes to the ledger |
+| Communication | Reliable, low-latency | 1.3s delay, potential blackouts | Ledger is node-local, so unaffected |
+| Tolerance | 1--3% of total throughput | 0.01 kg absolute | Yes (`inventory.py:142` default) |
+| Error detection latency | Hours to days | Immediate (per-operation check) | No --- the check is never invoked at runtime |
+| Recovery mechanism | Manual investigation | Automatic cycle expansion | Yes, but driven by completed-haul count, not the ledger |
+| Multi-product tracking | Yes (ore grades, waste streams) | Single product (current phase) | Single product |
+| Infrastructure required | Scales, conveyors, databases, GPS | None (software-only) | Yes --- pure Python, no dependencies |
 
-The most significant difference is the continuous enforcement model. Terrestrial systems tolerate discrepancies between reconciliation periods because the infrastructure provides independent measurement channels (e.g., comparing truck dispatch records against weigh-bridge totals). On the lunar surface, the software ledger is the sole source of truth, making real-time invariant checking essential rather than optional.
+Table: Comparison of SELENE material ledger with terrestrial mining material balance systems, with implementation status.
+
+The intended point of difference is the continuous enforcement model. Terrestrial systems tolerate discrepancies between reconciliation periods because the infrastructure provides independent measurement channels (e.g., comparing truck dispatch records against weigh-bridge totals). On the lunar surface, the software ledger would be the sole source of truth, making real-time invariant checking essential rather than optional. That argument motivates the design; the enforcement itself is not yet switched on, and switching it on requires the at-site account described earlier, or the check will fire continuously during extraction.
 
 The absolute tolerance of 0.01 kg (versus terrestrial percentage-based tolerances) reflects the difference in scale. A 2% tolerance on a 10,000-tonne daily throughput permits 200 tonnes of unaccounted material. The SELENE system processes tens of kilograms per mission, where even 1 kg of untracked material represents a significant fraction of the target quantity.
 
@@ -270,7 +294,7 @@ Regolith handling on the lunar surface is subject to spillage --- material lost 
 
 Autonomous lunar ISRU operations demand material accounting systems that operate without terrestrial infrastructure, tolerate communication delays, and detect discrepancies in real time. The conservation-invariant material ledger presented in this paper addresses these requirements through four mechanisms: (1) a three-stage tracking model that partitions material into extracted, in-transit, and deposited accounts; (2) an algebraic invariant that is provably preserved under all legal ledger operations; (3) an extraction rate model that captures the physical dependencies on power, concentration, and depth; and (4) closed-loop integration with the HTN planner for dynamic cycle expansion based on deposited-quantity feedback.
 
-The system has been validated in Gazebo Harmonic simulation as part of the SELENE Sprint 0 prototype, where a four-robot heterogeneous fleet executes autonomous ice collection missions with continuous conservation checking. The ledger's simplicity --- 158 lines of pure Python with no external dependencies --- belies its importance: it provides the single source of truth for material state across the entire fleet, enabling both autonomous recovery from faults and accurate mission progress reporting to Earth-side operators.
+We are explicit about maturity. The ledger is implemented and unit-tested (`selene_isru/test/test_inventory.py`, which passes locally: 13 tests in the `selene_isru` suite), and it is instantiated by the orchestrator. It is **not yet integrated**: no production code path records extraction, load, or unload events, `check_conservation` is never invoked outside tests, and the four-account correction identified above has not been implemented. The system has therefore **not** been validated in Gazebo Harmonic with continuous conservation checking, and no simulation run record exists in the repository to support such a claim. The ledger's simplicity --- 157 lines of pure Python with no external dependencies --- is its main asset for the work that remains: once the excavate and haul skills report through it and the at-site account is added, it can serve as the single source of truth for material state across the fleet, enabling both autonomous recovery from faults and accurate mission progress reporting to Earth-side operators. Demonstrating that end to end in simulation is the immediate next task, not a completed one.
 
 Future work will extend the ledger to support processing plant integration, multi-product tracking, probabilistic mass estimation, and spillage modeling, progressively closing the gap between the software model and the physical reality of lunar surface operations.
 

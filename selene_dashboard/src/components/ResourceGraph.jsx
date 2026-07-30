@@ -7,6 +7,20 @@ const FRAME_INTERVAL = 1000 / 30; // 30 fps
 const MIN_NODE_RADIUS = 4;
 const MAX_NODE_RADIUS = 30;
 const PROXIMITY_THRESHOLD = 30; // meters — readings within this distance get an edge
+
+// A-polish: LEGIBILITY cap on drawn edges.
+//
+// Every pair of readings within PROXIMITY_THRESHOLD got an edge, which is
+// ~16,750 edges at the 500-reading cap. That washes the view into a white
+// hairball you cannot read anything out of. This is NOT a performance fix: in a
+// browser session on 2026-07-29 this view measured 131 FPS mean (p95 12.2 ms,
+// max 42.4 ms) with the full edge set at "Readings: 500 / Connections: 16751",
+// so the full graph rendered fine and was merely unreadable. That measurement
+// was taken by the reviewer against a synthetic feed, not by this change's
+// author, and has not been repeated since the cap was added. Only the
+// strongest-similarity edges are kept; the stats overlay reports both numbers
+// so the view is not passed off as the complete graph.
+const MAX_DRAWN_EDGES = 900;
 const REPULSION_STRENGTH = 800;
 const SPRING_STRENGTH = 0.005;
 const IDEAL_EDGE_LENGTH = 80;
@@ -36,9 +50,14 @@ function worldDist(a, b) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-/** Build edge list from readings based on spatial proximity */
-function computeEdges(readings) {
-  const edges = [];
+/**
+ * Build edge list from readings based on spatial proximity.
+ * Returns { edges, totalCandidates } where `edges` is capped to the strongest
+ * MAX_DRAWN_EDGES by similarity (ties broken by shorter separation) and
+ * `totalCandidates` is how many pairs actually qualified.
+ */
+export function computeEdges(readings, maxEdges = MAX_DRAWN_EDGES) {
+  const candidates = [];
   for (let i = 0; i < readings.length; i++) {
     for (let j = i + 1; j < readings.length; j++) {
       const dist = worldDist(readings[i].location, readings[j].location);
@@ -48,11 +67,19 @@ function computeEdges(readings) {
           readings[i].ice_concentration - readings[j].ice_concentration
         );
         const similarity = Math.max(0, 1 - concDiff / 10);
-        edges.push({ i, j, similarity, worldDist: dist });
+        candidates.push({ i, j, similarity, worldDist: dist });
       }
     }
   }
-  return edges;
+  const totalCandidates = candidates.length;
+  if (totalCandidates <= maxEdges) {
+    return { edges: candidates, totalCandidates };
+  }
+  candidates.sort((a, b) => {
+    if (b.similarity !== a.similarity) return b.similarity - a.similarity;
+    return a.worldDist - b.worldDist;
+  });
+  return { edges: candidates.slice(0, maxEdges), totalCandidates };
 }
 
 /** Initialize simulation nodes from readings, scattered around canvas center */
@@ -221,12 +248,6 @@ function drawNodes(ctx, nodes, time, offsetX, offsetY, scale, hoveredIdx, select
   ctx.restore();
 }
 
-function drawLegendOnCanvas(ctx, w, h) {
-  // Draw a small node-size reference in bottom-right
-  // (The HTML legend overlays this area, so this is a fallback)
-  // Intentionally minimal — legend is handled in CSS overlay
-}
-
 // ---------- Component ----------
 
 function ResourceGraph({ readings, onClose }) {
@@ -256,8 +277,10 @@ function ResourceGraph({ readings, onClose }) {
   selectedRef.current = selectedIdx;
 
   // ---------- Compute edges synchronously so stats are always current ----------
-  const edges = useMemo(
-    () => (readings && readings.length > 0 ? computeEdges(readings) : []),
+  const { edges, totalCandidates } = useMemo(
+    () => (readings && readings.length > 0
+      ? computeEdges(readings)
+      : { edges: [], totalCandidates: 0 }),
     [readings]
   );
   edgesRef.current = edges;
@@ -605,6 +628,9 @@ function ResourceGraph({ readings, onClose }) {
         ).toFixed(2),
         peakConcentration: Math.max(...readings.map((r) => r.ice_concentration)).toFixed(2),
         edgeCount: edges.length,
+        // A-polish: report the honest total alongside what is actually drawn.
+        totalEdgeCount: totalCandidates,
+        edgesCapped: totalCandidates > edges.length,
       }
     : null;
 
@@ -713,29 +739,39 @@ function ResourceGraph({ readings, onClose }) {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — A-polish: opaque panel + larger type so it stays readable
+          over the node field on a projector. */}
       {stats && (
         <div className="resource-graph__stats">
           <div className="resource-graph__stats-row">
-            Readings:{' '}
+            <span className="resource-graph__stats-label">Readings</span>
             <span className="resource-graph__stats-value">{stats.count}</span>
           </div>
           <div className="resource-graph__stats-row">
-            Connections:{' '}
-            <span className="resource-graph__stats-value">{stats.edgeCount}</span>
+            <span className="resource-graph__stats-label">Connections</span>
+            <span className="resource-graph__stats-value">
+              {stats.edgesCapped
+                ? `${stats.edgeCount} of ${stats.totalEdgeCount}`
+                : stats.edgeCount}
+            </span>
           </div>
           <div className="resource-graph__stats-row">
-            Peak:{' '}
+            <span className="resource-graph__stats-label">Peak</span>
             <span className="resource-graph__stats-value">
               {stats.peakConcentration} wt%
             </span>
           </div>
           <div className="resource-graph__stats-row">
-            Avg:{' '}
+            <span className="resource-graph__stats-label">Avg</span>
             <span className="resource-graph__stats-value">
               {stats.avgConcentration} wt%
             </span>
           </div>
+          {stats.edgesCapped && (
+            <div className="resource-graph__stats-note">
+              Showing the {stats.edgeCount} strongest-similarity links only
+            </div>
+          )}
         </div>
       )}
     </div>

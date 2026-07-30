@@ -1,5 +1,6 @@
 """Prospect skill -- navigate to waypoint, sense ice concentration, record result."""
 
+import math
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -124,9 +125,22 @@ class ProspectSkill(BaseSkill):
     def _record_result(self):
         if self._readings:
             avg_value = sum(r.value for r in self._readings) / len(self._readings)
-            avg_uncertainty = (
-                sum(r.uncertainty for r in self._readings) / len(self._readings)
-            )
+            # Only finite, strictly-positive sigmas carry information. A
+            # sensor reporting 0.0 (or NaN/inf) uncertainty is treated as
+            # "uncertainty unknown" -> inf, NOT as "perfectly precise" -> 0.0.
+            # 0.0 would propagate into ResourceMapUpdate.sensor_uncertainty
+            # and collapse the orchestrator's Gaussian conjugate update to
+            # last-sample-wins (ResourceMap.update floors sensor variance at
+            # 1e-6). inf instead makes the observation precision 0, i.e. the
+            # map correctly ignores a reading whose error bars are unknown.
+            finite_sigmas = [
+                float(r.uncertainty) for r in self._readings
+                if math.isfinite(r.uncertainty) and r.uncertainty > 0.0
+            ]
+            if finite_sigmas:
+                avg_uncertainty = sum(finite_sigmas) / len(finite_sigmas)
+            else:
+                avg_uncertainty = float("inf")
         else:
             avg_value = 0.0
             avg_uncertainty = float("inf")

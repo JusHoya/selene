@@ -4,11 +4,12 @@ These tests exercise the pure-Python decision tree underlying the
 ``/orchestrator/inject_task`` service handler. They avoid standing up a
 real ROS node by:
 
-  1. Stubbing ``rclpy``, ``selene_msgs.*``, ``selene_isru.*`` and
-     ``geometry_msgs.msg`` in ``sys.modules`` before importing
-     ``orchestrator_node``. Inside a colcon workspace the real modules
-     take precedence, so the same file runs both under ``pytest`` from
-     ``/tmp`` and under ``colcon test``.
+  1. Relying on ``test/conftest.py``, which installs minimal ``rclpy`` /
+     ``selene_msgs`` / ``geometry_msgs`` stand-ins in ``sys.modules``
+     before this module is imported, and on ``sys.path`` setup done in
+     the same place. Only genuinely-missing modules are stubbed, so
+     inside a colcon workspace the real ones take precedence and nothing
+     is shadowed for other packages' tests.
 
   2. Driving ``inject_task_logic`` directly with an ``_InjectTaskContext``
      wrapping a real ``TaskQueue`` + a mocked ``FleetMonitor`` +
@@ -16,7 +17,6 @@ real ROS node by:
 """
 from __future__ import annotations
 
-import sys
 import types
 from unittest.mock import MagicMock
 
@@ -24,196 +24,10 @@ import pytest
 
 
 # --------------------------------------------------------------------------- #
-#  sys.modules stubs — must run before importing orchestrator_node            #
+#  ROS 2 stubs + sys.path setup live in test/conftest.py so they are           #
+#  installed exactly once, only for modules that are really missing, and       #
+#  torn down at session end (no cross-package sys.modules pollution).          #
 # --------------------------------------------------------------------------- #
-
-def _ensure_stub(name: str) -> types.ModuleType:
-    if name in sys.modules:
-        return sys.modules[name]
-    mod = types.ModuleType(name)
-    sys.modules[name] = mod
-    return mod
-
-
-def _install_ros_stubs() -> None:
-    # rclpy + rclpy.node: only Node class and spin_until_future_complete are
-    # touched at import time.
-    rclpy_mod = _ensure_stub('rclpy')
-    rclpy_mod.spin_until_future_complete = lambda *a, **k: None
-    rclpy_mod.init = lambda *a, **k: None
-    rclpy_mod.shutdown = lambda *a, **k: None
-
-    rclpy_node = _ensure_stub('rclpy.node')
-
-    # rclpy.callback_groups + rclpy.executors: orchestrator_node imports
-    # ReentrantCallbackGroup + MultiThreadedExecutor at module import time
-    # for the override-robot service path (D8 fix).
-    rclpy_cb = _ensure_stub('rclpy.callback_groups')
-
-    class _ReentrantCallbackGroup:
-        def __init__(self, *a, **k): pass
-    rclpy_cb.ReentrantCallbackGroup = _ReentrantCallbackGroup
-
-    rclpy_exec = _ensure_stub('rclpy.executors')
-
-    class _MultiThreadedExecutor:
-        def __init__(self, *a, **k): pass
-        def add_node(self, *a, **k): pass
-        def spin(self): pass
-        def shutdown(self): pass
-    rclpy_exec.MultiThreadedExecutor = _MultiThreadedExecutor
-
-    class _FakeNode:
-        def __init__(self, *a, **k): pass
-        def declare_parameter(self, *a, **k):
-            class _P:
-                value = a[1] if len(a) > 1 else None
-            return _P()
-        def get_parameter(self, name):
-            class _P:
-                value = None
-            return _P()
-        def create_subscription(self, *a, **k): return MagicMock()
-        def create_publisher(self, *a, **k): return MagicMock()
-        def create_timer(self, *a, **k): return MagicMock()
-        def create_service(self, *a, **k): return MagicMock()
-        def create_client(self, *a, **k): return MagicMock()
-        def get_clock(self):
-            clk = MagicMock()
-            now = MagicMock()
-            now.to_msg.return_value = MagicMock()
-            now.nanoseconds = 0
-            clk.now.return_value = now
-            return clk
-        def get_logger(self): return MagicMock()
-        def destroy_node(self): pass
-
-    rclpy_node.Node = _FakeNode
-
-    # geometry_msgs.msg.Point
-    gm = _ensure_stub('geometry_msgs')
-    gm_msg = _ensure_stub('geometry_msgs.msg')
-
-    class _Point:
-        def __init__(self, x=0.0, y=0.0, z=0.0):
-            self.x = float(x)
-            self.y = float(y)
-            self.z = float(z)
-    gm_msg.Point = _Point
-    gm.msg = gm_msg
-
-    # selene_msgs.msg.*
-    smsgs = _ensure_stub('selene_msgs')
-    smsgs_msg = _ensure_stub('selene_msgs.msg')
-
-    def _make_msg_class(name, fields):
-        def __init__(self):
-            for f, default in fields.items():
-                setattr(self, f, default() if callable(default) else default)
-        return type(name, (), {'__init__': __init__})
-
-    smsgs_msg.BidResponse = _make_msg_class('BidResponse', {
-        'task_id': '', 'robot_id': '', 'bid_score': 0.0,
-        'estimated_arrival_time': 0.0, 'energy_after_task': 0.0,
-    })
-    smsgs_msg.FleetAlert = _make_msg_class('FleetAlert', {
-        'alert_id': '', 'severity': '', 'source_robot_id': '',
-        'message': '', 'stamp': lambda: MagicMock(),
-    })
-    smsgs_msg.MissionProgress = _make_msg_class('MissionProgress', {
-        'objective_description': '', 'target_quantity': 0.0,
-        'extracted_quantity': 0.0, 'in_transit_quantity': 0.0,
-        'deposited_quantity': 0.0, 'fleet_distance_total': 0.0,
-        'fleet_energy_total': 0.0, 'elapsed_sim_time': 0.0,
-    })
-    smsgs_msg.ResourceMapUpdate = _make_msg_class('ResourceMapUpdate', {
-        'location': lambda: _Point(), 'ice_concentration': 0.0,
-        'sensor_uncertainty': 0.0,
-    })
-    smsgs_msg.RobotState = _make_msg_class('RobotState', {
-        'robot_id': '', 'robot_type': '', 'fsm_state': '',
-        'pose': lambda: _Point(), 'battery_level': 1.0,
-        'current_task_id': '', 'capabilities': lambda: [],
-    })
-    smsgs_msg.TaskAnnouncement = _make_msg_class('TaskAnnouncement', {
-        'task_id': '', 'task_type': '', 'target_location': lambda: _Point(),
-        'estimated_energy_cost': 0.0, 'required_capabilities': lambda: [],
-        'priority': 0.0, 'estimated_duration': 0.0, 'parent_task_id': '',
-        'deadline': lambda: MagicMock(),
-    })
-    smsgs_msg.TaskAssignment = _make_msg_class('TaskAssignment', {
-        'task_id': '', 'robot_id': '', 'task_type': '',
-        'target_location': lambda: _Point(), 'parameters': lambda: [],
-        'assigned_at': lambda: MagicMock(),
-    })
-
-    # selene_msgs.srv.*
-    smsgs_srv = _ensure_stub('selene_msgs.srv')
-
-    class _InjectTaskSrv:
-        class Request:
-            def __init__(self):
-                self.task_type = ''
-                self.target_location = _Point()
-                self.quantity = 0.0
-                self.assigned_robot_id = ''
-        class Response:
-            def __init__(self):
-                self.success = False
-                self.task_id = ''
-                self.message = ''
-    smsgs_srv.InjectTask = _InjectTaskSrv
-
-    class _OverrideRobotSrv:
-        class Request:
-            def __init__(self):
-                self.robot_id = ''
-                self.command = ''
-                self.target = _Point()
-        class Response:
-            def __init__(self):
-                self.success = False
-                self.message = ''
-    smsgs_srv.OverrideRobot = _OverrideRobotSrv
-
-    class _SetRobotCommandSrv:
-        class Request:
-            def __init__(self):
-                self.command = ''
-                self.target = _Point()
-                self.sequence = 0
-        class Response:
-            def __init__(self):
-                self.accepted = False
-                self.reason = ''
-    smsgs_srv.SetRobotCommand = _SetRobotCommandSrv
-
-    smsgs.msg = smsgs_msg
-    smsgs.srv = smsgs_srv
-
-    # selene_isru.inventory.MaterialInventory
-    sisru = _ensure_stub('selene_isru')
-    sisru_inv = _ensure_stub('selene_isru.inventory')
-
-    class _MaterialInventory:
-        def get_mission_progress(self):
-            return {'extracted': 0.0, 'in_transit': 0.0, 'deposited': 0.0}
-    sisru_inv.MaterialInventory = _MaterialInventory
-    sisru.inventory = sisru_inv
-
-
-_install_ros_stubs()
-
-# Ensure the orchestrator package is importable from the repo layout even
-# when pytest is run from /tmp. The package __init__.py is at
-# selene_orchestrator/selene_orchestrator/__init__.py — the parent dir
-# (selene_orchestrator/) must be on sys.path.
-import os  # noqa: E402
-_REPO_PKG_PARENT = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), '..'),
-)
-if _REPO_PKG_PARENT not in sys.path:
-    sys.path.insert(0, _REPO_PKG_PARENT)
 
 from selene_orchestrator.orchestrator_node import (  # noqa: E402
     inject_task_logic,
@@ -303,7 +117,7 @@ def inject_ctx(task_queue, fleet_monitor, publish_assignment, publish_alert):
 class TestInjectTaskHandler:
 
     def test_inject_valid_task_no_assignment(self, inject_ctx, task_queue,
-                                              publish_alert):
+                                             publish_alert):
         req = _FakeInjectRequest(task_type='prospect', x=30.0, y=-110.0)
         resp = _FakeInjectResponse()
         out = inject_task_logic(inject_ctx, req, resp)
@@ -351,7 +165,7 @@ class TestInjectTaskHandler:
         assert task.status == TaskStatus.FAILED
 
     def test_inject_force_assign_robot_in_error(self, inject_ctx, task_queue,
-                                                 fleet_monitor):
+                                                fleet_monitor):
         _add_robot(
             fleet_monitor, 'scout_01',
             fsm_state='ERROR',

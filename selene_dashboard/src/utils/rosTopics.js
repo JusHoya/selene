@@ -1,5 +1,18 @@
-// Robot IDs (default fleet composition)
-export const ROBOT_IDS = ['scout_01', 'scout_02', 'excavator_01', 'hauler_01'];
+// A15: FALLBACK ONLY — hardcoded fleet composition.
+//
+// This list is NOT the source of truth for the fleet. It is used only when
+// dynamic discovery via the rosapi node is unavailable (e.g. a bridge without
+// rosbridge_suite's rosapi, or a hand-rolled mock bridge). The launch file
+// supports num_scouts / num_excavators / num_haulers, so any fleet that is not
+// exactly the default 2+1+1 composition will NOT be represented by this list.
+// See hooks/useFleetDiscovery.js for the discovery path.
+export const FALLBACK_ROBOT_IDS = [
+  'scout_01', 'scout_02', 'excavator_01', 'hauler_01',
+];
+
+// Backwards-compatible alias. Prefer FALLBACK_ROBOT_IDS at call sites so the
+// fallback nature is obvious.
+export const ROBOT_IDS = FALLBACK_ROBOT_IDS;
 
 // Topic templates (replace {id} with robot_id)
 export const TOPICS = {
@@ -39,3 +52,43 @@ export const SERVICE_TYPES = {
   INJECT_TASK: 'selene_msgs/srv/InjectTask',
   OVERRIDE_ROBOT: 'selene_msgs/srv/OverrideRobot',
 };
+
+// A15: rosapi introspection service used for dynamic fleet discovery.
+// rosbridge_suite ships the rosapi node alongside rosbridge_websocket.
+export const ROSAPI = {
+  TOPICS_FOR_TYPE: '/rosapi/topics_for_type',
+};
+
+// A15: Candidate service-type strings for /rosapi/topics_for_type, tried in
+// order. The srv definitions live in `rosapi_msgs` on ROS 2 and in `rosapi`
+// on ROS 1; rosbridge's ROS 2 call_service capability also resolves the type
+// from the graph itself, so the string is advisory there. Trying both keeps a
+// type-string mismatch from silently forcing the hardcoded fallback.
+// VERIFIED: 'rosapi_msgs/srv/TopicsForType' answers on ROS 2 Jazzy with
+// rosbridge_suite (measured against a live rosapi node, 2026-07-29).
+export const ROSAPI_TOPICS_FOR_TYPE_TYPES = [
+  'rosapi_msgs/srv/TopicsForType',
+  'rosapi/TopicsForType',
+];
+
+// A15: Candidate *message*-type strings for the topics_for_type REQUEST body,
+// tried in order. This is a separate axis from the service type above and it
+// matters more, because rosapi compares the requested type string against the
+// graph's type string EXACTLY — it does not normalise between the ROS 1 short
+// form and the ROS 2 three-part form.
+//
+// MEASURED on ROS 2 Jazzy against a live rosapi node (2026-07-29), with two
+// RobotState publishers up:
+//   'selene_msgs/msg/RobotState' -> topics=['/excavator_01/state','/scout_01/state']
+//   'selene_msgs/RobotState'     -> topics=[]   (result=True, i.e. a SUCCESS)
+// The ROS 2 form must therefore come first. Note the failure mode: the wrong
+// string returns success-with-empty, not an error, so a rotation that only
+// advances on the error callback can never escape it. useFleetDiscovery also
+// rotates on an empty success until a non-empty reply locks the choice.
+//
+// MSG_TYPES.ROBOT_STATE below keeps the short form because topic SUBSCRIPTION
+// resolves either spelling; only this introspection request is strict.
+export const ROBOT_STATE_TYPE_CANDIDATES = [
+  'selene_msgs/msg/RobotState',
+  'selene_msgs/RobotState',
+];

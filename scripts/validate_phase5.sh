@@ -6,6 +6,10 @@
 #   bash scripts/sync_and_build.sh    # ensure workspace is built first
 #   bash scripts/validate_phase5.sh
 #
+# For the fast dashboard path, build the production bundle first:
+#   SELENE_PREBUILD_DASHBOARD=1 bash scripts/sync_and_build.sh
+# This script then auto-selects prebuilt:=true.
+#
 # Exits 0 on full pass, 1 on any failure. Writes phase5_validation_report.md.
 
 set -uo pipefail
@@ -56,12 +60,33 @@ cleanup() {
         pkill -f "gz-sim-server" 2>/dev/null
         pkill -f "rosbridge" 2>/dev/null
         pkill -f "react-scripts" 2>/dev/null
+        pkill -f "http.server 3000" 2>/dev/null
     fi
 }
 trap cleanup EXIT
 
+# Prefer the prebuilt dashboard bundle when one exists: the react-scripts dev
+# server has to compile the bundle before port 3000 answers, which dominated the
+# runtime of this script. Falls back to the dev server if there is no build.
+# Force either mode with SELENE_PREBUILT_DASHBOARD=1 / =0.
+if [ -n "${SELENE_PREBUILT_DASHBOARD:-}" ]; then
+    PREBUILT="$SELENE_PREBUILT_DASHBOARD"
+elif [ -f "$P/selene_dashboard/build/index.html" ]; then
+    PREBUILT=1
+else
+    PREBUILT=0
+fi
+if [ "$PREBUILT" = "1" ]; then
+    LAUNCH_ARGS="prebuilt:=true"
+    echo "Dashboard mode: prebuilt static bundle ($P/selene_dashboard/build)"
+else
+    LAUNCH_ARGS="prebuilt:=false"
+    echo "Dashboard mode: react-scripts dev server (no prebuilt bundle found;"
+    echo "  run 'cd $P/selene_dashboard && npm run build' to skip the compile wait)"
+fi
+
 echo "[1/8] Starting unified launch..."
-ros2 launch selene_sim unified_sim.launch.py > "$LAUNCH_LOG" 2>&1 &
+ros2 launch selene_sim unified_sim.launch.py $LAUNCH_ARGS > "$LAUNCH_LOG" 2>&1 &
 LAUNCH_PID=$!
 echo "Launch PID: $LAUNCH_PID"
 echo "Waiting 30s for boot..."
@@ -138,7 +163,11 @@ else
     check 8 "scout_01 fsm_state == RECHARGING after override" FAIL "$SCOUT_STATE"
 fi
 
-# -- Check 2 runs last: webpack needs ~120s to compile on WSL2 --
+# -- Check 2 runs last. In dev-server mode webpack has to compile the bundle
+# -- before port 3000 answers (previously measured at roughly two minutes on
+# -- WSL2), so it is deliberately checked after everything else. In prebuilt
+# -- mode the static server should answer almost immediately, but the same
+# -- retry loop is kept so the check works in both modes.
 DASH_OK=false
 for _try in $(seq 1 15); do
     if curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 2>/dev/null | grep -q '200'; then

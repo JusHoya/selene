@@ -160,6 +160,14 @@
   color: var(--accent-green, #00e676);
 }
 
+/* A8: rosbridge-offline notice */
+.task-injector__offline {
+  margin-top: 8px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: var(--accent-red, #ff4757);
+}
+
 .task-injector__feedback--error {
   background: rgba(255, 71, 87, 0.12);
   border: 1px solid rgba(255, 71, 87, 0.4);

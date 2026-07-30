@@ -7,8 +7,10 @@ import {
   ICE_DEPOSITS,
   ROCKS,
   PROSPECT_WAYPOINTS,
+  DEFAULT_VIEW,
 } from '../utils/worldConfig';
 import { TYPE_COLORS, iceConcentrationColor } from '../utils/colors';
+import { isStale } from '../utils/staleness';
 import { generateLunarTerrain, drawCraterOutlines } from '../utils/lunarTerrain';
 import ResourceLegend from './ResourceLegend';
 import './FleetMap.css';
@@ -29,6 +31,12 @@ const MAX_SCALE = 20;
 const ZOOM_FACTOR = 1.1;
 const ROBOT_HIT_RADIUS = 15; // pixels
 const FRAME_INTERVAL = 1000 / 30; // 30 fps cap
+
+// A-polish: robot-label collision avoidance (all values in screen pixels).
+const LABEL_SEP_PX_X = 52;      // horizontal overlap window for a ~9px mono id
+const LABEL_SEP_PX_Y = 22;      // vertical step: clears a label + its battery bar
+const LABEL_MAX_ATTEMPTS = 3;   // nudges tried before the label is dropped
+const LABEL_MIN_SCALE = 0.9;    // px/m below which only the selection is labelled
 
 // ---------- Drawing helpers ----------
 
@@ -181,9 +189,12 @@ function drawDepot(ctx, scale) {
   ctx.lineWidth = 1.5 / scale;
   ctx.stroke();
 
-  // Label — placed above the depot visually
+  // A-polish: DEPOT and RECHARGE_STATION share the same world coordinates
+  // (worldConfig.js), so their labels used to render on top of each other as an
+  // illegible blob. The world coordinates are unchanged — only the LABEL is
+  // offset: DEPOT is drawn above the marker, RECHARGE below it.
   ctx.save();
-  ctx.translate(x, y + s + 4 / scale);
+  ctx.translate(x, y + s + 6 / scale);
   ctx.scale(1, -1);
   ctx.font = `bold ${10 / scale}px JetBrains Mono, monospace`;
   ctx.fillStyle = '#ffc107';
@@ -221,14 +232,17 @@ function drawRechargeStation(ctx, scale) {
   ctx.fillStyle = '#00e676';
   ctx.fill();
 
-  // Label — placed above the station visually
+  // A-polish: drawn to the RIGHT of the marker. DEPOT sits at the same world
+  // position (by design) and labels above it; robots parked at the depot label
+  // below themselves. Offsetting sideways is the only direction that collides
+  // with neither. World coordinates are untouched — this is a label offset.
   ctx.save();
-  ctx.translate(x, y + radius + 4 / scale);
+  ctx.translate(x + radius + 5 / scale, y);
   ctx.scale(1, -1);
   ctx.font = `bold ${9 / scale}px JetBrains Mono, monospace`;
   ctx.fillStyle = '#00e676';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'bottom';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
   ctx.fillText('RECHARGE', 0, 0);
   ctx.restore();
 
@@ -284,11 +298,73 @@ function drawProspectWaypoints(ctx, scale) {
   ctx.restore();
 }
 
+// A-polish: deterministic draw order for label placement.
+// Selected robot first (so it always wins its slot), then top-to-bottom on
+// screen, then by id — so the plan does not jitter frame to frame.
+export function orderRobotsForLabels(entries, selectedRobotId) {
+  return entries.slice().sort((a, b) => {
+    const aSel = a.robot_id === selectedRobotId ? 0 : 1;
+    const bSel = b.robot_id === selectedRobotId ? 0 : 1;
+    if (aSel !== bSel) return aSel - bSel;
+    const ay = a.pose?.y ?? 0;
+    const by = b.pose?.y ?? 0;
+    if (ay !== by) return by - ay;
+    return String(a.robot_id).localeCompare(String(b.robot_id));
+  });
+}
+
+// A-polish: robot labels used to overlap into an unreadable pile whenever
+// robots clustered (which they do around the depot and the PSR).
+//
+// Each label is nudged downward (world Y is flipped on screen, so decreasing y
+// moves down) until it clears the labels already placed; if it still cannot fit
+// it is dropped rather than added to the pile. Below LABEL_MIN_SCALE the map is
+// zoomed too far out for 9px labels to be legible at all, so only the selected
+// robot is labelled.
+//
+// Returns a Map of robot_id -> label world-Y, or null when the label is hidden.
+export function planRobotLabels(orderedEntries, scale, selectedRobotId) {
+  const placed = [];
+  const sepX = LABEL_SEP_PX_X / scale;
+  const step = LABEL_SEP_PX_Y / scale;
+  const labelsAllowed = scale >= LABEL_MIN_SCALE;
+  const plan = new Map();
+
+  orderedEntries.forEach((robot) => {
+    if (!robot || !robot.pose) return;
+    const isSelected = robot.robot_id === selectedRobotId;
+    if (!labelsAllowed && !isSelected) {
+      plan.set(robot.robot_id, null);
+      return;
+    }
+    const { x, y } = robot.pose;
+    const baseSize = (isSelected ? 16 : 12) / scale;
+    let labelY = y - baseSize - 3 / scale;
+    const collides = (ly) => placed.some(
+      (p) => Math.abs(p.x - x) < sepX && Math.abs(p.y - ly) < step,
+    );
+    let attempts = 0;
+    while (attempts < LABEL_MAX_ATTEMPTS && collides(labelY)) {
+      labelY -= step;
+      attempts += 1;
+    }
+    if (collides(labelY) && !isSelected) {
+      plan.set(robot.robot_id, null);
+      return;
+    }
+    placed.push({ x, y: labelY });
+    plan.set(robot.robot_id, labelY);
+  });
+
+  return plan;
+}
+
 function drawRobots(ctx, robots, selectedRobotId, scale, now) {
   ctx.save();
-  const entries = Object.values(robots);
+  const ordered = orderRobotsForLabels(Object.values(robots), selectedRobotId);
+  const labelPlan = planRobotLabels(ordered, scale, selectedRobotId);
 
-  entries.forEach((robot) => {
+  ordered.forEach((robot) => {
     const { robot_id, robot_type, fsm_state, pose, battery_level } = robot;
     if (!pose) return;
 
@@ -296,8 +372,12 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
     const isSelected = robot_id === selectedRobotId;
     const color = TYPE_COLORS[robot_type] || '#e0e6f0';
     const baseSize = (isSelected ? 16 : 12) / scale;
+    // A-stale: dim robots whose telemetry has stopped, so a dead robot does not
+    // keep drawing as a fully-live icon on the map.
+    const staleAlpha = isStale(robot, now) ? 0.3 : 1;
 
     ctx.save();
+    ctx.globalAlpha = staleAlpha;
     ctx.translate(x, y);
 
     // Selection ring
@@ -306,9 +386,9 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
       ctx.arc(0, 0, baseSize * 1.6, 0, Math.PI * 2);
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5 / scale;
-      ctx.globalAlpha = 0.5 + 0.3 * Math.sin(now / 400);
+      ctx.globalAlpha = staleAlpha * (0.5 + 0.3 * Math.sin(now / 400));
       ctx.stroke();
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = staleAlpha;
     }
 
     // Working glow
@@ -329,7 +409,7 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
 
     // Recharging: lower opacity
     if (fsm_state === 'RECHARGING') {
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = staleAlpha * 0.5;
     }
 
     // Triangular arrow pointing in heading direction
@@ -350,25 +430,33 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
 
     ctx.restore(); // undo translate + rotate
 
-    // Label below robot — flip Y for text
-    ctx.save();
-    ctx.translate(x, y - baseSize - 3 / scale);
-    ctx.scale(1, -1);
-    ctx.font = `${9 / scale}px JetBrains Mono, monospace`;
-    ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(224,230,240,0.6)';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText(robot_id, 0, 0);
-    ctx.restore();
+    // ---- A-polish: label position from the collision-avoiding plan ----
+    const labelY = labelPlan.get(robot_id);
+    const labelPlaced = labelY != null;
+
+    if (labelPlaced) {
+      // Label below robot — flip Y for text
+      ctx.save();
+      ctx.globalAlpha = staleAlpha;
+      ctx.translate(x, labelY);
+      ctx.scale(1, -1);
+      ctx.font = `${9 / scale}px JetBrains Mono, monospace`;
+      ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(224,230,240,0.6)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(robot_id, 0, 0);
+      ctx.restore();
+    }
 
     // Wave2-A4: Per-robot battery overlay (horizontal bar below the label).
     // Drawn in world space but sized in screen pixels via 1/scale.
-    if (typeof battery_level === 'number') {
+    // Anchored to the (possibly nudged) label so the two stay together.
+    if (typeof battery_level === 'number' && labelPlaced) {
       const barW = 20 / scale;
       const barH = 3 / scale;
       // Position it just below the id label
       const barX = x - barW / 2;
-      const barY = y - baseSize - 14 / scale;
+      const barY = labelY - 11 / scale;
       const b = Math.max(0, Math.min(1, battery_level));
       let battColor;
       if (b > 0.5) battColor = '#00e676';
@@ -376,6 +464,7 @@ function drawRobots(ctx, robots, selectedRobotId, scale, now) {
       else battColor = '#ff4757';
 
       ctx.save();
+      ctx.globalAlpha = staleAlpha;
       // Background
       ctx.fillStyle = 'rgba(20, 26, 42, 0.75)';
       ctx.fillRect(barX, barY, barW, barH);
@@ -556,6 +645,10 @@ function FleetMap({
 
   // Viewport state stored in refs for animation loop access (no re-render needed)
   const viewRef = useRef({ centerX: 0, centerY: 0, scale: 1 });
+  // A-polish: explicit "have we framed the default view yet" flag. The old check
+  // inferred this from scale===1 && center===(0,0), which is also a legitimate
+  // user-chosen viewport.
+  const viewInitializedRef = useRef(false);
 
   // Drag state
   const dragRef = useRef({ dragging: false, lastX: 0, lastY: 0 });
@@ -608,15 +701,22 @@ function FleetMap({
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
 
-    // Compute default scale to fit world with padding
+    // A-polish: frame the PSR + depot working area by default instead of the
+    // whole 500x500 m world, which left the fleet as a tiny cluster in the
+    // corner. Zooming out to the full world is still one wheel gesture away.
     const pad = 1 + PADDING_RATIO * 2;
-    const sx = w / (WORLD.WIDTH * pad);
-    const sy = h / (WORLD.HEIGHT * pad);
-    const fitScale = Math.min(sx, sy);
+    const sx = w / (DEFAULT_VIEW.WIDTH * pad);
+    const sy = h / (DEFAULT_VIEW.HEIGHT * pad);
+    const fitScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.min(sx, sy)));
 
-    // Only reset viewport if scale hasn't been set yet (initial load)
-    if (viewRef.current.scale === 1 && viewRef.current.centerX === 0 && viewRef.current.centerY === 0) {
-      viewRef.current = { centerX: 0, centerY: 0, scale: fitScale };
+    // Only frame on the first sizing pass — never stomp the operator's viewport.
+    if (!viewInitializedRef.current) {
+      viewRef.current = {
+        centerX: DEFAULT_VIEW.CENTER_X,
+        centerY: DEFAULT_VIEW.CENTER_Y,
+        scale: fitScale,
+      };
+      viewInitializedRef.current = true;
     }
   }, []);
 

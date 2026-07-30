@@ -4,17 +4,36 @@
 # Install:
 #   ln -s ../../scripts/git-hooks/pre-push .git/hooks/pre-push
 #
-# Bypass (use sparingly — CI still runs):
+# Bypass (use sparingly - CI still runs):
 #   git push --no-verify
 #
 # Runtime: ~1s on a dev machine.
+#
+# NOTE on `pipefail`: the first version of this hook piped pytest into
+# `tail -5`, so the pipeline's exit status was tail's - always 0 - and the
+# hook could never block a push no matter how badly the tests failed. Do not
+# reintroduce a pipe here without `pipefail` set.
 
-set -e
+set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT/selene_orchestrator"
+cd "$REPO_ROOT"
+
+# Prefer python3; fall back to `python` (Git Bash on Windows ships only that).
+PYTHON="${PYTHON:-python3}"
+command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=python
+
+# Make the pure-Python packages importable without a colcon install. The test
+# also arranges this itself via selene_orchestrator/test/conftest.py; setting
+# it here keeps the hook working if that ever changes.
+export PYTHONPATH="$REPO_ROOT/selene_orchestrator:$REPO_ROOT/selene_isru${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "[selene pre-push] Running E2E integration test..."
-python3 -m pytest test/test_e2e_integration.py -q 2>&1 | tail -5
+
+if ! "$PYTHON" -m pytest selene_orchestrator/test/test_e2e_integration.py -q; then
+    echo "[selene pre-push] E2E integration test FAILED - push aborted." >&2
+    echo "[selene pre-push] Fix it, or bypass with: git push --no-verify" >&2
+    exit 1
+fi
 
 echo "[selene pre-push] OK"

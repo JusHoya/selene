@@ -348,17 +348,36 @@
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-height: 110px;
+  gap: 6px;
+  max-height: 170px;
   overflow-y: auto;
 }
 
 .robot-detail__recent-action {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 2px;
   font-size: 10px;
   font-family: var(--font-mono);
+}
+
+.robot-detail__recent-action-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A8: returned service message */
+.robot-detail__recent-action-message {
+  padding-left: 66px;
+  font-size: 9px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.robot-detail__recent-action-message--fail {
+  color: var(--accent-red, #ff4757);
 }
 
 .robot-detail__recent-action-time {
@@ -389,4 +408,95 @@
 
 .robot-detail__recent-action-result--fail {
   color: var(--accent-red, #ff4757);
+}
+
+/* === A-stale: no-telemetry banner === */
+.robot-detail__stale-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 16px;
+  background: rgba(255, 71, 87, 0.10);
+  border-bottom: 1px solid rgba(255, 71, 87, 0.45);
+  border-left: 3px solid var(--accent-red, #ff4757);
+}
+
+.robot-detail__stale-banner-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent-red, #ff4757);
+}
+
+.robot-detail__stale-banner-detail {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+/* Dim the last-known values so they do not read as live */
+.robot-detail--stale .robot-detail__section {
+  opacity: 0.6;
+}
+
+/* ...but keep the override controls fully legible */
+.robot-detail--stale .robot-detail__overrides {
+  opacity: 1;
+}
+
+/* === A8: rosbridge-offline notice === */
+.robot-detail__override-offline {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent-red, #ff4757);
+}
+
+/* === A-window-confirm: in-app confirmation (mirrors TaskInjector) === */
+.robot-detail__confirm {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(255, 193, 7, 0.08);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: var(--radius-sm, 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.robot-detail__confirm p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-primary, #e0e6f0);
+}
+
+.robot-detail__confirm-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.robot-detail__confirm-buttons button {
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  border: 1px solid var(--border, #1f2a44);
+  background: var(--bg-primary, #0a0e1a);
+  color: var(--text-primary, #e0e6f0);
+}
+
+.robot-detail__confirm-buttons button:first-child {
+  background: var(--accent-cyan, #00d4ff);
+  color: var(--bg-primary, #0a0e1a);
+  border-color: var(--accent-cyan, #00d4ff);
+}
+
+.robot-detail__confirm-buttons button:first-child:hover {
+  background: #33dfff;
 }

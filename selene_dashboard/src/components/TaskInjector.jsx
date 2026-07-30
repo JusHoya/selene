@@ -101,7 +101,10 @@ function TaskInjector({ state, dispatch, callService }) {
   };
 
   const robotIds = Object.keys(state?.robots || {});
-  const canSubmit = targetX !== '' && targetY !== '' && !submitting;
+  // A8: callService is null while rosbridge is disconnected, so this is now a
+  // live check rather than a permanently-true one. Block submission and say why.
+  const notConnected = !callService;
+  const canSubmit = targetX !== '' && targetY !== '' && !submitting && !notConnected;
   const needsQuantity = taskType === 'excavate' || taskType === 'haul';
   const isPicking = state?.pickerMode === 'inject_task';
 
@@ -178,6 +181,13 @@ function TaskInjector({ state, dispatch, callService }) {
           {submitting ? 'Submitting\u2026' : 'Submit'}
         </button>
       </form>
+
+      {/* A8: visible reason the control is unavailable */}
+      {notConnected && (
+        <div className="task-injector__offline">
+          rosbridge not connected &mdash; task injection unavailable
+        </div>
+      )}
 
       {showConfirm && (
         <div className="task-injector__confirm">

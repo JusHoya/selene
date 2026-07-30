@@ -2,11 +2,18 @@ import React from 'react';
 import { TYPE_COLORS } from '../utils/colors';
 import './AlertLog.css';
 
+// A10: 'WARNING' is the severity string the orchestrator actually publishes
+// (see orchestrator_node._publish_alert callers); only the abbreviated 'WARN'
+// was mapped, so real warnings rendered with the INFO colour. Both are kept —
+// nothing enforces one spelling on the wire.
 const SEVERITY_COLORS = {
+  DEBUG: 'var(--text-dim)',
   INFO: 'var(--text-muted)',
   WARN: 'var(--accent-amber)',
+  WARNING: 'var(--accent-amber)',
   ERROR: 'var(--accent-red)',
   CRITICAL: 'var(--accent-red)',
+  FATAL: 'var(--accent-red)',
 };
 
 function formatRelativeTime(timestamp) {

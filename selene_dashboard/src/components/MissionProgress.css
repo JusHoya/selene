@@ -117,3 +117,67 @@
 .mission-progress__stat-value--teal {
   color: var(--accent-teal);
 }
+
+/* --- A-stale: sub-line under the Robots On Task tile --- */
+.mission-progress__stat-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.mission-progress__stat-sub--alert {
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+/* --- A4: explicit "not instrumented" tile for the ISRU mass fields --- */
+.mission-progress__stat--uninstrumented {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(85, 96, 128, 0.10) 0px,
+    rgba(85, 96, 128, 0.10) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  border: 1px dashed var(--border-light);
+}
+
+.mission-progress__stat--uninstrumented:hover {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(85, 96, 128, 0.10) 0px,
+    rgba(85, 96, 128, 0.10) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+.mission-progress__uninstrumented-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+.mission-progress__uninstrumented-note {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* --- A4: objective bar with an uninstrumented numerator --- */
+.mission-progress__objective-bar--nodata {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(85, 96, 128, 0.28) 0px,
+    rgba(85, 96, 128, 0.28) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+
+.mission-progress__objective-nodata {
+  color: var(--text-muted);
+  font-weight: 600;
+}

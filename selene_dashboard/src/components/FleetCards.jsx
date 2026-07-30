@@ -1,8 +1,9 @@
 import React from 'react';
 import { STATE_COLORS, STATE_LABELS, TYPE_COLORS, batteryColor } from '../utils/colors';
+// A-stale: shared threshold so cards, map, RobotDetail and MissionProgress all
+// agree on what "stale" means.
+import { isStale as robotIsStale } from '../utils/staleness';
 import './FleetCards.css';
-
-const STALE_THRESHOLD_MS = 5000;
 
 function FleetCard({ robot, selected, onSelect }) {
   const {
@@ -11,10 +12,9 @@ function FleetCard({ robot, selected, onSelect }) {
     fsm_state,
     battery_level,
     task_progress,
-    lastUpdate,
   } = robot;
 
-  const isStale = lastUpdate && (Date.now() - lastUpdate) > STALE_THRESHOLD_MS;
+  const isStale = robotIsStale(robot);
   const batteryPercent = Math.round((battery_level ?? 0) * 100);
   const typeColor = TYPE_COLORS[robot_type] || '#8892a8';
   const stateColor = STATE_COLORS[fsm_state] || '#556080';

@@ -4,7 +4,7 @@ const MAX_HISTORY = 20;
 const MAX_ALERTS = 50;
 const MAX_READINGS = 500;
 
-const initialState = {
+export const initialState = {
   robots: {},
   resourceReadings: [],
   alerts: [],
@@ -49,7 +49,9 @@ function upsertTask(tasksById, taskId, patch) {
   };
 }
 
-function fleetReducer(state, action) {
+// Exported so the reducer's lifecycle/RESET behaviour can be exercised
+// directly, without a browser or a running rosbridge.
+export function fleetReducer(state, action) {
   switch (action.type) {
     case 'UPDATE_ROBOT': {
       const msg = action.payload;
@@ -151,16 +153,41 @@ function fleetReducer(state, action) {
       if (msg && msg.task_id) {
         const { x, y } = extractTargetXY(msg);
         const existing = tasksById[msg.task_id];
-        tasksById = upsertTask(tasksById, msg.task_id, {
+
+        // A-reconnect: the orchestrator publishes a TaskAnnouncement only when
+        // it *opens an auction* for a task (orchestrator_node._auction_tick),
+        // so seeing an announcement for a task we believe is running or done
+        // means the task was re-queued — e.g. by heartbeat-timeout recovery
+        // after a robot died. Refusing to downgrade in that case left tasks
+        // pinned at RUN/OK forever, which hid the recovery entirely.
+        // ASSIGNED/PENDING are deliberately NOT downgraded: an announcement
+        // always precedes its assignment, so an announcement arriving after an
+        // ASSIGNED would only be cross-topic reordering, not a re-auction.
+        const isReAuction = existing?.status === 'IN_PROGRESS'
+          || existing?.status === 'COMPLETED';
+
+        const patch = {
           type: msg.task_type || existing?.type || '',
           target_x: x,
           target_y: y,
           priority: msg.priority != null ? msg.priority : (existing?.priority || 0),
           required_capabilities: msg.required_capabilities || existing?.required_capabilities || [],
-          // Only downgrade to PENDING if we don't already have a more advanced status
-          status: existing?.status && existing.status !== 'PENDING' ? existing.status : 'PENDING',
-          announced_at: existing?.announced_at || Date.now(),
-        });
+          // Only downgrade to PENDING if we don't already have a more advanced
+          // status, or if this is a fresh auction round for the same task id.
+          status: !isReAuction && existing?.status && existing.status !== 'PENDING'
+            ? existing.status
+            : 'PENDING',
+          announced_at: isReAuction ? Date.now() : (existing?.announced_at || Date.now()),
+        };
+        if (isReAuction) {
+          // Start the lifecycle record over for the new auction round.
+          patch.assigned_robot = '';
+          patch.progress = 0;
+          patch.started_at = null;
+          patch.completed_at = null;
+          patch.auction_round = (existing?.auction_round || 1) + 1;
+        }
+        tasksById = upsertTask(tasksById, msg.task_id, patch);
       }
       return { ...state, taskAuctions: auctions, tasksById };
     }
@@ -191,6 +218,26 @@ function fleetReducer(state, action) {
       }
       return { ...state, taskAuctions: auctions, tasksById };
     }
+
+    // A-reconnect: drop everything that belongs to the previous backend session.
+    //
+    // Without this, a rosbridge reconnect merged the old session's tasks and
+    // alerts into the new one, and a re-announced task id kept its old
+    // COMPLETED status. A reviewer observed the merged state on 2026-07-29
+    // after restarting the backend under a running dashboard: the task queue
+    // read "3 active / 70 done" within seconds of a fresh backend whose own
+    // counter had restarted at zero. RESET itself has been unit-exercised by
+    // dispatching it directly; the reconnect path that dispatches it has not
+    // been re-exercised end to end since.
+    // Operator UI preferences and the current selection are preserved so a
+    // backend restart does not also reset what the operator was looking at;
+    // selectedTaskId is dropped because task ids do not survive a restart.
+    case 'RESET':
+      return {
+        ...initialState,
+        heatmapVisible: state.heatmapVisible,
+        selectedRobotId: state.selectedRobotId,
+      };
 
     case 'SELECT_TASK':
       return { ...state, selectedTaskId: action.payload?.taskId ?? null };

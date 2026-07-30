@@ -37,6 +37,15 @@ for arg in "$@"; do
     [ "$arg" = "--orchestrated" ] && ORCHESTRATED=true
 done
 
+# Resolve npm via PATH (hardcoding /usr/bin/npm breaks nvm / fnm / asdf installs).
+# Only required when the dashboard is started.
+NPM="$(command -v npm || true)"
+if [ "$HEADLESS" = false ] && [ -z "$NPM" ]; then
+    echo "ERROR: npm was not found on PATH, so the dashboard cannot start." >&2
+    echo "  Install Node.js 18+ (bash scripts/setup_wsl2.sh) or run with --headless." >&2
+    exit 1
+fi
+
 # Helper: spawn a robot with bridge + sim nodes
 spawn_robot() {
     local ROBOT_ID=$1 ROBOT_TYPE=$2 SDF=$3 X=$4 Y=$5
@@ -104,7 +113,7 @@ sleep 3
 if [ "$HEADLESS" = false ]; then
     echo "[3/$STEPS] Starting dashboard (http://localhost:3000)..."
     cd $P/selene_dashboard
-    HOST=0.0.0.0 BROWSER=none /usr/bin/npm start > /dev/null 2>&1 &
+    HOST=0.0.0.0 BROWSER=none "$NPM" start > /dev/null 2>&1 &
     cd $P
     sleep 8
 else

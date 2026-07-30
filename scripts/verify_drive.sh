@@ -1,5 +1,10 @@
 #!/bin/bash
 # Phase 1 Drive Verification Test
+#
+# Workspace root is derived from this script's location; override with SELENE_WS
+# (e.g. SELENE_WS=$HOME/selene to test the synced ext4 copy).
+SELENE_WS="${SELENE_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
 source /opt/ros/jazzy/setup.bash
 
 cat > /tmp/flat.sdf << 'EOFWORLD'
@@ -27,7 +32,7 @@ cat > /tmp/flat.sdf << 'EOFWORLD'
 </sdf>
 EOFWORLD
 
-MODELS=/mnt/c/Users/hoyer/WorkSpace/Projects/selene/selene_sim/models
+MODELS=$SELENE_WS/selene_sim/models
 export GZ_SIM_RESOURCE_PATH=$MODELS
 
 echo "Starting Gazebo..."

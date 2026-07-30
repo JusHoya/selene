@@ -19,8 +19,6 @@ import sys
 import types
 from unittest.mock import MagicMock
 
-import pytest
-
 # Make the agent package importable when running pytest from /tmp.
 _REPO_PKG_PARENT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..'),
