@@ -7,7 +7,14 @@ orchestrator_node:
     bid_weight_energy: 0.35
     bid_weight_capability: 0.25
     fleet_state_publish_rate: 1.0
+    # FR-MAP-1(e). Read since 2026-07-30; before that it was declared and
+    # orphaned, and the fused map was never published at all.
     resource_map_publish_rate: 0.5
+    # Must match Fixed Frame in selene_sim/rviz/selene_sim.rviz. Nothing in this
+    # repo publishes TF, so RViz2 can only resolve a frame identical to its
+    # fixed frame; a mismatch renders an empty scene with a working publisher.
+    resource_map_frame_id: map
+    resource_map_max_marker_cells: 20000
     map_resolution: 1.0
     map_width: 500
     map_height: 500

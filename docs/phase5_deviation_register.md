@@ -37,10 +37,11 @@ permission slip. This file replaces it.
 | FR-DASH-6 Robot Override | P2 | Delivered with deviation (D-05) |
 | FR-DASH-7 Mission Progress | P1 | Delivered with deviation (D-06) |
 | FR-SIM-7 Launch & Config (full) | P0 | Delivered with deviation (D-07) |
-| FR-MAP-4 RViz2 Visualization | P1 | **Not delivered** (D-08) |
+| FR-MAP-4 RViz2 Visualization | P1 | **Delivered 2026-07-30** (D-08 closed) |
 
-Seven of nine requirements are code-complete. One is partially delivered
-(FR-SIM-7). One was never started (FR-MAP-4).
+Eight of nine requirements are code-complete. One is partially delivered
+(FR-SIM-7). FR-MAP-4 was closed on 2026-07-30 together with its blocker,
+FR-MAP-1(e)(f) - see D-08 and D-09.
 
 ---
 
@@ -188,52 +189,106 @@ and are not launch arguments.
 
 ---
 
-## D-08 — FR-MAP-4: RViz2 resource-map visualization was never implemented
+## D-08 - FR-MAP-4: RViz2 resource-map visualization - CLOSED 2026-07-30
 
-**Specified** (`docs/PRD.md:444-452`, P1, Phase 5 scope at `docs/PRD.md:1175`):
-RViz2 display of the resource map, side-by-side comparable with the dashboard
-(`docs/PRD.md:1504`).
+**Was**: nothing existed. `visualization_msgs` had zero occurrences repo-wide;
+`selene_sim/rviz/selene_sim.rviz` had two displays (Grid, TF); rviz2 was
+launched only from `simulation.launch.py:214-221` behind `rviz:=true`
+defaulting false, and `unified_sim.launch.py` - the file the exit gate launches
+- had no rviz node. It was also blocked on D-09: no fused posterior existed on
+the wire to display.
 
-**Actual — nothing exists.**
-- `selene_sim/rviz/selene_sim.rviz` contains exactly two displays, Grid and TF.
-  No Map, no MarkerArray, no Path — it would not even render the `nav_msgs/Path`
-  the agents already publish.
-- `visualization_msgs` has **zero occurrences** repo-wide.
-- RViz2 is launched only from `simulation.launch.py:214-221`, gated on
-  `rviz:=true`, which defaults to `false` (`:47-48`). `unified_sim.launch.py` —
-  the file the exit gate actually launches — has no rviz node at all.
+**Now**: the orchestrator publishes `/orchestrator/resource_map_markers`, a
+`visualization_msgs/MarkerArray` holding one `CUBE_LIST` marker with per-cell
+`ColorRGBA`, at the same rate and from the same snapshot as the posterior.
 
-**It is blocked on D-09, not merely unstarted.** There is no fused resource map on
-the wire for RViz2 to display.
+Against the four clauses of `docs/PRD.md:451`:
 
-**Disposition**: carried into Phase 6 as an open requirement, not waived. The
-previous claim that the dashboard's canvas heatmap satisfies it does not hold on
-its own terms — the PRD criterion is a *side-by-side comparison* of the two
-(`docs/PRD.md:1504`), which presupposes both exist, and the heatmap is built from
-raw readings rather than the fused posterior (D-09).
+| clause | how |
+|---|---|
+| (a) OccupancyGrid **or** Marker array | Marker array. `nav_msgs/OccupancyGrid` carries one `int8` per cell, so colour and alpha would both be functions of the same scalar and cannot encode two independent quantities - clause (c) is unrepresentable in it. Verified against the shipped RViz2 library, which exports exactly three compiled-in palettes and one global alpha property. |
+| (b) blue (low) to red (high) | A verbatim port of the dashboard's `iceConcentrationColor()` (`selene_dashboard/src/utils/colors.js:52-77`), so the overlay and the dashboard heatmap render the same posterior the same colour - which is what `docs/PRD.md:1504`'s side-by-side comparison requires. Ported, not reinvented. |
+| (c) alpha encodes certainty | `variance_to_alpha()`, log-scaled against the map's own prior variance. Log rather than linear because the first reading at a cell takes variance 100 -> ~0.09; on a linear map that is alpha 0.999 and every later reading is lost in the last 0.1% of the range. |
+| (d) updates in real time | One timer at `resource_map_publish_rate`; measured live at exactly 0.500 Hz. |
 
----
+**Measured on the running system** (2026-07-30, ROS 2 Jazzy, full
+`unified_sim.launch.py`, 256 readings shaped like `ice_deposits.yaml`):
+frame_id `map`, CUBE_LIST, ADD, 3779 points and 3779 colours, scale
+(1.0, 1.0, 0.2), `pose.orientation.w = 1.0`, per-point alpha 0.453-0.662, ramp
+spanning 233 red-dominant and 3546 blue-dominant cubes. **The acceptance
+criterion "matches underlying data" is met concretely: the hottest cell,
+7.877 wt%, decodes row-major to world (-80.5, -140.5) - 0.7 m from the
+`ice_deposits.yaml` deposit centred (-80, -140) with peak 8.0 wt%.**
 
-## D-09 — FR-MAP-1(e)(f): the fused resource map is never published
+Three traps this had to avoid, each of which fails silently:
 
-**Specified** (`docs/PRD.md:421-422`, P0, Phase 3): the resource map published as a
-custom `ResourceMap` message at a configurable rate, default 0.5 Hz.
+- RViz2 ignores the per-point `colors` array entirely when its length differs
+  from `points`, falling back to the flat `marker.color` with no error. The
+  publisher asserts the lengths are equal.
+- That fallback `marker.color` defaults to `(0,0,0,0)` - transparent black - so
+  a mismatch would have made the overlay *disappear*. It is set to an opaque
+  blue so the failure mode is visibly wrong rather than invisible.
+- Per-point alpha blending only engages once some colour has `a != 1.0`, and an
+  all-zero-alpha CUBE_LIST raises a marker warning. Alpha is clamped to
+  [0.05, 0.85].
 
-**Actual**: the orchestrator has exactly **four** `create_publisher` calls —
-task_announcement, task_assignment, alerts, mission_progress
-(`orchestrator_node.py:443-452`). `resource_map_publish_rate` is declared at
-`:379` and set in `orchestrator_params.yaml:10` and is **never read**; no timer is
-bound to it. `ResourceMap.msg` does not exist — `selene_msgs/msg/` contains seven
-messages and that is not one of them. The `ResourceMap` class
-(`resource_map.py:6`) has no serialisation method of any kind; its grids are read
-only by `htn_planner.py:242-243` for site selection.
+**Frames.** Nothing in this repo publishes TF - `/tf` and `/tf_static` have
+zero publishers. RViz2 can still transform a message whose `frame_id` is
+identical to its fixed frame, so the overlay is published in `map` and
+`selene_sim/rviz/selene_sim.rviz` now sets `Fixed Frame: map` (it said `odom`,
+which no publisher used - the navigator's `nav_msgs/Path` is already stamped
+`map`, so that display would not have rendered either). Expect a yellow TF row
+in RViz while the tree is empty; the overlay renders regardless.
 
-This is Phase 3 scope that was never met, surfaced here because it blocks two
-Phase 5 items (D-02, D-08). Note FR-MAP-1's own acceptance row tests only grid
-initialisation and dimensions, so the requirement could be marked met while (e)
-and (f) were unimplemented.
+**Still open, and not an overlay defect**: `ResourceMapUpdate.location` comes
+from `/odom`, which DiffDrive dead-reckons from each robot's spawn pose rather
+than world coordinates. The map is internally consistent - the neutron
+spectrometer evaluates the deposit field at the *same* odom coordinate that
+becomes the map index, so every cell holds the true value for its own
+coordinate - but which region gets sampled is not where the robot physically
+is. Fixing that is a sim-fidelity change with knock-on effects on
+`battery_node._is_in_psr()` and navigation, tracked separately from FR-MAP-4.
 
----
+## D-09 - FR-MAP-1(e)(f): the fused resource map is never published - CLOSED 2026-07-30
+
+**Was**: the orchestrator had exactly four publishers;
+`resource_map_publish_rate` was declared at `orchestrator_node.py:379`, set in
+`orchestrator_params.yaml`, and never read by anything; `ResourceMap.msg` did
+not exist; and the `ResourceMap` class had no serialisation of any kind.
+
+**Now**: `selene_msgs/msg/ResourceMap.msg` exists and the orchestrator
+publishes it on `/orchestrator/resource_map` from a timer whose period is
+`1.0 / resource_map_publish_rate` - the first timer in the file driven by a
+parameter rather than a literal. A rate <= 0 disables publishing with a warning
+instead of dividing by zero.
+
+**Sparse snapshot encoding, chosen by measurement.** The grid is 250,000 cells
+but only observed ones go on the wire, and every message is a complete snapshot
+rather than a delta, so a late or lossy subscriber is correct from the next
+message. Measured: 88 bytes of overhead plus 16 bytes per observed cell. A
+10-waypoint survey observes ~0.3% of the grid, giving ~12.6 kB against ~3.0 MB
+for the equivalent dense float32 grid - a 237x reduction, confirmed by
+serialising the real message on Jazzy.
+
+DDS is not what makes the dense form untenable; a 3 MB sample was measured
+delivering cross-process over Fast DDS without loss. Two other things are:
+rosbridge's `extract_values` burns ~284 ms of GIL-held Python per dense message
+per client, in the single process carrying every dashboard topic; and roslibjs
+cannot reassemble the fragments rosbridge emits above `max_message_size`, so
+oversized messages are dropped client-side in silence. Sparse inverts past ~75%
+coverage, which this mission does not approach.
+
+**Anti-regression.** `selene_orchestrator/test/test_no_orphan_parameters.py`
+parses `orchestrator_node.py` and fails on any parameter declared but never
+read. This requirement was not descoped by anyone - it evaporated because a
+parameter existed with nothing behind it and nothing noticed for two phases.
+The test carries an explicit allow-list of the two remaining orphans
+(`recharge_threshold`, `fleet_state_publish_rate`) so they stay visible.
+
+**Not delivered**: FR-MAP-1(b)'s per-cell last-update timestamp. `ResourceMap`
+tracks three grids (mean, variance, count) and no per-cell time, and a per-cell
+time array would add ~1 MB per message for a field nothing reads.
+`header.stamp` is the map-level acquisition time. That clause remains open.
 
 ## D-10 — the exit gate tests less than its report implies
 
@@ -274,5 +329,6 @@ It should **not** be recorded as "exit gate passed" without either:
 2. strengthening checks 1, 2, 4 and 6, adding a `send_to_location` check, and
    performing the PRD's visual methods — then closing on evidence.
 
-D-06 and D-09 are the two that propagate: both block Phase 6 acceptance criteria,
-and neither is an orchestrator one-liner. D-06 needs a HAL and simulation change.
+D-09 was closed on 2026-07-30, and D-08 with it. D-06 remains the one that
+propagates: it blocks Phase 6 acceptance criteria and is not an orchestrator
+one-liner - it needs a HAL and simulation change.

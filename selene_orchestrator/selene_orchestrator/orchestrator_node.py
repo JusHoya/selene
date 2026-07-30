@@ -17,6 +17,7 @@ from selene_msgs.msg import (
     BidResponse as BidResponseMsg,
     FleetAlert,
     MissionProgress,
+    ResourceMap as ResourceMapMsg,
     ResourceMapUpdate,
     RobotState,
     TaskAnnouncement,
@@ -45,12 +46,16 @@ except ImportError:  # pragma: no cover - tested via stub injection
 
     SetRobotCommand = _SetRobotCommandStub  # type: ignore[assignment,misc]
 
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point
+from std_msgs.msg import ColorRGBA, Header
+from visualization_msgs.msg import Marker, MarkerArray
 
 from selene_orchestrator.fleet_monitor import FleetMonitor
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 from selene_orchestrator.task_auction import TaskAuction, Bid
 from selene_orchestrator.resource_map import ResourceMap
+from selene_orchestrator import resource_map_viz as rmviz
 from selene_orchestrator.htn_planner import HTNPlanner
 from selene_orchestrator.adaptive_survey import AdaptiveSurveyPlanner
 from selene_isru.inventory import MaterialInventory
@@ -377,6 +382,23 @@ class OrchestratorNode(Node):
         self.declare_parameter('recharge_threshold', 0.30)
         self.declare_parameter('fleet_state_publish_rate', 1.0)
         self.declare_parameter('resource_map_publish_rate', 0.5)
+        # The frame the overlay is stamped with. MEASURED: nothing in this repo
+        # publishes TF — /tf and /tf_static have zero publishers at runtime, and
+        # no launch file bridges them out of Gazebo. RViz2 can still transform a
+        # message whose frame_id is IDENTICAL to the fixed frame, via tf2's
+        # same-frame identity shortcut, so the overlay renders with an empty TF
+        # tree. Get this wrong and RViz shows "Fixed Frame [x] does not exist"
+        # and a blank scene while the publisher works perfectly.
+        # selene_sim/rviz/selene_sim.rviz must carry the same string as its
+        # Fixed Frame; 'map' also matches the only other frame_id in the repo,
+        # the nav_msgs/Path from selene_agent/navigator.py:679.
+        self.declare_parameter('resource_map_frame_id', 'map')
+        # Cap on cubes in the RViz overlay. MEASURED: 250000 cells at 24 B per
+        # Point plus 16 B per ColorRGBA is 10.0 MB per MarkerArray and ~125 ms
+        # of executor time per tick, and RM_BOXES renders 36 vertices per cube —
+        # 9M vertices with alpha blending. Beyond the cap the observed set is
+        # decimated with a deterministic stride, never truncated.
+        self.declare_parameter('resource_map_max_marker_cells', 20000)
         self.declare_parameter('map_resolution', 1.0)
         self.declare_parameter('map_width', 500)
         self.declare_parameter('map_height', 500)
@@ -391,6 +413,14 @@ class OrchestratorNode(Node):
         map_w = self.get_parameter('map_width').value
         map_h = self.get_parameter('map_height').value
         map_res = self.get_parameter('map_resolution').value
+        # FR-MAP-1(e): "published ... at configurable rate (default 0.5 Hz)".
+        # This parameter was declared in Phase 3 and never read until now, so
+        # the map was never published at all. test_no_orphan_parameters.py
+        # exists to stop that happening again.
+        map_rate = self.get_parameter('resource_map_publish_rate').value
+        self._map_frame_id = self.get_parameter('resource_map_frame_id').value
+        self._map_max_marker_cells = self.get_parameter(
+            'resource_map_max_marker_cells').value
 
         # ---- Core modules ----
         self._fleet = FleetMonitor(heartbeat_timeout=heartbeat_timeout)
@@ -452,6 +482,14 @@ class OrchestratorNode(Node):
         self._progress_pub = self.create_publisher(
             MissionProgress, '/orchestrator/mission_progress', 10,
         )
+        # FR-MAP-1(e): the fused posterior itself.
+        self._resource_map_pub = self.create_publisher(
+            ResourceMapMsg, '/orchestrator/resource_map', 10,
+        )
+        # FR-MAP-4: the same posterior as a colour-coded RViz2 overlay.
+        self._resource_map_marker_pub = self.create_publisher(
+            MarkerArray, '/orchestrator/resource_map_markers', 10,
+        )
 
         # ---- Operator services (FR-DASH-5 / FR-DASH-6) ----
         self._fleet_robot_ids = list(fleet_ids)
@@ -499,6 +537,17 @@ class OrchestratorNode(Node):
                           callback_group=self._timer_cb_group)           # 1 Hz
         self.create_timer(1.0, self._htn_advance,
                           callback_group=self._timer_cb_group)           # 1 Hz
+        # FR-MAP-1(e) / FR-MAP-4. The only timer here whose period comes from a
+        # parameter rather than a literal. A rate <= 0 disables publishing
+        # outright rather than dividing by zero — the documented way to turn the
+        # overlay off on a constrained host.
+        if map_rate and map_rate > 0.0:
+            self.create_timer(1.0 / map_rate, self._publish_resource_map,
+                              callback_group=self._timer_cb_group)  # map_rate Hz
+        else:
+            self.get_logger().warn(
+                'resource_map_publish_rate is %r; the fused resource map and '
+                'the RViz2 overlay will NOT be published.' % (map_rate,))
 
         # ---- Generate survey tasks ----
         self._generate_survey_tasks()
@@ -573,6 +622,96 @@ class OrchestratorNode(Node):
                 estimated_arrival_time=msg.estimated_arrival_time,
                 energy_after_task=msg.energy_after_task,
             ))
+
+    def _publish_resource_map(self) -> None:
+        """Publish the fused posterior and its RViz2 overlay.
+
+        FR-MAP-1(e)(f) and FR-MAP-4. Both messages describe the SAME snapshot,
+        taken once, so the grid on the wire and the picture in RViz can never
+        disagree with each other.
+
+        Only observed cells (count > 0) are emitted. That is not merely an
+        optimisation: with prior_mean 0.0, emitting the whole grid would paint
+        ~99.7% of the scene the ramp's floor colour, which reads as "we surveyed
+        everywhere and found nothing" — the opposite of the truth, and a direct
+        violation of FR-MAP-4(b) "matches underlying data".
+        """
+        mean_grid, var_grid, count_grid = self._resource_map.snapshot()
+        geom = self._resource_map.geometry
+        prior_var = self._resource_map.prior_variance
+
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = self._map_frame_id
+
+        observed = rmviz.select_observed(count_grid)
+        flat_mean = mean_grid.reshape(-1)
+        flat_var = var_grid.reshape(-1)
+        flat_count = count_grid.reshape(-1)
+
+        # ---- FR-MAP-1(e): the posterior, sparse-encoded. ----
+        grid_msg = ResourceMapMsg()
+        grid_msg.header = header
+        grid_msg.resolution = float(geom['resolution'])
+        grid_msg.width = int(geom['width'])
+        grid_msg.height = int(geom['height'])
+        grid_msg.origin = Point(x=float(geom['origin_x']),
+                                y=float(geom['origin_y']), z=0.0)
+        grid_msg.prior_mean = float(self._resource_map.prior_mean)
+        grid_msg.prior_variance = float(prior_var)
+        grid_msg.total_observations = int(self._resource_map.get_total_readings())
+        grid_msg.cell_index = [int(i) for i in observed]
+        grid_msg.cell_mean = [float(flat_mean[i]) for i in observed]
+        grid_msg.cell_variance = [float(flat_var[i]) for i in observed]
+        grid_msg.cell_observation_count = [int(flat_count[i]) for i in observed]
+        self._resource_map_pub.publish(grid_msg)
+
+        # ---- FR-MAP-4: the overlay. ----
+        # A single CUBE_LIST rather than one Marker per cell: RViz2 replaces a
+        # marker with the same ns+id wholesale on each message, so there is
+        # nothing to delete between frames and no DELETEALL is needed.
+        shown = rmviz.select_observed(count_grid,
+                                      max_cells=self._map_max_marker_cells)
+        xs, ys = rmviz.cell_centres(shown, geom['width'], geom['resolution'],
+                                    geom['origin_x'], geom['origin_y'])
+        colours = rmviz.marker_colours(
+            [float(flat_mean[i]) for i in shown],
+            [float(flat_var[i]) for i in shown],
+            prior_var,
+        )
+
+        marker = Marker()
+        marker.header = header
+        marker.ns = 'resource_map'
+        marker.id = 0
+        marker.type = Marker.CUBE_LIST
+        marker.action = Marker.ADD
+        # A zero quaternion is rejected outright by RViz2's MarkerBase.
+        marker.pose.orientation.w = 1.0
+        # All three scales must be non-zero: CUBE_LIST sets box dimensions from
+        # them. Flat in z so the overlay lies on the terrain instead of
+        # occluding the robots.
+        marker.scale.x = float(geom['resolution'])
+        marker.scale.y = float(geom['resolution'])
+        marker.scale.z = 0.2
+        marker.lifetime = Duration(sec=0, nanosec=0)   # never auto-expire
+        # Fallback colour, and it matters. RViz2 uses the per-point `colors`
+        # array only while its length matches `points`; on any mismatch it
+        # silently falls back to THIS field. Left at the message default of
+        # (0,0,0,0) that fallback is transparent black, i.e. the overlay
+        # disappears with no error anywhere. An opaque mid-blue degrades to
+        # visibly-wrong instead of invisible.
+        marker.color = ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.8)
+        marker.points = [Point(x=float(x), y=float(y), z=0.0)
+                         for x, y in zip(xs, ys)]
+        marker.colors = [ColorRGBA(r=r, g=g, b=b, a=a) for r, g, b, a in colours]
+        # RViz2 silently ignores per-point colours when the lengths differ — it
+        # falls back to the flat marker colour and surfaces no error — so the
+        # invariant is asserted here rather than debugged in a GUI later.
+        assert len(marker.colors) == len(marker.points), (
+            f'{len(marker.colors)} colours for {len(marker.points)} points')
+
+        self._resource_map_marker_pub.publish(MarkerArray(markers=[marker]))
 
     def _on_map_update(self, msg: ResourceMapUpdate) -> None:
         """Update resource map with a new scout sensor reading."""

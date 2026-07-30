@@ -45,7 +45,8 @@ from launch.actions import (
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -67,6 +68,7 @@ def _launch_setup(context, *args, **kwargs):
     num_haulers = int(LaunchConfiguration('num_haulers').perform(context))
     headless = LaunchConfiguration('headless').perform(context).lower() in ('true', '1')
     prebuilt = LaunchConfiguration('prebuilt').perform(context).lower() in ('true', '1')
+    rviz = LaunchConfiguration('rviz').perform(context).lower() in ('true', '1')
 
     fleet_ids = _build_fleet_robot_ids(num_scouts, num_excavators, num_haulers)
     fleet_ids_str = "[" + ",".join(f"'{rid}'" for rid in fleet_ids) + "]"
@@ -129,6 +131,29 @@ def _launch_setup(context, *args, **kwargs):
         }.items(),
     ))
 
+    # RViz2 resource-map overlay (FR-MAP-4), off by default.
+    #
+    # Gated rather than always-on because this launch file is what
+    # scripts/validate_phase5.sh drives, and that runs headless in WSL2 and CI
+    # where starting a GUI would be pointless at best. `rviz:=true` is the
+    # documented way to see the overlay:
+    #     ros2 launch selene_sim unified_sim.launch.py rviz:=true
+    #
+    # It starts with the delayed group so the orchestrator's
+    # /orchestrator/resource_map_markers publisher exists before RViz subscribes
+    # — RViz copes either way, but a display that goes green immediately is
+    # easier to trust than one that fills in later.
+    if rviz:
+        delayed.append(Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            arguments=['-d', PathJoinSubstitution([
+                FindPackageShare('selene_sim'), 'rviz', 'selene_sim.rviz',
+            ])],
+            output='screen',
+        ))
+
     # 12s delay lets Gazebo finish robot spawning before agents start polling /odom
     return [sim_launch, TimerAction(period=12.0, actions=delayed)]
 
@@ -139,6 +164,10 @@ def generate_launch_description():
         DeclareLaunchArgument('num_excavators', default_value='1'),
         DeclareLaunchArgument('num_haulers', default_value='1'),
         DeclareLaunchArgument('headless', default_value='false'),
+        DeclareLaunchArgument(
+            'rviz', default_value='false',
+            description='Start RViz2 with the FR-MAP-4 resource-map overlay '
+                        '(selene_sim/rviz/selene_sim.rviz).'),
         DeclareLaunchArgument(
             'prebuilt', default_value='false',
             description='Serve the prebuilt dashboard bundle (fast) instead of '

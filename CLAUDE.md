@@ -92,7 +92,25 @@ Caveats a reader should know:
   (`self._adaptive_survey` appears exactly once in the file); `MaterialInventory.register_site` /
   `record_extraction` / `record_load` / `record_unload` have no production callers, so the ledger stays at zero
   in a live run even though `_publish_mission_progress` reads it for the `MissionProgress` message.
-- There is no resource-map publisher of any kind. The orchestrator has exactly four `create_publisher` calls
-  (`task_announcement`, `task_assignment`, `alerts`, `mission_progress`). The `resource_map_publish_rate`
-  parameter is declared but never read. The dashboard heatmap is built client-side from raw per-reading
-  `ResourceMapUpdate` messages published by agents, not from the orchestrator's fused posterior grid.
+- FR-MAP-1(e)(f) and FR-MAP-4 were implemented on 2026-07-30. The orchestrator now has six
+  `create_publisher` calls: the original four (`task_announcement`, `task_assignment`, `alerts`,
+  `mission_progress`) plus `/orchestrator/resource_map` (`selene_msgs/msg/ResourceMap`, the fused
+  posterior, sparse-encoded) and `/orchestrator/resource_map_markers` (a
+  `visualization_msgs/MarkerArray` CUBE_LIST overlay for RViz2 — hue is concentration, alpha is
+  certainty). Both come from one snapshot on one timer at `resource_map_publish_rate`, which until
+  then was declared and never read — the reason FR-MAP-4 went unimplemented for two phases.
+  `selene_orchestrator/test/test_no_orphan_parameters.py` now fails the build on any parameter
+  declared but never read. See `docs/phase5_deviation_register.md` D-08/D-09.
+- The dashboard heatmap is still built client-side from raw per-reading `ResourceMapUpdate` messages
+  published by agents, not from the orchestrator's fused posterior grid. That is FR-DASH-2 /
+  deviation D-02, unchanged by the above — though the posterior is now on a topic if the dashboard is
+  ever pointed at it.
+- Nothing in the repository publishes TF: `/tf` and `/tf_static` have zero publishers. RViz2 resolves
+  a frame only when `header.frame_id` equals its fixed frame, so the overlay is published in `map`,
+  and `resource_map_frame_id` (orchestrator_params.yaml) and `Fixed Frame` in
+  `selene_sim/rviz/selene_sim.rviz` must stay in agreement with it.
+- `ResourceMapUpdate.location` comes from `/odom`, which DiffDrive dead-reckons from each robot's
+  spawn pose rather than world coordinates. The fused map is internally consistent — the neutron
+  spectrometer evaluates the deposit field at the same odom coordinate that becomes the map index, so
+  each cell holds the true value for its own coordinate — but the region sampled is not where the
+  robot physically is. Untouched by the FR-MAP-4 work and tracked separately.

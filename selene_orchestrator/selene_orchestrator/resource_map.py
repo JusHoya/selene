@@ -23,6 +23,8 @@ class ResourceMap:
         self._origin_y = origin_y
         self._footprint_radius = footprint_radius
         self._footprint_sigma = footprint_sigma
+        self._prior_mean = prior_mean
+        self._prior_variance = prior_variance
 
         # Initialize grids
         self._mean = np.full((height, width), prior_mean, dtype=np.float64)
@@ -121,6 +123,57 @@ class ResourceMap:
 
     def get_variance_grid(self) -> np.ndarray:
         return self._variance.copy()
+
+    def get_count_grid(self) -> np.ndarray:
+        """Observation count per cell. The predicate for "has been observed".
+
+        get_count(x, y) is a point query in world coordinates; this is the grid
+        the publisher needs to find the observed set.
+        """
+        return self._count.copy()
+
+    @property
+    def prior_mean(self) -> float:
+        return float(self._prior_mean)
+
+    @property
+    def prior_variance(self) -> float:
+        """Variance of a cell no scout has seen.
+
+        The datum the FR-MAP-4 alpha channel normalises certainty against, and
+        published in ResourceMap.msg so a consumer need not hardcode it.
+        """
+        return float(self._prior_variance)
+
+    @property
+    def geometry(self) -> dict:
+        """Grid geometry, sufficient to place any cell in the world."""
+        return {
+            'width': self._width,
+            'height': self._height,
+            'resolution': self._resolution,
+            'origin_x': self._origin_x,
+            'origin_y': self._origin_y,
+        }
+
+    def snapshot(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Copies of (mean, variance, count), taken together.
+
+        Calling get_mean_grid() and get_variance_grid() separately takes two
+        INDEPENDENT copies; a scout reading landing between them yields a frame
+        whose mean is from after the update and whose variance is from before.
+        Taking all three here narrows that window to the three copies below but
+        does not close it — update() runs on the subscription's callback group
+        while the publish timer runs on its own, and the MultiThreadedExecutor
+        can interleave them.
+
+        The residue is bounded and cosmetic: at most one reading's worth of
+        disagreement, in one frame of a 0.5 Hz visualisation. Locking update()
+        would close it by serialising the hot path of every sensor reading,
+        which is not a trade worth making for an overlay. Recorded here rather
+        than left to be rediscovered.
+        """
+        return self._mean.copy(), self._variance.copy(), self._count.copy()
 
     def get_best_extraction_sites(self, count: int = 5,
                                   min_concentration: float = 2.0
