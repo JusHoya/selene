@@ -1,0 +1,280 @@
+name: Simulation gates
+
+# The two physics gates: scripts/check_terrain.sh and scripts/check_drive.sh.
+#
+# WHAT THESE GATE, AND WHY THEY ARE NOT UNIT TESTS
+# For months every robot in this project reported healthy odometry while standing
+# perfectly still. They were spawned inside the terrain: wheels turning at exactly
+# the commanded rad/s inside solid rock, DiffDrive integrating measured joint
+# position into a plausible 5 m of travel, world displacement 0.0000 m. Nothing in
+# the Python test suite could see it, because the defect lives in the relationship
+# between a heightmap PNG, an SDF datum offset and a spawn height in a YAML file —
+# three files that cannot see each other. Only Gazebo can answer it.
+#   check_terrain.sh  lowers a probe pinned to a prismatic Z joint onto all 14
+#                     coordinates the software reasons about and asserts that
+#                     every PLACED entity clears the collision surface, that
+#                     collision geometry exists at every survey coordinate, and
+#                     that the PSR crater is where world_params.yaml says it is.
+#   check_drive.sh    spawns a robot at its CONFIGURED pose on the real world and
+#                     asserts world displacement against the COMMAND — never
+#                     against odometry, which a buried wheel satisfies perfectly.
+#
+# WHY THIS IS A SEPARATE WORKFLOW, AND NOT A REQUIRED PR CHECK
+# This job pulls roughly a gigabyte from two third-party apt mirrors
+# (packages.ros.org via the ros:jazzy container, packages.osrfoundation.org for
+# Gazebo) and runs two real Gazebo sessions. Making that a required check couples
+# every merge to those mirrors' uptime, and to an unmeasured sensitivity described
+# under KNOWN RISK below. Marking it `continue-on-error` would be worse than not
+# wiring it at all: it would manufacture exactly the false green this whole line
+# of work exists to eliminate. So it runs on a schedule, on pushes to main, and on
+# demand — and when it fails, it fails red.
+#
+# The ARITHMETIC half of the same question — the datum constants, which is what
+# actually regressed twice — is gated on every push by the `terrain-datum` job in
+# ci.yaml. That one is pure Python and takes under a second.
+#
+# PROMOTION CRITERIA, so this does not become folklore. Add `pull_request:` and
+# mark this required once BOTH hold:
+#   1. ten consecutive green scheduled runs, with the per-robot "% of command"
+#      figure recorded from the uploaded check_drive logs; and
+#   2. one deliberately poisoned run that goes RED on GitHub hardware — force a
+#      spawn z back to 1.5 in selene_sim/config/spawn_positions.yaml and confirm
+#      the terrain gate reports BURIED and the job fails.
+# Until then, treat a red run here as a real signal but not a merge blocker.
+#
+# KNOWN RISK, stated rather than papered over: check_drive.sh times its drive with
+# WALL CLOCK (`date +%s`) while judging the result against a fraction of the
+# commanded distance, and lunar_psr.sdf caps the server at real_time_factor 1.0.
+# So a run at real-time factor r covers roughly r x the distance, and a slow
+# runner fails the gate for a reason that has nothing to do with terrain.
+#
+# MIN_FRACTION is 0.70. All four legs measured on developer hardware
+# (2026-07-30, WSL2 Ubuntu 24.04.3, gz-sim 8.14.0, 32 cores, against the fixed
+# datum and the current spawn heights):
+#     scout_01     97.9% of command    slip -0.80%    settled -0.265 m
+#     scout_02     97.7%               slip -1.07%    settled -0.270 m
+#     excavator_01 93.5%               slip +1.04%    settled -0.345 m
+#     hauler_01    95.3%               slip -0.96%    settled -0.345 m
+# The binding case is excavator_01: 0.70/0.935 means its leg starts failing below
+# RTF ~0.75. Treat a FAIL whose "% of command" sits just under 70% as a runner
+# speed problem to investigate, NOT as a terrain regression — the settled-z line
+# is the discriminator, because a buried robot settles UPWARD (positive) while all
+# four above settle downward onto the surface.
+#
+# Note check_drive.sh runs `gz sim -s -v 1`, and at that verbosity the server log
+# does NOT print a real-time factor — measured, so do not go looking for one in
+# the uploaded *.log files. The observable is the "% of command" line in each
+# drive step's own output, which is captured to /tmp/drive_<robot>.out and
+# uploaded on every run, green or red.
+
+on:
+  schedule:
+    # 04:17 UTC daily. Off the hour to avoid the top-of-hour runner crush.
+    - cron: '17 4 * * *'
+  push:
+    branches:
+      - main
+      # phase5-hardening is here only to accumulate the promotion evidence above.
+      # Remove it when that branch merges.
+      - phase5-hardening
+  workflow_dispatch:
+
+# A later push supersedes an in-flight run; two Gazebo servers on one runner is
+# not a scenario worth debugging.
+concurrency:
+  group: sim-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sim-gates:
+    name: Terrain and drive gates (Gazebo Harmonic)
+    runs-on: ubuntu-24.04
+    # The real hard stop. Expected wall clock is 12-20 min including apt and the
+    # build; per-step timeouts below are what actually diagnose a hang.
+    timeout-minutes: 45
+
+    # ROS 2 Jazzy, matching what scripts/setup_wsl2.sh provisions and what both
+    # gates source first. NOTE this is deliberately NOT the Humble container that
+    # ci.yaml's build-and-test job uses — see the "ROS distro gap" note there.
+    # This job is the one place in CI where the Jazzy path is exercised.
+    #
+    # A container's /dev/shm defaults to 64 MB, which is a well-known Gazebo/ROS
+    # foot-gun. It does not bite here: neither gate starts a ROS node, so no DDS
+    # participant is ever created, and gz-transport (which `gz topic`, `gz service`
+    # and `gz model` use) is ZeroMQ over TCP/ipc. Both gates also export
+    # FASTDDS_BUILTIN_TRANSPORTS=UDPv4 anyway. If a future gate does start a ROS
+    # node, add `options: --shm-size=2g`.
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Gazebo Harmonic
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends curl gnupg lsb-release
+          curl -fsSL https://packages.osrfoundation.org/gazebo.gpg \
+            -o /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
+            > /etc/apt/sources.list.d/gazebo-stable.list
+          apt-get update
+          # gz-harmonic is the metapackage. It pulls gz-gui, hence the Qt5 client
+          # libraries and libgl1 — which MUST be present even though this job never
+          # opens a window: `gz sim` is a Ruby launcher that dlopens a single
+          # library, libgz-sim8-gz.so, for both server and GUI, and -s only selects
+          # the runServer symbol inside it. Make libGL.so.1 or libQt5Gui.so.5
+          # unloadable and `gz sim -s` dies with a library error before it even
+          # parses the world. Do not "slim" this install.
+          #
+          # The mesa EGL packages are for check_drive.sh only. The scout, excavator
+          # and hauler each carry a depth_camera sensor, and lunar_psr.sdf declares
+          # gz-sim-sensors-system with ogre2, so spawning a robot forces the render
+          # engine up even though no gate ever reads an image. MEASURED: gz-rendering
+          # detects a missing display by itself ("Unable to open display. Trying to
+          # run in headless mode.") and comes up on EGL, so NO Xvfb and no DISPLAY
+          # are needed — but an EGL *vendor driver* is. Removing the vendor JSON
+          # directory is what actually breaks it.
+          apt-get install -y --no-install-recommends \
+            gz-harmonic \
+            libegl1 libegl-mesa0 libgl1-mesa-dri \
+            python3-yaml
+          gz sim --versions
+
+      - name: Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ros distro: ${ROS_DISTRO:-unset}"
+          ls -d /opt/ros/* || true
+          echo "gz: $(command -v gz)"
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+          nproc
+          free -h | head -2
+          df -h /dev/shm | tail -1
+
+      # Both gates need exactly one thing out of the workspace:
+      # $SELENE_WS/install/selene_sim/share/selene_sim/{models,worlds,config},
+      # plus install/setup.bash to source. selene_sim is pure ament_python, so
+      # this is a sub-second build with no compiler and no message generation —
+      # selene_msgs is deliberately NOT built, because no gate touches it.
+      - name: Build selene_sim
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /ws/src
+          ln -s "$GITHUB_WORKSPACE" /ws/src/selene
+          cd /ws
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-select selene_sim --event-handlers console_direct+
+          test -f /ws/install/setup.bash
+          ls /ws/install/selene_sim/share/selene_sim/models/lunar_terrain/heightmaps/
+
+      # ---------------------------------------------------------------------
+      # THE GATES. Read this before editing any `run:` below.
+      #
+      # `shell: bash` is load-bearing and is NOT decoration. GitHub's DEFAULT
+      # shell for `run:` on Linux is `bash -e {0}` — pipefail OFF. `shell: bash`
+      # runs `bash --noprofile --norc -eo pipefail {0}`. Under pipefail a gate's
+      # exit 1 survives the `| tee`; without it the step reports tee's 0 and a
+      # failing gate shows up green. `set -o pipefail` is ALSO written in each
+      # body, redundantly and on purpose, so that deleting the `shell:` key
+      # cannot silently reintroduce the bug.
+      #
+      # This project has already lost a commit to a phantom exit-status bug: a
+      # scratch harness wrote `echo "void_run_exit=0"` — a literal 0, not `$?` —
+      # and the conclusion "the gate exits 0 on failure, do not wire it into CI"
+      # stood on that. The gate was fine. Re-measured with $? captured properly:
+      # normal 0, void injection 1, buried spawns 1.
+      #
+      # So: no `|| true`, no `continue-on-error`, no `if:` on a gate step, and
+      # nothing between the gate and the step's exit status.
+      # ---------------------------------------------------------------------
+      - name: Terrain gate
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          source /opt/ros/jazzy/setup.bash
+          export SELENE_WS=/ws
+          bash scripts/check_terrain.sh 2>&1 | tee /tmp/terrain_gate.out
+
+      - name: Drive gate — scout_01
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          source /opt/ros/jazzy/setup.bash
+          # check_drive.sh hardcodes LOG=/tmp/selene_check_drive.log with no
+          # override, so each leg would clobber the previous one's Gazebo log and
+          # only the last robot's would be uploadable. Copy it out per robot,
+          # on the failing path too, re-raising the original status explicitly so
+          # nobody has to rely on bash's EXIT-trap status rules.
+          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_scout_01.log 2>/dev/null || true; exit $rc' EXIT
+          SELENE_WS=/ws DRIVE_ROBOT=scout_01 \
+            bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_scout_01.out
+
+      - name: Drive gate — scout_02
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          source /opt/ros/jazzy/setup.bash
+          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_scout_02.log 2>/dev/null || true; exit $rc' EXIT
+          SELENE_WS=/ws DRIVE_ROBOT=scout_02 \
+            bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_scout_02.out
+
+      - name: Drive gate — excavator_01
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          source /opt/ros/jazzy/setup.bash
+          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_excavator_01.log 2>/dev/null || true; exit $rc' EXIT
+          SELENE_WS=/ws DRIVE_ROBOT=excavator_01 \
+            bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_excavator_01.out
+
+      - name: Drive gate — hauler_01
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          source /opt/ros/jazzy/setup.bash
+          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_hauler_01.log 2>/dev/null || true; exit $rc' EXIT
+          SELENE_WS=/ws DRIVE_ROBOT=hauler_01 \
+            bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_hauler_01.out
+
+      # ALWAYS, not just on failure. A green run's logs carry the real-time factor
+      # and the per-robot "% of command" figures, which are exactly the evidence
+      # the promotion criteria at the top of this file ask for.
+      - name: Collect gate logs
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/gate-logs
+          for f in /tmp/selene_check_terrain.log \
+                   /tmp/selene_check_terrain_poses.txt \
+                   /tmp/selene_check_terrain_joint_state.txt \
+                   /tmp/selene_check_drive*.log \
+                   /tmp/terrain_gate.out \
+                   /tmp/drive_*.out; do
+              [ -e "$f" ] && cp -f "$f" /tmp/gate-logs/ 2>/dev/null
+          done
+          ls -l /tmp/gate-logs/ || true
+          # Surface the numbers the promotion criteria need, so a green run's
+          # evidence is readable in the job log without downloading the artifact.
+          # (Not the RTF: `gz sim -s -v 1` does not print one. See KNOWN RISK.)
+          grep -H -E '% of command|slip|settled at z' /tmp/drive_*.out 2>/dev/null || true
+
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-gate-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/gate-logs/
+          if-no-files-found: warn
+          retention-days: 14

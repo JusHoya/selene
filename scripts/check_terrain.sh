@@ -46,32 +46,46 @@
 # authority; the heightmap PNG is not, and neither is a free-rolling probe.
 #
 # WHAT IS ACTUALLY VERIFIED, AND WHAT IS NOT
-# Measured 2026-07-29 on gz-sim 8.11.0 / Gazebo Harmonic, Ubuntu 24.04 under
-# WSL2, 30 s settle, against spawn_positions.yaml z = 2.8 / 2.7 / 4.3 / 5.6 and
-# the lunar_psr.sdf depot marker at 1.86. The gate runs to completion and exits 0.
+# Measured 2026-07-30 on gz-sim 8.14.0 / Gazebo Harmonic, ROS 2 Jazzy, Ubuntu
+# 24.04.3 under WSL2, 30 s settle, against spawn_positions.yaml
+# z = 1.75 / 1.65 / 2.94 / 3.93 and the lunar_psr.sdf depot marker at 0.94. The
+# gate runs to completion and exits 0.
 #
-#   - Its surfaces were CROSS-CHECKED, not assumed. The six coordinates that an
-#     independent pinned-probe harness also measured agree, in metres:
-#         (-45, -92)    2.4928  vs   2.4925    +0.0003
-#         (-45, -85)    2.3842  vs   2.3840    +0.0002
-#         (-45,-105)    4.0200  vs   4.0114    +0.0086
-#         (-45,-112)    5.2774  vs   5.2688    +0.0086
-#         (-30,-100)    1.8065  vs   1.8051    +0.0014
-#         (-100,-150) -16.6022  vs -16.6025    +0.0003
-#     Worst disagreement 8.6 mm — small against the 0.30 m spawn margin and
-#     against the ~0.05 m of relief a wheelbase sees across one 3.91 m collision
-#     cell. Two separate runs reproduced every slide position to all 16 digits.
-#     The two 8.6 mm rows are the two points on the steepest ground (0.12 and
-#     0.18 m/m along x=-45, against 0.016 m/m at the two rows that agree to
-#     0.3 mm), which is what a 0.5 m sphere resting tangent to a sloped collision
-#     cell would do; that mechanism is a reading of the numbers, not a separate
-#     measurement. Note also that the cross-check harness uses the SAME
-#     pinned-probe method, so it confirms this gate's plumbing and parsing, not
-#     the method — and nothing here confirms the heightmap's absolute datum,
-#     which spawn_positions.yaml records as ~25% inflated upstream.
-#   - IT STILL FAILS. Pointed at the same config with z forced back to 1.5 it
-#     reports all four spawns BURIED (0.99 / 0.88 / 2.52 / 3.78 m) and exits 1.
+#   - Surfaces on the AFTER-FIX terrain, in metres:
+#         (-45, -92)    1.446014      (-45, -85)    1.340096
+#         (-45,-105)    2.633854      (-45,-112)    3.621368
+#         (-30,-100)    0.886175      (-100,-150) -13.914932
+#     These are ~0.94-1.66 m lower than every earlier number in this file's
+#     history, because the heightmap normalisation bug was fixed in
+#     selene_sim/scripts/generate_heightmap.py: gz-sim maps an image's OWN
+#     brightest pixel to <size> z, the generator had assumed the format maximum,
+#     and the -18 m datum on terrain_link was cancelling the resulting 1.25x
+#     inflation. terrain_link now carries -15.0 and world z is exactly
+#     (metric height - 15.0). Do not compare these against the pre-fix figures.
+#   - They are NOT a bilinear read of the PNG, and must not be replaced by one.
+#     A bilinear read predicts 1.4199 / 1.3108 / 2.4540 / 3.4121 — low by 26 mm
+#     on the flattest of the four and by 209 mm on the steepest. A 0.5 m probe
+#     sphere rests TANGENT to a sloped collision cell, so it reads high exactly
+#     where the ground is steep, and a wheel does the same. The probe is the
+#     reference; the image is not.
+#   - IT STILL FAILS, three ways, all measured on this exact script:
+#         spawn z forced back to 1.5   -> 4x BURIED (0.99/0.88/2.52/3.78), exit 1
+#         a survey coordinate at (300,300), off the 500x500 terrain
+#                                      -> FELL THROUGH (no collision),  exit 1
+#         probes that return no reading -> 14x MEASUREMENT FAILED,       exit 1
 #     The pass above is therefore a measurement, not a stuck green.
+#
+# THE EXIT STATUS IS FINE, AND WAS NEVER BROKEN. Commit c08d5bc's message says
+# "STILL BROKEN, DO NOT WIRE THIS INTO CI YET: exit-code propagation ... prints
+# RESULT: FAIL and then exits 0 (measured: void_run_exit=0, normal_run_exit=0)".
+# That measurement was wrong. The harness that produced it did:
+#     bash ct_void.sh >/dev/null 2>&1
+#     echo "void_run_exit=0" > ec.txt     # a LITERAL 0, not $?
+# It never captured $? at all, so its file said 0 because the string said 0.
+# Re-measured 2026-07-30 on this byte-identical script with $? captured properly:
+# normal run 0, void injection 1, buried spawns 1. There is no swallow, the tail
+# is unchanged since the file was created, and this gate is wired into CI by
+# .github/workflows/sim-gates.yaml.
 #
 # NOT verified: the eight survey-only coordinates have no independent reference.
 # For those this gate asserts only that collision geometry exists there, plus the
@@ -83,6 +97,7 @@
 #   bash scripts/check_terrain.sh            # uses ~/selene workspace install
 #   SELENE_WS=/path/to/ws bash scripts/check_terrain.sh
 #   SPAWNS_YAML=/path/to/spawns.yaml bash scripts/check_terrain.sh   # test a config
+#   WORLD_SDF=/path/to/lunar_psr.sdf bash scripts/check_terrain.sh   # depot z source
 # It starts its own gz server on its own GZ_PARTITION, so it neither reads nor is
 # read by another Gazebo on the same host (verified: a `gz topic -l` in another
 # partition, and one with GZ_PARTITION unset, both see none of its topics).
@@ -170,16 +185,31 @@ if [ -z "${SPAWNS_YAML:-}" ] || [ ! -f "$SPAWNS_YAML" ]; then
     echo "FAIL: cannot find spawn_positions.yaml; set SPAWNS_YAML." >&2
     exit 1
 fi
+# Keyed on the GROUP HEADER, not on file order. This used to collect every
+# `- {x:, y:, z:}` line in the file and zip() it against a fixed name list, so a
+# reordered group, an added scout_03, or any other list of x/y/z mappings shifted
+# every name onto the wrong coordinate — silently, because the names still all
+# appeared. check_drive.sh:119 does the keyed thing with yaml.safe_load; this
+# stays on the regex so the terrain gate keeps needing no third-party module.
 eval "$(python3 - "$SPAWNS_YAML" <<'PYCFG'
 import re, sys
-rows = []
+
+GROUPS = {'scouts': 'scout', 'excavators': 'excavator', 'haulers': 'hauler'}
+current = None
+counts = {}
 for line in open(sys.argv[1]):
-    m = re.match(r'\s*-\s*\{x:\s*(-?[\d.]+),\s*y:\s*(-?[\d.]+),\s*z:\s*(-?[\d.]+)', line)
-    if m:
-        rows.append(m.groups())
-names = ['scout_01', 'scout_02', 'excavator_01', 'hauler_01']
-for n, (x, y, z) in zip(names, rows):
-    print(f'add {n} {x} {y} {z}')
+    if not line.strip() or line.lstrip().startswith('#'):
+        continue
+    head = re.match(r'([A-Za-z_][A-Za-z0-9_]*):\s*$', line)
+    if head:
+        current = GROUPS.get(head.group(1))
+        continue
+    row = re.match(r'\s*-\s*\{x:\s*(-?[\d.]+),\s*y:\s*(-?[\d.]+),\s*z:\s*(-?[\d.]+)',
+                   line)
+    if row and current:
+        counts[current] = counts.get(current, 0) + 1
+        print(f'add {current}_{counts[current]:02d} '
+              f'{row.group(1)} {row.group(2)} {row.group(3)}')
 PYCFG
 )"
 for want in scout_01 scout_02 excavator_01 hauler_01; do
@@ -188,9 +218,42 @@ for want in scout_01 scout_02 excavator_01 hauler_01; do
         *) echo "FAIL: $want was not read from $SPAWNS_YAML" >&2; exit 1 ;;
     esac
 done
-# Depot / recharge station (world_params.yaml, lunar_psr.sdf) — really placed
-# depot marker z tracks lunar_psr.sdf (static, so it never settles)
-add depot        -30 -100 1.86
+# Depot / recharge station — really placed, and READ FROM lunar_psr.sdf.
+# The depot marker is static, so whatever z the world file carries is where it
+# stays. This used to hard-code 1.86, and it went stale the moment the datum fix
+# moved the marker to 0.94: the gate went on certifying a height the world no
+# longer used — the identical mistake it already documents for the robot spawns
+# ("This gate used to assert a literal 1.5 for every robot"). Resolve it the same
+# way, from the installed share dir first, then the source tree.
+if [ -z "${WORLD_SDF:-}" ]; then
+    for cand in "$SHARE/worlds/lunar_psr.sdf" \
+                "$(dirname "$0")/../selene_sim/worlds/lunar_psr.sdf"; do
+        [ -f "$cand" ] && { WORLD_SDF="$cand"; break; }
+    done
+fi
+if [ -z "${WORLD_SDF:-}" ] || [ ! -f "$WORLD_SDF" ]; then
+    echo "FAIL: cannot find lunar_psr.sdf; set WORLD_SDF." >&2
+    exit 1
+fi
+DEPOT_Z=$(python3 - "$WORLD_SDF" <<'PYDEPOT'
+import re
+import sys
+
+text = open(sys.argv[1]).read()
+# The <include> whose <name> is 'depot'; take that block's <pose> z.
+for block in re.findall(r'<include>(.*?)</include>', text, re.S):
+    if re.search(r'<name>\s*depot\s*</name>', block):
+        pose = re.search(r'<pose>\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)', block)
+        if pose:
+            print(pose.group(3))
+            break
+PYDEPOT
+)
+if [ -z "$DEPOT_Z" ]; then
+    echo "FAIL: could not read the depot marker's pose z from $WORLD_SDF" >&2
+    exit 1
+fi
+add depot        -30 -100 "$DEPOT_Z"
 # PSR centre, and two references well OUTSIDE the 60 m radius. Probes at exactly
 # r=60 sit on the rim and read as crater floor, which makes the depth test lie.
 add psr_centre  -100 -150 "$SURVEY"
@@ -207,14 +270,25 @@ add mirror_check -100  150 "$SURVEY"
 # the fleet was moved. Should read as crater floor, well below the plain.
 add old_spawn    -70 -110 "$SURVEY"
 
-WORLD=$(mktemp /tmp/selene_check_terrain.XXXXXX.sdf)
+WORLD=$(mktemp /tmp/selene_check_terrain.XXXXXX.sdf) || {
+    echo "FAIL: mktemp could not create the temp world file" >&2; exit 1; }
 # Clean up the temp world and any server we started, however we exit.
 cleanup() {
     [ -n "${GZ_PID:-}" ] && kill -KILL "$GZ_PID" 2>/dev/null
     rm -f "$WORLD"
     return 0
 }
-trap cleanup EXIT INT TERM
+# The signal traps EXIT EXPLICITLY. `trap cleanup EXIT INT TERM` with a cleanup
+# that ends in `return 0` does NOT stop the script: on SIGTERM it tore down the
+# Gazebo server and the world file and then CARRIED ON to the analysis block,
+# which read whatever the probes had managed to report and could print
+# "RESULT: PASS" and exit 0. Measured: SIGTERM at t=4 s of a 10 s settle gave
+# RESULT: PASS, exit 0, with cleanup having run twice. It also made the script
+# effectively uninterruptible, so a CI `timeout` overruns its budget by minutes.
+# 130/143 are the conventional 128+SIGINT / 128+SIGTERM statuses.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 {
   echo '<?xml version="1.0" ?>'
@@ -284,20 +358,31 @@ for _ in $(seq 1 40); do
     if gz topic -l 2>/dev/null | grep -q "/world/terraincheck/"; then break; fi
     sleep 0.5
 done
+# THESE THREE ARE HARD FAILURES, and were warnings until 2026-07-30. Every
+# infrastructure failure between here and the analysis block used to be a
+# warning, so the gate failed closed only by accident — via the PSR-depth
+# RELATION between two survey points, which is not a check that the world
+# stepped. check_drive.sh:196-203 exits 1 on exactly these conditions; match it.
+if ! gz topic -l 2>/dev/null | grep -q "/world/terraincheck/"; then
+    echo "FAIL: world 'terraincheck' never appeared. See /tmp/selene_check_terrain.log"
+    exit 1
+fi
 sleep "${HEIGHTMAP_LOAD_SECONDS:-10}"
 
 gz service -s /world/terraincheck/control \
     --reqtype gz.msgs.WorldControl --reptype gz.msgs.Boolean \
     --timeout 5000 --req 'pause: false' > /dev/null 2>&1 \
-    || echo "  WARNING: could not unpause the world; results will be meaningless"
+    || { echo "FAIL: could not unpause the world; results would be meaningless"
+         exit 1; }
 
 # The whole measurement rides on one topic per probe. If it is not advertised
 # there is nothing to read, and the run would otherwise spend its settle time and
-# then print a wall of MEASUREMENT FAILED without naming the cause. Name it here.
+# then print a wall of MEASUREMENT FAILED without naming the cause.
 if ! gz topic -l 2>/dev/null | grep -qx "/world/terraincheck/model/probe1/joint_state"; then
-    echo "  WARNING: /world/terraincheck/model/probe1/joint_state is not advertised."
-    echo "           Either the probe models lost gz-sim-joint-state-publisher-system"
-    echo "           or the world did not load. Every reading will be NaN."
+    echo "FAIL: /world/terraincheck/model/probe1/joint_state is not advertised."
+    echo "      Either the probe models lost gz-sim-joint-state-publisher-system"
+    echo "      or the world did not load. Every reading would be NaN."
+    exit 1
 fi
 
 sleep "$SETTLE_SECONDS"
@@ -384,19 +469,39 @@ for m in re.finditer(r'\bjoint\s*\{', t):
 print(out)
 PYSLIDE
 )
-: > /tmp/selene_check_terrain_poses.txt
+# THE WRITE IS CHECKED, AND SO IS THE LINE COUNT. These are fixed names so CI can
+# collect them as artifacts, which means a previous run's file can already be
+# sitting there — and under `set -uo pipefail` with no -e, a redirection that
+# fails is silent. Measured consequence before this check existed: seed a passing
+# run, `chmod 444` the pose file, then run a VOIDED config — all 14 appends fail
+# with "Permission denied", the analysis block reads the PREVIOUS run's readings,
+# and the gate prints "RESULT: PASS" and exits 0. That is the exact class of
+# false green this file exists to prevent, and it was in the file doing the
+# preventing. A root-owned leftover from a sudo/CI run is all it takes.
+POSES=/tmp/selene_check_terrain_poses.txt
+JOINT_DUMP=/tmp/selene_check_terrain_joint_state.txt
+: > "$POSES" || { echo "FAIL: cannot write $POSES (stale root-owned file? full /tmp?)" >&2
+                  exit 1; }
 # Keep the raw payloads. When this gate next misreports, the first question is
 # "what did Gazebo actually send", and guessing at that is how the previous three
 # measurement errors survived.
-: > /tmp/selene_check_terrain_joint_state.txt
+: > "$JOINT_DUMP" || { echo "FAIL: cannot write $JOINT_DUMP" >&2; exit 1; }
 NPROBES=$(echo "$POINTS" | wc -w)
 for j in $(seq 1 "$NPROBES"); do
     raw=$(timeout 15 gz topic -e -t "/world/terraincheck/model/probe${j}/joint_state" -n 1 2>&1)
-    printf '========== probe%s ==========\n%s\n' "$j" "$raw" \
-        >> /tmp/selene_check_terrain_joint_state.txt
+    printf '========== probe%s ==========\n%s\n' "$j" "$raw" >> "$JOINT_DUMP"
     jp=$(printf '%s\n' "$raw" | python3 -c "$PARSE_SLIDE")
-    echo "probe${j} ${jp}" >> /tmp/selene_check_terrain_poses.txt
+    echo "probe${j} ${jp}" >> "$POSES" || {
+        echo "FAIL: could not append probe${j} to $POSES" >&2; exit 1; }
 done
+# One line per probe, or the analysis below is reading something other than this
+# run. A short file means appends were lost; a long one means it was not truncated.
+GOT=$(wc -l < "$POSES")
+if [ "$GOT" -ne "$NPROBES" ]; then
+    echo "FAIL: $POSES has $GOT lines, expected $NPROBES — refusing to analyse a"
+    echo "      pose file this run did not fully write."
+    exit 1
+fi
 
 # Bounded teardown. `gz sim` does not always die on SIGTERM, and a bare `wait`
 # after a kill that the child survived blocks this script forever — which would
@@ -408,39 +513,58 @@ stop_gz() {
         sleep 0.5
     done
     kill -KILL "$GZ_PID" 2>/dev/null
-    pkill -KILL -f "gz sim .*$(basename "$WORLD")" 2>/dev/null
+    # NO pkill HERE. It used to run
+    #     pkill -KILL -f "gz sim .*$(basename "$WORLD")"
+    # which is the pattern check_drive.sh:145-148 and verify_drive.sh explicitly
+    # forbid. It could not match this script's own command line (the basename is
+    # generated by mktemp after the script starts), but if mktemp had failed
+    # `basename ""` prints nothing and returns 0, degenerating the pattern to
+    # `gz sim .*` — a SIGKILL to every Gazebo on the host, including a
+    # developer's session. The mktemp is now checked, and the line above already
+    # SIGKILLs the one server this script started; GZ_PARTITION is what keeps any
+    # other server out of the measurement.
     return 0
 }
 stop_gz
 
-python3 - "$POINTS" "$PROBE_RADIUS" <<'PY'
-import re
+python3 - "$POINTS" "$PROBE_RADIUS" "$POSES" <<'PY'
+import os
 import sys
 
 points = sys.argv[1].split()
 radius = float(sys.argv[2])
+poses_path = sys.argv[3]        # passed in, not hardcoded, so the shell owns the path
 
-import os
 DROP = float(os.environ.get('PROBE_DROP_Z', '12'))
 LIMIT = float(os.environ.get('SLIDE_LIMIT', '60'))
-RADIUS = float(os.environ.get('PROBE_RADIUS', '0.5'))
 # A probe that ran to the end of its slide never touched anything. Derived, not
 # guessed. NOTE THE FRAME: z here is the BALL CENTRE (DROP + joint_position), not
-# the surface, so the radius must NOT appear. Bottom-out centre = DROP - LIMIT,
-# plus 0.2 m of tolerance. Getting this wrong by one radius made the check silently
-# unreachable once already, which is the same defect this threshold exists to catch.
-NO_CONTACT_Z = DROP - LIMIT + 0.2
+# the surface, so the radius must NOT appear. Bottom-out centre = DROP - LIMIT.
+# Getting this wrong by one radius made the check silently unreachable once
+# already, which is the same defect this threshold exists to catch.
+#
+# The tolerance is 1.0 m, not the 0.2 m it was until 2026-07-30. The slide carries
+# <damping>0</damping><friction>0</friction> and the zero-restitution surface is on
+# the BALL, not on the joint stop, so a probe over the void arrives at the stop at
+# sqrt(2 * 1.62 * 60) = 13.9 m/s and rings against ODE's default stop ERP/CFM.
+# At 0.2 m a reading only 0.3 m off the stop was accepted as a real surface at
+# -48.2 m. 1.0 m still leaves 47 m of daylight to the lowest real terrain
+# (-14.8 m world, i.e. a ball centre near -14.3).
+NO_CONTACT_Z = DROP - LIMIT + 1.0
 z_by_probe = {}
-for line in open('/tmp/selene_check_terrain_poses.txt'):
+for line in open(poses_path):
     parts = line.split()
     if len(parts) != 2:
         continue
     name, jp = parts
     try:
         # jp is the prismatic slide position: negative descent from DROP.
+        # NOTE: float('nan') SUCCEEDS — it does not raise — so a NaN reading lands
+        # in this dict and is caught by the `z != z` test further down, not here.
+        # The ValueError branch only catches a genuinely malformed token.
         z_by_probe[name] = DROP + float(jp)
     except ValueError:
-        pass          # 'nan' -> no reading; reported as missing below
+        pass          # malformed token; reported as missing below
 
 if not z_by_probe:
     print("FAIL: no probe poses were read from Gazebo. Is the world loading?")
@@ -464,7 +588,9 @@ for idx, spec in enumerate(points, start=1):
         failures.append(f"{name}: no pose reported")
         continue
     if z <= NO_CONTACT_Z:
-        print(f"{name:<14} {x:>6.0f} {y:>6.0f} {pz:>9.2f} {'none':>10}   FELL THROUGH (no collision)")
+        # Survey rows print 'n/a' everywhere else; don't leak the -999 sentinel here.
+        shown = 'n/a' if pz < -900 else f'{pz:.2f}'
+        print(f"{name:<14} {x:>6.0f} {y:>6.0f} {shown:>9} {'none':>10}   FELL THROUGH (no collision)")
         failures.append(f"{name} ({x:.0f},{y:.0f}): no collision geometry")
         continue
     surf = z - radius

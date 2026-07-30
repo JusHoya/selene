@@ -62,13 +62,17 @@ echo "  Gazebo Harmonic installed."
 
 # --- Step 5: Install Build Tools & Python Dependencies ---
 echo "[5/7] Installing build tools and Python deps..."
+# python3-pil: selene_sim/scripts/generate_heightmap.py does
+# `from PIL import Image`. It was an undeclared dependency, so regenerating the
+# heightmaps failed on a machine provisioned only by this script.
 sudo apt-get install -y \
     python3-colcon-common-extensions \
     python3-pip \
     python3-pytest \
     python3-yaml \
     python3-numpy \
-    python3-scipy
+    python3-scipy \
+    python3-pil
 
 # Pydantic v2 is REQUIRED and must not come from apt.
 #

@@ -29,9 +29,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dev tools
+# pillow: selene_sim/scripts/generate_heightmap.py does `from PIL import Image`.
+# It was an undeclared dependency, so the heightmap generator could not be re-run
+# inside this container at all, and selene_sim/test/test_heightmap_datum.py (which
+# imports that module) errored at collection under `colcon test`.
 RUN pip3 install --no-cache-dir \
     pytest>=7.0 pytest-cov flake8 mypy black \
-    numpy>=1.23 scipy>=1.9 pydantic>=2.0 pyyaml
+    numpy>=1.23 scipy>=1.9 pydantic>=2.0 pyyaml pillow
 
 # Node.js 18 LTS for dashboard
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \

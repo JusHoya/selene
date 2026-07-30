@@ -19,29 +19,45 @@
 # excavator_01 71.1 m, hauler_01 66.9 m. Depot distances 15.8-21.2 m.
 #
 # ---------------------------------------------------------------------------
-# SPAWN HEIGHT. z is NOT a constant. Every value below is (measured collision
-# surface at that exact XY) + 0.30 m, rounded to 10 mm.
+# SPAWN HEIGHT. z is NOT a constant, and it is NOT a guess. Every value below is
 #
-# WHY. Until this commit all four spawns used z=1.5 with the comment "clears the
-# +/-0.7 m plain undulation". The plain does not sit near 0 and it is not flat
-# along x=-45. MEASURED collision surface (Gazebo Harmonic, gz-sim 8.11.0, real
-# lunar_terrain, probe spheres pinned to a prismatic Z-only joint so they cannot
-# roll off the sample point - see the note on check_terrain.sh below):
+#     (collision surface MEASURED at that exact XY by scripts/check_terrain.sh)
+#     + 0.30 m, rounded UP to 10 mm
 #
-#     (-45, -85)  scout_02       +2.3840 m
-#     (-45, -92)  scout_01       +2.4925 m
-#     (-45,-105)  excavator_01   +4.0114 m
-#     (-45,-112)  hauler_01      +5.2688 m
-#     (-30,-100)  depot          +1.8051 m
-#     (  0,   0)  origin         +0.6801 m
-#     (-100,-150) PSR floor     -16.6025 m
+# Rounding up, not to nearest: rounding to nearest can land the margin under
+# 0.30 m, and it silently did. The previous generation of these values was
+# rounded to 100 mm and excavator_01 ended up at 4.30 against a 4.0114 m surface
+# — a 0.2886 m margin, under the 0.30 the comment claimed.
 #
-# So x=-45 is not "low, flat ground": it climbs 2.88 m between y=-85 and y=-112
-# because it lies on the OUTER FLANK of the PSR crater rim. At z=1.5 the scouts
-# were ~1.0 m underground, the excavator ~2.5 m and the hauler ~3.8 m.
+# MEASURED collision surfaces (2026-07-30, Gazebo Harmonic / gz-sim 8.14.0,
+# ROS 2 Jazzy, real lunar_terrain, probe spheres pinned to a prismatic Z-only
+# joint so they cannot roll off the sample point):
 #
-# MEASURED consequence of being underground, scout_01 at (-45,-92,1.5) on the
-# real lunar_psr.sdf world, spawned through the same /world/<w>/create service
+#     (-45, -85)  scout_02       +1.340096 m   -> z 1.65
+#     (-45, -92)  scout_01       +1.446014 m   -> z 1.75
+#     (-45,-105)  excavator_01   +2.633854 m   -> z 2.94
+#     (-45,-112)  hauler_01      +3.621368 m   -> z 3.93
+#     (-30,-100)  depot          +0.886175 m   (see lunar_psr.sdf)
+#     (-100,-150) PSR floor     -13.914932 m
+#
+# THESE NUMBERS MOVED, AND WHY. They are 0.94-1.66 m lower than the previous
+# generation (2.7/2.8/4.3/5.6) because the heightmap normalisation bug was fixed
+# in selene_sim/scripts/generate_heightmap.py. gz-sim scales a heightmap so the
+# image's OWN brightest pixel maps to <size> z, not so the format maximum does;
+# the generator assumed the latter, so every elevation was inflated by 1.2370
+# (visual) / 1.2500 (collision) and the -18 m datum on terrain_link was
+# cancelling that inflation. The generator now emits full-range images and
+# declares each one's true metric height, terrain_link carries -15.0 (the +15 m
+# base the generator actually adds), and world z is now exactly
+# (metric height - 15.0). See the header of generate_heightmap.py.
+#
+# x=-45 is still not "low, flat ground": it climbs 2.28 m between y=-85 and
+# y=-112 because it lies on the OUTER FLANK of the PSR crater rim. Do not
+# collapse these four values back into one.
+#
+# MEASURED consequence of being underground — the failure this file exists to
+# prevent — scout_01 at (-45,-92,1.5) on the real lunar_psr.sdf world under the
+# OLD inflated terrain, spawned through the same /world/<w>/create service
 # simulation.launch.py uses, commanded linear.x=0.4 for 12 s:
 #     settle  x=-45.000000 y=-92.000000 z=1.507770
 #     after   x=-45.000000 y=-92.000000 z=1.523410
@@ -50,13 +66,8 @@
 # horizontal DOFs held by contact, extruded upward at ~1 mm/s. The wheels turn
 # at exactly the commanded 4.0 rad/s inside solid rock, so DiffDrive odometry -
 # which integrates measured joint position - reads a perfectly plausible 5 m.
-#
-# Same world, same model, same command, ONLY z changed 1.5 -> 2.8:
-#     settle  x=-44.998500 y=-91.998500 z=2.532000   (= surface 2.4925 + 0.04)
-#     after   x=-48.272300 y=-95.364900 z=3.006700
-#     world displacement 4.6958 m, odometry 4.6740 m -> slip -0.5%
-# Verified the same way for hauler_01 at z=5.6 (4.4197 m world / 4.6065 m odom,
-# 4.1% slip). Regression gate: scripts/check_drive.sh.
+# Regression gate: scripts/check_drive.sh, which asserts world displacement
+# against the COMMAND and refuses to accept odometry as evidence.
 #
 # The +0.30 m margin is deliberate: it is larger than the ~0.05 m of relief a
 # 1.0 m wheelbase sees across the collision heightmap's 3.91 m cells, and small
@@ -64,31 +75,20 @@
 # impact). The robot then settles onto the surface; do not read these numbers as
 # resting heights.
 #
-# WHY THE OLD NUMBER LOOKED SAFE. scripts/check_terrain.sh drops FREE spheres,
-# and under lunar gravity on sloped ground they roll for tens of metres before
-# they are sampled, so it reports the height wherever the probe stopped, not the
-# height at the coordinate asked about. It also hard-codes placed_z=1.5 for the
-# four spawns instead of reading this file. Both should be fixed there; until
-# they are, treat check_terrain.sh as a burial *smoke* test only and treat
-# scripts/check_drive.sh as the authority on whether a spawn is usable.
-#
-# UPSTREAM ROOT CAUSE, not fixed here (selene_sim/models/lunar_terrain/model.sdf
-# and selene_sim/scripts/generate_heightmap.py are outside this change): gz-sim
-# scales a heightmap so that the IMAGE'S OWN MAXIMUM PIXEL maps to <size> z, not
-# so that the format maximum does. lunar_collision_129.png peaks at 204/255 and
-# lunar_surface_513.png at 52980/65535, so the effective vertical scale is
-# 30/(204/255) = 37.5 m, every elevation is inflated 25%, and the -18 m datum on
-# terrain_link is ~4 m too low. Fixing the generator to emit full-range images
-# would let the datum be honest and let these z values come back down; it would
-# also remove the ~0.22 m collision-above-visual offset the two differing peaks
-# create. Until then, spawn heights must be measured, not assumed.
+# WHY YOU MUST RE-MEASURE RATHER THAN COMPUTE. A bilinear read of
+# lunar_collision_129.png predicts these four surfaces as 1.3108 / 1.4199 /
+# 2.4540 / 3.4121 — low by 0.026 m on the flattest point and by 0.209 m on the
+# steepest. A 0.5 m probe sphere rests TANGENT to a sloped collision cell, so it
+# reads high exactly where the ground is steep, and a wheel does the same thing.
+# The gate's measurement is the reference; the PNG is not. If you regenerate the
+# heightmap, re-run scripts/check_terrain.sh and copy the surface_z column here.
 #
 # yaw -2.33 rad points each robot at the PSR centre, so the first navigation leg
 # is roughly straight ahead.
 scouts:
-  - {x: -45, y: -92, z: 2.8, yaw: -2.33}    # surface +2.4925
-  - {x: -45, y: -85, z: 2.7, yaw: -2.33}    # surface +2.3840
+  - {x: -45, y: -92, z: 1.75, yaw: -2.33}   # surface +1.446014
+  - {x: -45, y: -85, z: 1.65, yaw: -2.33}   # surface +1.340096
 excavators:
-  - {x: -45, y: -105, z: 4.3, yaw: -2.33}   # surface +4.0114
+  - {x: -45, y: -105, z: 2.94, yaw: -2.33}  # surface +2.633854
 haulers:
-  - {x: -45, y: -112, z: 5.6, yaw: -2.33}   # surface +5.2688
+  - {x: -45, y: -112, z: 3.93, yaw: -2.33}  # surface +3.621368

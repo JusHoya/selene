@@ -70,8 +70,15 @@
          the model origin and gives ~85 mm of clearance. wheel_separation (0.5)
          and wheel_radius (0.1) are unchanged, so DiffDrive kinematics are
          unaffected. Consequence used by everything downstream: a settled scout's
-         model origin sits at (local surface height + 0.04 m) - MEASURED 2.532000
-         against a surveyed surface of 2.4925 at (-45,-92), a 0.5 mm agreement.
+         model origin sits at (local surface height + 0.04 m). The 0.04 m is
+         geometric, not fitted: wheel pose z -0.06 under base_link at 0.12 with
+         radius 0.1. MEASURED twice, on two different terrains, which is why it is
+         quoted as a property rather than as a number:
+             old datum  settled 2.532000 vs surveyed 2.4925    -> +0.0395
+             new datum  settled 1.485330 vs surveyed 1.446014  -> +0.0393
+         (The terrain moved ~1.05 m down between those two when the heightmap
+         normalisation bug was fixed - see selene_sim/scripts/generate_heightmap.py
+         - and the offset did not move, to 0.2 mm.)
 
          CORRECTION - the previous version of this comment claimed the 25 mm
          clearance was the MEASURED cause of "the chassis grounded out, the wheels

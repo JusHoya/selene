@@ -79,6 +79,47 @@ jobs:
         run: |
           python -m pytest selene_orchestrator/test/test_e2e_integration.py -v
 
+  # The terrain datum, checked in pure Python — no Gazebo, no ROS, under a second.
+  #
+  # The relationship between a heightmap pixel and a world z is invisible from
+  # every file that depends on it, and it has been wrong twice: once in row order
+  # (the PSR crater rendered at (-100,+150) instead of (-100,-150)) and once in
+  # vertical scale (gz-sim normalises a heightmap by the image's OWN maximum
+  # pixel, not the format maximum, so a field peaking at 0.808 of full range came
+  # out 1.24x too high and the -18 m datum existed to cancel that).
+  #
+  # Both were originally found by dropping probes in Gazebo, which needs WSL2 and
+  # a built workspace and takes about a minute. This job asserts the same
+  # invariants arithmetically on every push: that each PNG's brightest pixel is
+  # exactly the format maximum, that model.sdf's three magic literals still match
+  # heightmaps/terrain_datum.json, and that decoding the PNGs the way gz-sim does
+  # reproduces world z = height - 15.0 with the crater on the southern side.
+  # Verified to fail on all three real regressions, not just to pass today.
+  #
+  # The PHYSICAL gates live in .github/workflows/sim-gates.yaml. This job does not
+  # replace them — it cannot tell you whether a robot can drive — it just makes the
+  # arithmetic half cheap enough to run every time.
+  terrain-datum:
+    name: Terrain datum (no Gazebo)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # pillow is REQUIRED: selene_sim/scripts/generate_heightmap.py does
+      # `from PIL import Image`, and the test imports that module to obtain the
+      # generator's field rather than re-implementing it. numpy for the field.
+      - name: Install test dependencies
+        run: pip install pytest numpy pillow
+
+      - name: Check the terrain datum
+        run: python -m pytest selene_sim/test/test_heightmap_datum.py -v
+
   build-and-test:
     needs: e2e-integration
     runs-on: ubuntu-22.04
@@ -107,7 +148,13 @@ jobs:
           # flake8-docstrings/import-order/quotes) so the pip install below
           # gives us a deterministic plain flake8 environment.
           apt-get remove -y python3-flake8 flake8 || true
-          pip3 install --upgrade pytest flake8 numpy scipy pydantic pyyaml
+          # pillow is required by the `colcon test` step below, not by the build:
+          # selene_sim/test/test_heightmap_datum.py imports
+          # selene_sim/scripts/generate_heightmap.py, which does
+          # `from PIL import Image`. Without it that test errors at collection and
+          # reddens colcon test-result. (The dedicated terrain-datum job above
+          # installs it too; neither is load-bearing alone.)
+          pip3 install --upgrade pytest flake8 numpy scipy pydantic pyyaml pillow
 
       - name: Build workspace
         shell: bash

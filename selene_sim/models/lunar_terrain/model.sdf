@@ -2,35 +2,65 @@
 <sdf version="1.9">
   <model name="lunar_terrain">
     <static>true</static>
-    <!-- Datum offset lives on the LINK pose, not on <heightmap><pos>.
-         The heightmap encodes 0..30 m with the plain near mid-range (the generator
-         adds a +15 m base so a 15 m crater can be carved without clipping at 0).
-         Nothing used to compensate, so every robot, rock and the depot - placed at
-         z 0..1.5 - originated ~18 m underground.
-         MEASURED with falling probes (scripts/check_terrain.sh, Gazebo Harmonic
-         8.14.0): with <heightmap><pos>0 0 -18</pos> the plain STILL rendered at
-         18.2-18.7 m, i.e. gz-sim ignores the heightmap's own pos offset. Moving the
-         same -18 m onto the link pose is what actually shifts the surface. Keep it
-         here; do not move it back into <heightmap>. -->
+    <!-- THE NUMBERS IN THIS FILE ARE GENERATED. Do not hand-tune them.
+         selene_sim/scripts/generate_heightmap.py writes
+         heightmaps/terrain_datum.json alongside the PNGs, and
+         selene_sim/test/test_heightmap_datum.py FAILS if the three literals
+         below (link pose z, and the two <size> z values) drift from it. That
+         test needs no Gazebo and runs on every push; scripts/check_terrain.sh
+         is the physical check.
+
+         WHY A PIXEL IS NOT A FIXED NUMBER OF METRES HERE. gz-sim maps the
+         maximum pixel value PRESENT IN THE IMAGE to <size> z - not the format
+         maximum - and does not subtract the image minimum:
+             z_render = size_z * pixel / max(pixel in image)
+         MEASURED 2026-07-30 on gz-sim 8.14.0 with three synthetic heightmaps at
+         <size>100 100 30</size>: a uniform 128 read 30.0000 (a format-max rule
+         predicts 15.0588); 102 flat with 204 in one corner read 15.0000 (12.0000);
+         153 flat with min 51 and max 255 read 18.0000, ruling out a (max-min)
+         rule which predicts 15.0000. Exact to 4 dp in all three.
+
+         So each image declares the metric height of ITS OWN brightest pixel, the
+         generator guarantees that pixel is exactly the format maximum, and
+         z_render then equals the metric height. The link pose carries
+         -BASE_ELEVATION, so:
+             world z = (metric height) - 15.0
+         The datum is now the +15 m base the generator actually adds, not a fudge.
+
+         WHAT THIS REPLACED. The generator used to emit (H/30)*65535 on a field
+         whose true maximum is 24.2528 m, so the brightest pixel was 0.8084 of
+         full range and gz-sim stretched it back out over 30 m - inflating every
+         elevation by 1.2370 (visual) and 1.2500 (collision, whose decimated
+         maximum landed on 204/255 = 0.8000). The old -18 m datum was compensating
+         for that inflation, which is why it sat ~3 m from the +15 m base. The two
+         images disagreeing also put the collision surface up to 0.24 m ABOVE the
+         visual one, so robots drove on an invisible floor; that residual is now
+         within +/-0.06 m, the 8-bit quantisation of the coarse map.
+
+         The two <size> z values DIFFER, and must. Decimating the field to
+         129x129 does not preserve its maximum (24.252795 -> 24.053652). Sharing
+         one value would reintroduce the bug: normalising the coarse map against
+         the fine maximum leaves its brightest pixel at 253, and gz-sim would
+         renormalise by 253 and put the collision surface 0.199 m too high.
+
+         Keep the offset on the LINK pose, not on <heightmap><pos>. MEASURED
+         (Gazebo Harmonic 8.14.0): with <heightmap><pos>0 0 -18</pos> the plain
+         STILL rendered ~18 m high, i.e. gz-sim ignores the heightmap's own pos
+         offset. Moving the same value onto the link pose is what actually shifts
+         the surface. Do not move it back. -->
     <link name="terrain_link">
-      <pose>0 0 -18 0 0 0</pose>
+      <pose>0 0 -15 0 0 0</pose>
       <collision name="terrain_collision">
         <geometry>
           <heightmap>
             <uri>model://lunar_terrain/heightmaps/lunar_collision_129.png</uri>
-            <size>500 500 30</size>
-            <!-- Coarser 8-bit collision heightmap. gz-sim heightmap collision is
+            <!-- GENERATED: collision.size_z_m in heightmaps/terrain_datum.json.
+                 The metric height of this image's brightest pixel (255/255).
+                 Coarser 8-bit collision heightmap: gz-sim heightmap collision is
                  unreliable at 513x513; measured fall-throughs dropped 3 -> 1 at
-                 129x129 (3.91 m cells). The visual below keeps the full 513
-                 16-bit image. See selene_sim/scripts/generate_heightmap.py. -->
-            <!-- Datum: the heightmap encodes 0..30 m with the plain near mid-range
-                 (generator adds a +15 m base so a 15 m crater can be carved without
-                 clipping at 0). Nothing used to compensate, so every robot, rock and
-                 the depot - all placed at z 0..0.5 - originated ~18 m underground.
-                 MEASURED with falling probes (scripts/check_terrain.sh): the plain
-                 renders at 17.9-18.3 m and the crater floor at ~2.6 m. Offsetting by
-                 -18 m puts the plain at ~0 (+/-0.7 m of undulation) and the crater
-                 floor near -15 m. Collision and visual MUST carry the same value. -->
+                 129x129 (3.91 m cells, 0.094 m per 8-bit level). The visual below
+                 keeps the full 513 16-bit image. -->
+            <size>500 500 24.053652</size>
             <pos>0 0 0</pos>
           </heightmap>
         </geometry>
@@ -47,15 +77,11 @@
         <geometry>
           <heightmap>
             <uri>model://lunar_terrain/heightmaps/lunar_surface_513.png</uri>
-            <size>500 500 30</size>
-            <!-- Datum: the heightmap encodes 0..30 m with the plain near mid-range
-                 (generator adds a +15 m base so a 15 m crater can be carved without
-                 clipping at 0). Nothing used to compensate, so every robot, rock and
-                 the depot - all placed at z 0..0.5 - originated ~18 m underground.
-                 MEASURED with falling probes (scripts/check_terrain.sh): the plain
-                 renders at 17.9-18.3 m and the crater floor at ~2.6 m. Offsetting by
-                 -18 m puts the plain at ~0 (+/-0.7 m of undulation) and the crater
-                 floor near -15 m. Collision and visual MUST carry the same value. -->
+            <!-- GENERATED: visual.size_z_m in heightmaps/terrain_datum.json.
+                 The metric height of this image's brightest pixel (65535/65535).
+                 This is NOT the same number as the collision <size> above, and
+                 must not be made the same - see the note on terrain_link. -->
+            <size>500 500 24.252795</size>
             <pos>0 0 0</pos>
           </heightmap>
         </geometry>

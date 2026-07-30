@@ -76,25 +76,54 @@
     <!-- Processing depot marker.
          The marker is STATIC, so unlike a robot it never settles - whatever z is
          written here is where it stays, and it must be placed by measurement.
-         MEASURED collision surface at (-30,-100) = +1.8051 m (probe sphere
-         pinned to a prismatic Z-only joint so it cannot roll off the sample
-         point; the free-sphere probes in scripts/check_terrain.sh roll tens of
-         metres downhill under lunar gravity before they are read, which is how
-         the old "plain sits at 0.3-1.1 m" figure was arrived at).
+         MEASURED collision surface at (-30,-100) = +0.886175 m (2026-07-30,
+         gz-sim 8.14.0, scripts/check_terrain.sh, probe sphere pinned to a
+         prismatic Z-only joint so it cannot roll off the sample point).
          The marker is a cylinder of radius 1.0 and length 0.1, so its centre
-         must sit at surface + 0.05 to rest on the ground: 1.8051 + 0.05 = 1.855,
-         rounded up to 1.86 so the disc's underside is 5 mm clear.
-         The previous z=1.5 put the disc's TOP at 1.55, i.e. 0.26 m below the
-         surface - the depot was entirely inside the terrain and invisible. -->
+         must sit at surface + 0.05 to rest on the ground:
+         0.886175 + 0.05 = 0.936, rounded UP to 0.94 so the disc's underside
+         clears the ground rather than grazing it.
+         This moved down from 1.86 because the heightmap normalisation bug was
+         fixed - the terrain itself is ~0.92 m lower here now. See
+         selene_sim/scripts/generate_heightmap.py and the note on terrain_link in
+         models/lunar_terrain/model.sdf. Before that fix, z=1.5 put the disc's
+         TOP 0.26 m BELOW the surface: the depot was entirely inside the terrain
+         and invisible.
+         If you regenerate the heightmap, re-run scripts/check_terrain.sh and
+         reset this from its reported surface_z for the depot row. -->
     <include>
       <uri>model://depot_marker</uri>
       <name>depot</name>
-      <pose>-30 -100 1.86 0 0 0</pose>
+      <pose>-30 -100 0.94 0 0 0</pose>
     </include>
 
     <!-- ============================================================ -->
     <!-- ROCKS: PSR crater rim cluster (around -100, -150, radius ~60m) -->
     <!-- ============================================================ -->
+
+    <!-- KNOWN DEFECT, NOT FIXED HERE: every one of the 26 rocks below is placed
+         at z=0, and the collision surface is nowhere near 0. They are all
+         <static>true</static>, so unlike a robot they do not fall onto the
+         ground and they are not extruded out of it - they simply sit inside the
+         terrain, contributing collision geometry that is mostly or entirely
+         buried and a mesh that is mostly or entirely invisible.
+         MEASURED depth of burial at the surrounding surface heights: on the
+         plain the surface is +0.29 to +1.45 m, so the plain rocks are buried by
+         roughly that much; inside the PSR the surface is about -13.9 m, so those
+         rocks float ~14 m ABOVE the crater floor.
+         This predates the datum fix and is not caused by it - the fix made it
+         strictly less bad on the plain (the surface there dropped ~0.9 m) and
+         did not change its nature. It is left alone because correcting it
+         honestly means measuring the collision surface at all 26 coordinates and
+         deciding each rock model's origin-to-underside offset, which is a
+         separate change with its own gate work. Do not "fix" it by guessing a
+         constant z.
+         To fix it: add these 26 XY pairs to the POINTS list in
+         scripts/check_terrain.sh as placed coordinates, run it, and set each
+         pose z from the reported surface_z plus that model's half-height. The
+         gate already fails on a buried PLACED coordinate, so it will confirm the
+         result. -->
+
 
     <!-- Crater rim rocks: small rocks (crater_rock_01) -->
     <include>
