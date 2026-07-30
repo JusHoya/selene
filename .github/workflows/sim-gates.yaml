@@ -89,9 +89,13 @@ jobs:
   sim-gates:
     name: Terrain and drive gates (Gazebo Harmonic)
     runs-on: ubuntu-24.04
-    # The real hard stop. Expected wall clock is 12-20 min including apt and the
-    # build; per-step timeouts below are what actually diagnose a hang.
-    timeout-minutes: 45
+    # The real hard stop, and it must EXCEED the sum of the step budgets below
+    # (10 + 4x6 = 34) plus apt and the build, or the job timeout fires first and
+    # destroys the per-step signal that says which robot hung.
+    # Measured on developer hardware: terrain gate 47-49 s, each drive leg ~55 s
+    # (65 s worst under 4-CPU contention), colcon build ~10 s. The budgets below
+    # are therefore 10x and 5x headroom, not guesses.
+    timeout-minutes: 60
 
     # ROS 2 Jazzy, matching what scripts/setup_wsl2.sh provisions and what both
     # gates source first. NOTE this is deliberately NOT the Humble container that
@@ -195,7 +199,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Terrain gate
         shell: bash
-        timeout-minutes: 12
+        timeout-minutes: 10
         run: |
           set -o pipefail
           source /opt/ros/jazzy/setup.bash
@@ -204,46 +208,37 @@ jobs:
 
       - name: Drive gate — scout_01
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 6
         run: |
           set -o pipefail
           source /opt/ros/jazzy/setup.bash
-          # check_drive.sh hardcodes LOG=/tmp/selene_check_drive.log with no
-          # override, so each leg would clobber the previous one's Gazebo log and
-          # only the last robot's would be uploadable. Copy it out per robot,
-          # on the failing path too, re-raising the original status explicitly so
-          # nobody has to rely on bash's EXIT-trap status rules.
-          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_scout_01.log 2>/dev/null || true; exit $rc' EXIT
           SELENE_WS=/ws DRIVE_ROBOT=scout_01 \
             bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_scout_01.out
 
       - name: Drive gate — scout_02
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 6
         run: |
           set -o pipefail
           source /opt/ros/jazzy/setup.bash
-          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_scout_02.log 2>/dev/null || true; exit $rc' EXIT
           SELENE_WS=/ws DRIVE_ROBOT=scout_02 \
             bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_scout_02.out
 
       - name: Drive gate — excavator_01
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 6
         run: |
           set -o pipefail
           source /opt/ros/jazzy/setup.bash
-          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_excavator_01.log 2>/dev/null || true; exit $rc' EXIT
           SELENE_WS=/ws DRIVE_ROBOT=excavator_01 \
             bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_excavator_01.out
 
       - name: Drive gate — hauler_01
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 6
         run: |
           set -o pipefail
           source /opt/ros/jazzy/setup.bash
-          trap 'rc=$?; cp -f /tmp/selene_check_drive.log /tmp/selene_check_drive_hauler_01.log 2>/dev/null || true; exit $rc' EXIT
           SELENE_WS=/ws DRIVE_ROBOT=hauler_01 \
             bash scripts/check_drive.sh 2>&1 | tee /tmp/drive_hauler_01.out
 

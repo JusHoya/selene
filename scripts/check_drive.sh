@@ -140,7 +140,11 @@ fi
 MODEL_SDF="$SHARE/models/$MODEL_DIR/model.sdf"
 [ -f "$MODEL_SDF" ] || { echo "ERROR: missing $MODEL_SDF" >&2; exit 1; }
 
-LOG=/tmp/selene_check_drive.log
+# Per-robot, so a four-robot sweep keeps four server logs instead of overwriting
+# one. Deterministic rather than PID-scoped on purpose: CI globs
+# /tmp/selene_check_drive*.log to collect them, and a predictable name is what
+# makes "which robot produced this log" answerable afterwards.
+LOG="/tmp/selene_check_drive_${DRIVE_ROBOT}.log"
 GZ_PID=""
 # Kill ONLY the server this script started. Never pattern-match on "gz sim" or on
 # the world file name — lunar_psr.sdf is the world everyone else runs too, and a
@@ -156,7 +160,18 @@ stop_gz() {
     kill -KILL "$GZ_PID" 2>/dev/null
     return 0
 }
-trap stop_gz EXIT INT TERM
+# The signal traps EXIT EXPLICITLY. `trap stop_gz EXIT INT TERM` with a handler
+# that ends in `return 0` does NOT stop the script — the handler runs and execution
+# RESUMES. Measured on the identical structure in check_terrain.sh: a SIGTERM tore
+# down the Gazebo server and then the script carried on and printed RESULT: PASS
+# and exited 0. This script has the same window: stop_gz is called before the
+# verdict is computed, and the verdict comes from poses already captured, so a
+# cancelled run can still print PASS. .github/workflows/sim-gates.yaml sets
+# concurrency.cancel-in-progress, which makes that path reachable in CI today.
+# stop_gz is idempotent, so running it twice is harmless.
+trap stop_gz EXIT
+trap 'stop_gz; exit 130' INT
+trap 'stop_gz; exit 143' TERM
 
 pose() {   # authoritative model pose: x y z roll pitch yaw, one number per line
     gz model -m "$DRIVE_ROBOT" -p 2>/dev/null \
@@ -189,11 +204,23 @@ echo ""
 # simulation.launch.py's `create` nodes do.
 gz sim -s -v 1 "$WORLD" > "$LOG" 2>&1 &
 GZ_PID=$!
+# CARRY THE POLL'S RESULT; DO NOT RE-QUERY. This loop used to break on a match and
+# then a SECOND, independent `gz topic -l | grep -q` decided the verdict, so a
+# transient failure of that one query reported "world never appeared" about a world
+# that was demonstrably up — the loop had just matched it. Measured pinned to one
+# CPU: the loop matched and broke on its first iteration and the re-check then did
+# not match, failing in 5.2 s with a 0-byte server log. That is a false FAIL, and
+# on a 2-4 vCPU hosted runner it is the likeliest way this gate goes red for a
+# reason that has nothing to do with driving.
+WORLD_UP=0
 for _ in $(seq 1 60); do
-    gz topic -l 2>/dev/null | grep -q "/world/$WORLD_NAME/" && break
+    if gz topic -l 2>/dev/null | grep -q "/world/$WORLD_NAME/"; then
+        WORLD_UP=1
+        break
+    fi
     sleep 0.5
 done
-if ! gz topic -l 2>/dev/null | grep -q "/world/$WORLD_NAME/"; then
+if [ "$WORLD_UP" -ne 1 ]; then
     echo "FAIL: world $WORLD_NAME never appeared. See $LOG"
     exit 1
 fi

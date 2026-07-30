@@ -160,6 +160,29 @@ export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 # measurement error this file exists to prevent. Honours a caller-set partition.
 export GZ_PARTITION="${GZ_PARTITION:-selene_check_terrain_$$}"
 
+# THE FILES THAT CARRY THE MEASUREMENT ARE PID-SCOPED, for the same reason the
+# partition above is. GZ_PARTITION was made per-PID precisely so a second Gazebo
+# could not answer this run's queries; the file that carries the readings into the
+# verdict got no such treatment, and it was the wider hole of the two.
+#
+# The truncate/append checks further down close the STALE-file case (a leftover
+# unwritable file). They do NOT close the CONCURRENT case: run A truncates and
+# writes its 14 lines, run B truncates — wiping A's data — and writes its own 14,
+# and A's "must be exactly NPROBES lines" check then passes on B's measurements.
+# Measured: an A with a burial injected reported "ok (+0.31 m)" and RESULT: PASS,
+# exit 0, off an overlapping clean B's readings. Two developers, or a dev box and a
+# CI container sharing /tmp, or a scheduled run overlapping a push run, are all
+# enough. Per-PID names make the collision impossible rather than unlikely.
+#
+# The gz log and the joint-state dump are NOT removed on exit: they are the raw
+# payload every one of the last three measurement bugs was diagnosed from. The
+# paths are echoed below so an operator can find them, and
+# .github/workflows/sim-gates.yaml globs them as artifacts.
+RUN_ID=$$
+GZLOG="/tmp/selene_check_terrain.$RUN_ID.log"
+POSES="/tmp/selene_check_terrain_poses.$RUN_ID.txt"
+JOINT_DUMP="/tmp/selene_check_terrain_joint_state.$RUN_ID.txt"
+
 # ---------------------------------------------------------------- probe points
 # name:x:y:placement_z
 #   placement_z >= 0  -> something is really placed here; assert it clears the surface
@@ -350,21 +373,31 @@ echo ""
 # reports — the probe tuning above and the coarser collision heightmap did the
 # real work — but it removes one confounder from a measurement whose whole job is
 # to be trustworthy, and it costs a few seconds. Keep it.
-gz sim -s -v 1 "$WORLD" > /tmp/selene_check_terrain.log 2>&1 &
+gz sim -s -v 1 "$WORLD" > "$GZLOG" 2>&1 &
 GZ_PID=$!
 
-# Wait for the world to be up, then let the heightmap finish loading.
-for _ in $(seq 1 40); do
-    if gz topic -l 2>/dev/null | grep -q "/world/terraincheck/"; then break; fi
-    sleep 0.5
-done
 # THESE THREE ARE HARD FAILURES, and were warnings until 2026-07-30. Every
 # infrastructure failure between here and the analysis block used to be a
 # warning, so the gate failed closed only by accident — via the PSR-depth
 # RELATION between two survey points, which is not a check that the world
-# stepped. check_drive.sh:196-203 exits 1 on exactly these conditions; match it.
-if ! gz topic -l 2>/dev/null | grep -q "/world/terraincheck/"; then
-    echo "FAIL: world 'terraincheck' never appeared. See /tmp/selene_check_terrain.log"
+# stepped. check_drive.sh exits 1 on exactly these conditions; match it.
+#
+# CARRY THE POLL'S RESULT; DO NOT RE-QUERY. The loop used to break on a match and
+# then a SECOND, independent `gz topic -l | grep -q` decided the verdict — so a
+# transient failure of that one query turned a healthy world into
+# "world never appeared". Under CPU contention that is a real false FAIL, and
+# promoting this from a warning to exit 1 is what made it fatal. The evidence was
+# already in hand at the break; use it.
+WORLD_UP=0
+for _ in $(seq 1 40); do
+    if gz topic -l 2>/dev/null | grep -q "/world/terraincheck/"; then
+        WORLD_UP=1
+        break
+    fi
+    sleep 0.5
+done
+if [ "$WORLD_UP" -ne 1 ]; then
+    echo "FAIL: world 'terraincheck' never appeared. See $GZLOG"
     exit 1
 fi
 sleep "${HEIGHTMAP_LOAD_SECONDS:-10}"
@@ -378,10 +411,25 @@ gz service -s /world/terraincheck/control \
 # The whole measurement rides on one topic per probe. If it is not advertised
 # there is nothing to read, and the run would otherwise spend its settle time and
 # then print a wall of MEASUREMENT FAILED without naming the cause.
-if ! gz topic -l 2>/dev/null | grep -qx "/world/terraincheck/model/probe1/joint_state"; then
+#
+# RETRIED, not sampled once. The topic is advertised asynchronously after the
+# world unpauses, so a single query here races the publisher and — now that this
+# is exit 1 rather than a warning — a lost race is a red gate on a healthy world.
+# 10 x 0.5 s is generous against the ~0 s it normally takes, and still fails fast
+# relative to the settle that follows.
+TOPIC_UP=0
+for _ in $(seq 1 10); do
+    if gz topic -l 2>/dev/null | grep -qx "/world/terraincheck/model/probe1/joint_state"; then
+        TOPIC_UP=1
+        break
+    fi
+    sleep 0.5
+done
+if [ "$TOPIC_UP" -ne 1 ]; then
     echo "FAIL: /world/terraincheck/model/probe1/joint_state is not advertised."
     echo "      Either the probe models lost gz-sim-joint-state-publisher-system"
     echo "      or the world did not load. Every reading would be NaN."
+    echo "      See $GZLOG"
     exit 1
 fi
 
@@ -478,8 +526,8 @@ PYSLIDE
 # and the gate prints "RESULT: PASS" and exits 0. That is the exact class of
 # false green this file exists to prevent, and it was in the file doing the
 # preventing. A root-owned leftover from a sudo/CI run is all it takes.
-POSES=/tmp/selene_check_terrain_poses.txt
-JOINT_DUMP=/tmp/selene_check_terrain_joint_state.txt
+# POSES / JOINT_DUMP / GZLOG are defined near GZ_PARTITION and are PID-scoped; see
+# the note there for why the checks below are not sufficient on their own.
 : > "$POSES" || { echo "FAIL: cannot write $POSES (stale root-owned file? full /tmp?)" >&2
                   exit 1; }
 # Keep the raw payloads. When this gate next misreports, the first question is
@@ -527,13 +575,14 @@ stop_gz() {
 }
 stop_gz
 
-python3 - "$POINTS" "$PROBE_RADIUS" "$POSES" <<'PY'
+python3 - "$POINTS" "$PROBE_RADIUS" "$POSES" "$GZLOG" <<'PY'
 import os
 import sys
 
 points = sys.argv[1].split()
 radius = float(sys.argv[2])
 poses_path = sys.argv[3]        # passed in, not hardcoded, so the shell owns the path
+gz_log = sys.argv[4]            # ditto; both are PID-scoped by the shell
 
 DROP = float(os.environ.get('PROBE_DROP_Z', '12'))
 LIMIT = float(os.environ.get('SLIDE_LIMIT', '60'))
@@ -568,7 +617,7 @@ for line in open(poses_path):
 
 if not z_by_probe:
     print("FAIL: no probe poses were read from Gazebo. Is the world loading?")
-    print("      see /tmp/selene_check_terrain.log")
+    print(f"      see {gz_log}")
     raise SystemExit(1)
 
 failures = []
@@ -652,5 +701,7 @@ if [ "$RC" -ne 0 ]; then
     FAIL=1
 fi
 echo ""
-echo "Gazebo log: /tmp/selene_check_terrain.log"
+echo "Gazebo log:      $GZLOG"
+echo "Probe readings:  $POSES"
+echo "Raw joint_state: $JOINT_DUMP"
 exit "$FAIL"
