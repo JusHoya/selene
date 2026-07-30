@@ -24,18 +24,73 @@
 # pinned to a prismatic Z slide so they cannot move laterally, and the reading is
 # the joint position rather than a settled body pose.
 #
+# AND THAT REWIRE INITIALLY MEASURED NOTHING AT ALL — the gate's third
+# measurement error in a row. The pinned probes are read from
+# /world/terraincheck/model/probe<N>/joint_state, but the generated probe models
+# did not carry gz-sim-joint-state-publisher-system, which is the plugin that
+# advertises that topic and nothing else does. (It is the same plugin
+# selene_sim/models/scout/model.sdf line ~323 carries, which is why the scout's
+# joint_state topic existed while the probes' never did.) The topic name was
+# right; the publisher was missing. Every read came back empty, every surface
+# parsed as NaN, and all 14 coordinates printed MEASUREMENT FAILED with exit 1 —
+# fail-closed, so it certified nothing false, but it also certified nothing true.
+# Re-running the pre-fix script confirms exactly that: 14 of 14 NaN, no
+# joint_state topic in the world. The plugin is now emitted with every probe, and
+# the reading is parsed inside the slide joint's own axis1 block; both are
+# documented at the point of use below.
+#
 # None of this is visible from the configs, and none of it produces an error
 # message — robots simply sit inside solid geometry with their wheels turning. So
 # the check lowers a laterally-pinned probe onto every coordinate the software
 # cares about and reads the slide joint's position. Gazebo is the external
 # authority; the heightmap PNG is not, and neither is a free-rolling probe.
 #
+# WHAT IS ACTUALLY VERIFIED, AND WHAT IS NOT
+# Measured 2026-07-29 on gz-sim 8.11.0 / Gazebo Harmonic, Ubuntu 24.04 under
+# WSL2, 30 s settle, against spawn_positions.yaml z = 2.8 / 2.7 / 4.3 / 5.6 and
+# the lunar_psr.sdf depot marker at 1.86. The gate runs to completion and exits 0.
+#
+#   - Its surfaces were CROSS-CHECKED, not assumed. The six coordinates that an
+#     independent pinned-probe harness also measured agree, in metres:
+#         (-45, -92)    2.4928  vs   2.4925    +0.0003
+#         (-45, -85)    2.3842  vs   2.3840    +0.0002
+#         (-45,-105)    4.0200  vs   4.0114    +0.0086
+#         (-45,-112)    5.2774  vs   5.2688    +0.0086
+#         (-30,-100)    1.8065  vs   1.8051    +0.0014
+#         (-100,-150) -16.6022  vs -16.6025    +0.0003
+#     Worst disagreement 8.6 mm — small against the 0.30 m spawn margin and
+#     against the ~0.05 m of relief a wheelbase sees across one 3.91 m collision
+#     cell. Two separate runs reproduced every slide position to all 16 digits.
+#     The two 8.6 mm rows are the two points on the steepest ground (0.12 and
+#     0.18 m/m along x=-45, against 0.016 m/m at the two rows that agree to
+#     0.3 mm), which is what a 0.5 m sphere resting tangent to a sloped collision
+#     cell would do; that mechanism is a reading of the numbers, not a separate
+#     measurement. Note also that the cross-check harness uses the SAME
+#     pinned-probe method, so it confirms this gate's plumbing and parsing, not
+#     the method — and nothing here confirms the heightmap's absolute datum,
+#     which spawn_positions.yaml records as ~25% inflated upstream.
+#   - IT STILL FAILS. Pointed at the same config with z forced back to 1.5 it
+#     reports all four spawns BURIED (0.99 / 0.88 / 2.52 / 3.78 m) and exits 1.
+#     The pass above is therefore a measurement, not a stuck green.
+#
+# NOT verified: the eight survey-only coordinates have no independent reference.
+# For those this gate asserts only that collision geometry exists there, plus the
+# PSR-depth and Y-mirror RELATIONS between them — it does not certify their
+# absolute heights. And a pass means only "not inside the terrain at t=0";
+# whether a robot can drive out of that pose is scripts/check_drive.sh's question.
+#
 # USAGE
 #   bash scripts/check_terrain.sh            # uses ~/selene workspace install
 #   SELENE_WS=/path/to/ws bash scripts/check_terrain.sh
+#   SPAWNS_YAML=/path/to/spawns.yaml bash scripts/check_terrain.sh   # test a config
+# It starts its own gz server on its own GZ_PARTITION, so it neither reads nor is
+# read by another Gazebo on the same host (verified: a `gz topic -l` in another
+# partition, and one with GZ_PARTITION unset, both see none of its topics).
 #
-# Exit 0 if every checked coordinate rests on a colliding surface below its
-# placement height. Exit 1 on any burial, any fall-through, or a misplaced PSR.
+# Exit 0 only if every probe made contact, and every PLACED coordinate's surface
+# is below its placement height. Exit 1 on any burial, any coordinate with no
+# collision beneath it, a misplaced PSR, or
+# any probe that returned no reading.
 
 set -uo pipefail
 
@@ -51,6 +106,16 @@ WS="${SELENE_WS:-$HOME/selene}"
 PROBE_DROP_Z="${PROBE_DROP_Z:-12}"
 PROBE_STEP="${PROBE_STEP:-0.0005}"
 PROBE_RADIUS=0.5
+# Travel limit of the probe's prismatic slide, in metres. The no-contact test below
+# is DERIVED from this and PROBE_DROP_Z rather than hard-coded, because the two got
+# out of step once already: with DROP=12 and LIMIT=60 a probe can never read below
+# 12-60 = -48, while the fall-through test compared against -55. -48 <= -55 is
+# always false, so the branch was dead and a coordinate over the void passed with
+# "51.30 m of clearance". Keep these coupled.
+SLIDE_LIMIT="${SLIDE_LIMIT:-60}"
+# Exported so the analysis block below reads the REAL values rather than its own
+# fallback defaults, which would silently diverge if any of these were overridden.
+export PROBE_DROP_Z SLIDE_LIMIT PROBE_RADIUS
 SETTLE_SECONDS="${SETTLE_SECONDS:-30}"
 FAIL=0
 
@@ -72,6 +137,13 @@ SHARE="$WS/install/selene_sim/share/selene_sim"
 export GZ_SIM_RESOURCE_PATH="$SHARE/models:${GZ_SIM_RESOURCE_PATH:-}"
 # CLI/short-lived DDS participants can exhaust /dev/shm on WSL2.
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+# Isolate this check's gz-transport traffic. The default partition is shared, so
+# any other Gazebo on the host — including a server left behind by a crashed
+# earlier run of THIS script, which advertises the same world name and the same
+# probe<N>/joint_state topics — could be the thing answered below instead of the
+# server started further down. Reading a stale server is exactly the class of
+# measurement error this file exists to prevent. Honours a caller-set partition.
+export GZ_PARTITION="${GZ_PARTITION:-selene_check_terrain_$$}"
 
 # ---------------------------------------------------------------- probe points
 # name:x:y:placement_z
@@ -175,8 +247,17 @@ trap cleanup EXIT INT TERM
       printf '<bounce><restitution_coefficient>0</restitution_coefficient></bounce></surface>'
       printf '</collision></link>'
       printf '<joint name="slide" type="prismatic"><parent>anchor</parent><child>ball</child>'
-      printf '<axis><xyz>0 0 1</xyz><limit><lower>-60</lower><upper>0</upper></limit>'
+      printf '<axis><xyz>0 0 1</xyz><limit><lower>-%s</lower><upper>0</upper></limit>' "$SLIDE_LIMIT"
       printf '<dynamics><damping>0</damping><friction>0</friction></dynamics></axis></joint>'
+      # WITHOUT THIS LINE THE GATE MEASURES NOTHING. The descent is read from
+      # /world/terraincheck/model/probe<N>/joint_state, and that topic is
+      # advertised by this plugin and nothing else — it is the same one
+      # selene_sim/models/scout/model.sdf carries to publish wheel states. When
+      # the probes were rewired from free spheres to pinned slides the plugin was
+      # not carried over, so the topic never existed, every read came back empty,
+      # every surface parsed as NaN and all 14 coordinates printed MEASUREMENT
+      # FAILED. The topic name was right; the publisher was missing.
+      printf '<plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher"/>'
       printf '</model>\n'
   done
   echo '</world></sdf>'
@@ -210,18 +291,110 @@ gz service -s /world/terraincheck/control \
     --timeout 5000 --req 'pause: false' > /dev/null 2>&1 \
     || echo "  WARNING: could not unpause the world; results will be meaningless"
 
+# The whole measurement rides on one topic per probe. If it is not advertised
+# there is nothing to read, and the run would otherwise spend its settle time and
+# then print a wall of MEASUREMENT FAILED without naming the cause. Name it here.
+if ! gz topic -l 2>/dev/null | grep -qx "/world/terraincheck/model/probe1/joint_state"; then
+    echo "  WARNING: /world/terraincheck/model/probe1/joint_state is not advertised."
+    echo "           Either the probe models lost gz-sim-joint-state-publisher-system"
+    echo "           or the world did not load. Every reading will be NaN."
+fi
+
 sleep "$SETTLE_SECONDS"
 # A pinned probe's descent IS the slide joint position, which is exact and needs
 # no pose bookkeeping:  surface = PROBE_DROP_Z + joint_position - PROBE_RADIUS
+#
+# The parser below is written against a message that was actually captured from
+# this world, not against an assumed layout. gz-sim 8.11.0 publishes a
+# gz.msgs.Model in protobuf text format, and each probe has TWO joints:
+#
+#   name: "probe2"
+#   id: 14
+#   pose { position { x: -45 y: -92 } orientation { w: 1 } }
+#   joint {
+#     name: "fix"
+#     id: 18
+#     parent: "world"
+#     child: "anchor"
+#     pose { position { } orientation { w: 1 } }     <- no axis1 at all
+#   }
+#   joint {
+#     name: "slide"
+#     id: 19
+#     parent: "anchor"
+#     child: "ball"
+#     pose { position { } orientation { w: 1 } }     <- NOT the reading
+#     axis1 {
+#       xyz { z: 1 }
+#       limit_lower: -60
+#       position: -9.0072210705977973                <- the reading
+#       velocity: 1.7391765111396396e-12
+#     }
+#   }
+#
+# (shown flattened; the wire text puts every field on its own line.) Three traps
+# are visible in that message and the parser has to survive all of them:
+#
+#   1. TWO joints. A lazy `name:"slide".*?position:` across the whole payload can
+#      pair one joint's name with another joint's position. So the match is scoped
+#      to the slide joint's own brace block, and then to that block's own axis1.
+#   2. Every joint carries `pose { position { } }`. That is a nested message —
+#      `position` followed by `{`, never by a number — so requiring the
+#      colon-then-number form keeps the joint pose out of the reading.
+#   3. proto3 text format omits fields that equal their default, which is why
+#      `limit_upper: 0` and `velocity: 0` simply are not printed. An axis1 with no
+#      `position:` line therefore means position is exactly 0.0 (the probe never
+#      moved) — a real reading of 0, not a missing one, and one that then fails
+#      the clearance test rather than being mistaken for a measurement error.
+#
+# `gz topic -e -n 1` prints more than one message in practice; the first complete
+# slide/axis1 block wins.
+PARSE_SLIDE=$(cat <<'PYSLIDE'
+import re, sys
+
+NUM = r'[-+]?(?:[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)'
+t = sys.stdin.read()
+out = 'nan'
+
+
+def block_after(text, start):
+    """Return the text inside the brace group whose '{' precedes `start`."""
+    i, depth = start, 1
+    while i < len(text) and depth:
+        depth += (text[i] == '{') - (text[i] == '}')
+        i += 1
+    return None if depth else text[start:i - 1]
+
+
+for m in re.finditer(r'\bjoint\s*\{', t):
+    body = block_after(t, m.end())
+    if body is None:
+        continue                          # truncated trailing message
+    if not re.search(r'\bname:\s*"slide"', body):
+        continue                          # some other joint, e.g. "fix"
+    a = re.search(r'\baxis1\s*\{', body)
+    if a is None:
+        continue                          # slide seen but no axis state yet
+    axis = block_after(body, a.end())
+    if axis is None:
+        continue
+    p = re.search(r'\bposition:\s*(' + NUM + r')\s*$', axis, re.M)
+    out = p.group(1) if p else '0'         # absent field == proto3 default 0.0
+    break
+print(out)
+PYSLIDE
+)
 : > /tmp/selene_check_terrain_poses.txt
+# Keep the raw payloads. When this gate next misreports, the first question is
+# "what did Gazebo actually send", and guessing at that is how the previous three
+# measurement errors survived.
+: > /tmp/selene_check_terrain_joint_state.txt
 NPROBES=$(echo "$POINTS" | wc -w)
 for j in $(seq 1 "$NPROBES"); do
-    jp=$(timeout 15 gz topic -e -t "/world/terraincheck/model/probe${j}/joint_state" -n 1 2>/dev/null \
-         | python3 -c "
-import re, sys
-t = sys.stdin.read()
-m = re.search(r'name:\s*\"slide\".*?position:\s*(-?[0-9eE.+-]+)', t, re.S)
-print(m.group(1) if m else 'nan')")
+    raw=$(timeout 15 gz topic -e -t "/world/terraincheck/model/probe${j}/joint_state" -n 1 2>&1)
+    printf '========== probe%s ==========\n%s\n' "$j" "$raw" \
+        >> /tmp/selene_check_terrain_joint_state.txt
+    jp=$(printf '%s\n' "$raw" | python3 -c "$PARSE_SLIDE")
     echo "probe${j} ${jp}" >> /tmp/selene_check_terrain_poses.txt
 done
 
@@ -249,6 +422,14 @@ radius = float(sys.argv[2])
 
 import os
 DROP = float(os.environ.get('PROBE_DROP_Z', '12'))
+LIMIT = float(os.environ.get('SLIDE_LIMIT', '60'))
+RADIUS = float(os.environ.get('PROBE_RADIUS', '0.5'))
+# A probe that ran to the end of its slide never touched anything. Derived, not
+# guessed. NOTE THE FRAME: z here is the BALL CENTRE (DROP + joint_position), not
+# the surface, so the radius must NOT appear. Bottom-out centre = DROP - LIMIT,
+# plus 0.2 m of tolerance. Getting this wrong by one radius made the check silently
+# unreachable once already, which is the same defect this threshold exists to catch.
+NO_CONTACT_Z = DROP - LIMIT + 0.2
 z_by_probe = {}
 for line in open('/tmp/selene_check_terrain_poses.txt'):
     parts = line.split()
@@ -282,7 +463,7 @@ for idx, spec in enumerate(points, start=1):
         print(f"{name:<14} {x:>6.0f} {y:>6.0f} {pz:>9.2f} {'--':>10}   NO POSE")
         failures.append(f"{name}: no pose reported")
         continue
-    if z <= -55:
+    if z <= NO_CONTACT_Z:
         print(f"{name:<14} {x:>6.0f} {y:>6.0f} {pz:>9.2f} {'none':>10}   FELL THROUGH (no collision)")
         failures.append(f"{name} ({x:.0f},{y:.0f}): no collision geometry")
         continue
@@ -290,6 +471,8 @@ for idx, spec in enumerate(points, start=1):
     surfaces[name] = surf
     if pz < -900:
         tag = '(control)' if name == 'mirror_check' else '(survey coord)'
+        # Survey coordinates carry no clearance test, but they DO assert that
+        # collision geometry exists here; the no-contact case was caught above.
         print(f"{name:<14} {x:>6.0f} {y:>6.0f} {'n/a':>9} {surf:>10.2f}   {tag}")
         continue
     clearance = pz - surf
