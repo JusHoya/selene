@@ -270,7 +270,16 @@ cat >> "$REPORT" <<FOOTER
 
 **Summary:** $PASS passed, $FAIL failed
 
-**Known deviation:** FR-MAP-4 (RViz2 visualization, P1) intentionally skipped per plan decision D9 — the dashboard's canvas heatmap satisfies operator visualization.
+**Deviations:** see \`docs/phase5_deviation_register.md\` (D-01..D-10), which records
+what this gate does and does not cover. Note in particular that FR-MAP-4 (RViz2
+resource-map visualization) is NOT delivered and is NOT waived — the previous
+version of this line claimed it was skipped "per plan decision D9", and no such
+decision exists anywhere in the repository or its history.
+
+**What 8/8 here means:** the system launches, rosbridge and a web server answer,
+two services accept calls, and one override propagates to a robot's state machine.
+Of the PRD's seven exit-gate rows (docs/PRD.md:1499-1509) this script covers one
+end to end, three with weak liveness proxies, and three not at all.
 
 **Launch log:** $LAUNCH_LOG
 FOOTER

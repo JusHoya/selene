@@ -267,9 +267,14 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p /tmp/gate-logs
-          for f in /tmp/selene_check_terrain.log \
-                   /tmp/selene_check_terrain_poses.txt \
-                   /tmp/selene_check_terrain_joint_state.txt \
+          # GLOBS, because check_terrain.sh PID-scopes these three
+          # (selene_check_terrain.<pid>.log and friends) so that two runs sharing
+          # /tmp cannot interleave one measurement into the other's verdict. The
+          # literal names that used to be listed here matched nothing, so the
+          # terrain artifacts were silently never uploaded.
+          for f in /tmp/selene_check_terrain.*.log \
+                   /tmp/selene_check_terrain_poses.*.txt \
+                   /tmp/selene_check_terrain_joint_state.*.txt \
                    /tmp/selene_check_drive*.log \
                    /tmp/terrain_gate.out \
                    /tmp/drive_*.out; do
