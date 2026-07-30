@@ -62,8 +62,19 @@
     </link>
 
     <!-- Front left wheel -->
+    <!-- GROUND CLEARANCE. The wheels sit 0.06 m BELOW base_link, not level with
+         it. base_link is at z=0.12 with a 0.15 m-tall chassis, so the chassis
+         bottom is at 0.045 m; wheels of radius 0.1 at the same height as
+         base_link put the wheel bottom at 0.02 m, leaving 25 mm of clearance.
+         MEASURED consequence on the real lunar terrain: the chassis grounded out,
+         the wheels spun free, and the robot reported 4.27 m of odometry while
+         moving 0.00 m in the world - 100% slip at every collision-heightmap
+         resolution (129/257/513). It drove fine only on the flat plane used by
+         scripts/verify_drive.sh. Dropping the wheels 0.06 m gives ~85 mm of
+         clearance. wheel_separation (0.5) and wheel_radius (0.1) are unchanged,
+         so DiffDrive kinematics are unaffected. -->
     <link name="front_left_wheel">
-      <pose relative_to="base_link">0.22 0.25 0 -1.5708 0 0</pose>
+      <pose relative_to="base_link">0.22 0.25 -0.06 -1.5708 0 0</pose>
       <inertial>
         <mass>1.5</mass>
         <inertia>
@@ -114,7 +125,7 @@
 
     <!-- Front right wheel -->
     <link name="front_right_wheel">
-      <pose relative_to="base_link">0.22 -0.25 0 -1.5708 0 0</pose>
+      <pose relative_to="base_link">0.22 -0.25 -0.06 -1.5708 0 0</pose>
       <inertial>
         <mass>1.5</mass>
         <inertia>
@@ -165,7 +176,7 @@
 
     <!-- Rear left wheel -->
     <link name="rear_left_wheel">
-      <pose relative_to="base_link">-0.22 0.25 0 -1.5708 0 0</pose>
+      <pose relative_to="base_link">-0.22 0.25 -0.06 -1.5708 0 0</pose>
       <inertial>
         <mass>1.5</mass>
         <inertia>
@@ -216,7 +227,7 @@
 
     <!-- Rear right wheel -->
     <link name="rear_right_wheel">
-      <pose relative_to="base_link">-0.22 -0.25 0 -1.5708 0 0</pose>
+      <pose relative_to="base_link">-0.22 -0.25 -0.06 -1.5708 0 0</pose>
       <inertial>
         <mass>1.5</mass>
         <inertia>

@@ -74,10 +74,10 @@ POINTS=""
 add() { POINTS="$POINTS $1:$2:$3:$4"; }
 
 # Robot spawns (selene_sim/config/spawn_positions.yaml) — really placed
-add scout_01     -70 -110 1.5
-add scout_02     -80 -110 1.5
-add excavator_01 -65 -105 1.5
-add hauler_01    -75 -105 1.5
+add scout_01     -45  -92 1.5
+add scout_02     -45  -85 1.5
+add excavator_01 -45 -105 1.5
+add hauler_01    -45 -112 1.5
 # Depot / recharge station (world_params.yaml, lunar_psr.sdf) — really placed
 add depot        -30 -100 1.5
 # PSR centre, and two references well OUTSIDE the 60 m radius. Probes at exactly
@@ -92,6 +92,9 @@ add ice_gamma    -90 -130 "$SURVEY"
 add ice_delta   -120 -155 "$SURVEY"
 # Mirror control: if the terrain is Y-flipped this is where the crater wrongly is
 add mirror_check -100  150 "$SURVEY"
+# Old spawn ring, kept as a reference point: it sat inside the PSR, which is why
+# the fleet was moved. Should read as crater floor, well below the plain.
+add old_spawn    -70 -110 "$SURVEY"
 
 WORLD=$(mktemp /tmp/selene_check_terrain.XXXXXX.sdf)
 # Clean up the temp world and any server we started, however we exit.
