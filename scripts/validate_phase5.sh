@@ -49,10 +49,29 @@ source "$P/install/setup.bash"
 set -u
 
 
+# PROVENANCE IN THE REPORT, not just a date. A validation report that cannot name
+# the commit and the toolchain it validated is not evidence — it is an assertion.
+# The commit comes from .selene_source_commit, which scripts/sync_and_build.sh
+# writes at rsync time, because the rsync excludes .git and nothing here could
+# otherwise work it out.
+SRC_COMMIT=$(cat "$P/.selene_source_commit" 2>/dev/null) || SRC_COMMIT=""
+[ -n "$SRC_COMMIT" ] || SRC_COMMIT="unknown (run scripts/sync_and_build.sh to record it)"
+GZ_VER=$(gz sim --versions 2>/dev/null | head -1)
+[ -n "$GZ_VER" ] || GZ_VER="not found"
+OS_VER=$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || uname -sr)
+
 cat > "$REPORT" <<HEADER
 # SELENE Phase 5 Exit Gate Validation Report
 
 _Generated $(date)_
+
+| | |
+|---|---|
+| Source commit | \`$SRC_COMMIT\` |
+| Workspace | \`$P\` |
+| ROS 2 | ${ROS_DISTRO:-unknown} |
+| Gazebo (gz sim) | $GZ_VER |
+| OS | $OS_VER |
 
 | # | Check | Result | Details |
 |---|---|---|---|
@@ -171,8 +190,24 @@ else
     check 3 "rosbridge listening on ws://localhost:9090" FAIL "TCP 9090 closed"
 fi
 
+# POLLED, not sampled once. `ros2 topic list` reports whatever DDS discovery has
+# converged on at that instant, and discovery is asynchronous — so a single call
+# can return fewer topics than exist and this check reported a FALSE FAIL.
+# MEASURED 2026-07-30 on two consecutive runs of the same commit: run A "4 robot
+# state topics" PASS, run B "only 0 state topics" FAIL — while check 8, further
+# down, successfully read fsm_state off /scout_01/state in that same run B. The
+# report contradicted itself.
+#
+# Every other timing-sensitive check here already polls (check 3 loops on the
+# rosbridge port, check 6 waits for the announcement). This one did not. Failing
+# closed on a race is still better than failing open, but it is not evidence.
 TOPIC_LIST_ERR=/tmp/selene_topic_list.err
-ROBOT_TOPICS=$(ros2 topic list 2>"$TOPIC_LIST_ERR" | grep -c '/state$' || true)
+ROBOT_TOPICS=0
+for _ in $(seq 1 15); do
+    ROBOT_TOPICS=$(ros2 topic list 2>"$TOPIC_LIST_ERR" | grep -c '/state$' || true)
+    [ "$ROBOT_TOPICS" -ge 4 ] && break
+    sleep 2
+done
 if [ "$ROBOT_TOPICS" -ge 4 ]; then
     check 4 "Dashboard shows all robots with correct real-time state" PASS "$ROBOT_TOPICS robot state topics"
 else

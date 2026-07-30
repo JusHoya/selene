@@ -47,6 +47,20 @@ else
       "$SRC/" "$DEST/"
 fi
 
+# Record which commit this workspace was built from. The rsync above excludes
+# .git, so nothing downstream can work it out on its own — and a validation
+# report that cannot name the commit it validated is not evidence of anything.
+# scripts/validate_phase5.sh reads this into its report header.
+if git -C "$SRC" rev-parse --short HEAD > "$DEST/.selene_source_commit" 2>/dev/null; then
+    DIRTY=""
+    git -C "$SRC" diff --quiet HEAD 2>/dev/null || DIRTY=" (working tree dirty)"
+    printf '%s%s\n' "$(cat "$DEST/.selene_source_commit")" "$DIRTY" \
+        > "$DEST/.selene_source_commit"
+    echo "Source commit: $(cat "$DEST/.selene_source_commit")"
+else
+    echo "unknown (source is not a git checkout)" > "$DEST/.selene_source_commit"
+fi
+
 # shellcheck source=/dev/null  # path is deliberately configurable via SELENE_ROS_SETUP
 source "$ROS_SETUP"
 
