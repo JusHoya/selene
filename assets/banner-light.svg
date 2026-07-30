@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 340" role="img" aria-label="SELENE — AI-driven fleet management for autonomous lunar ISRU operations">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8F7FC"/>
+      <stop offset="1" stop-color="#EBEEF9"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7C63E0"/>
+      <stop offset="1" stop-color="#5A43B8"/>
+    </linearGradient>
+    <linearGradient id="ice" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2FB6D6"/>
+      <stop offset="1" stop-color="#0B7E9B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#0B7E9B" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#0B7E9B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1278" height="338" rx="18" fill="url(#bg)" stroke="#D6D3E8" stroke-width="1"/>
+
+  <!-- mark: a permanently shadowed crater with an ice deposit, worked by a three-robot fleet -->
+  <circle cx="180" cy="170" r="95" fill="none" stroke="#5A43B8" stroke-opacity="0.20" stroke-width="1.5"/>
+  <circle cx="180" cy="170" r="72" fill="none" stroke="#0B7E9B" stroke-opacity="0.38" stroke-width="1.5" stroke-dasharray="7 6"/>
+
+  <!-- ice deposit inside the shadowed region -->
+  <circle cx="164" cy="186" r="40" fill="url(#glow)"/>
+  <circle cx="164" cy="186" r="13" fill="url(#ice)" fill-opacity="0.85"/>
+
+  <!-- haul route: crater to depot -->
+  <g stroke="#5A43B8" stroke-opacity="0.45" stroke-width="1.5">
+    <line x1="164" y1="186" x2="214" y2="126"/>
+    <line x1="214" y1="126" x2="252" y2="150"/>
+  </g>
+
+  <!-- fleet: scout (triangle), excavator (square), hauler (hexagon) -->
+  <path d="M126 128 L136 146 L116 146 Z" fill="url(#ice)"/>
+  <rect x="158" y="180" width="12" height="12" rx="2" fill="#DB9B2E" transform="rotate(12 164 186)"/>
+  <path d="M214 116 L222 121 L222 131 L214 136 L206 131 L206 121 Z" fill="url(#accent)"/>
+
+  <!-- depot -->
+  <g fill="#F8F7FC" stroke="url(#accent)" stroke-width="2.5">
+    <circle cx="252" cy="150" r="7.5"/>
+  </g>
+
+  <text x="332" y="112" font-family="ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace" font-size="19" letter-spacing="3" fill="#6B6390">LUNAR ISRU · MARKET-BASED TASK AUCTION · ROS 2</text>
+
+  <text x="330" y="196" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="96" font-weight="700" letter-spacing="2">
+    <tspan fill="#1A1830">SEL</tspan><tspan fill="url(#accent)">ENE</tspan>
+  </text>
+
+  <text x="333" y="244" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="27" font-weight="400" fill="#514B6E">AI-driven fleet management for autonomous lunar ISRU operations.</text>
+
+  <text x="333" y="284" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace" font-size="18" fill="#5A43B8">prospect &#8594; extract &#8594; haul&#160;&#160;·&#160;&#160;HTN decomposition over a heterogeneous fleet</text>
+</svg>
