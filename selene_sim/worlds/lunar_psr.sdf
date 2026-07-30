@@ -60,11 +60,16 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- Processing depot marker -->
+    <!-- Processing depot marker.
+         z=1.5 rather than 0: with the terrain datum applied the plain sits at
+         0.3-1.1 m depending on local undulation, so a marker at z=0 is partly
+         underground (measured 0.82 m buried at this XY by
+         scripts/check_terrain.sh). Matching the robot spawn height keeps it
+         clear of the undulation without depending on the exact datum. -->
     <include>
       <uri>model://depot_marker</uri>
       <name>depot</name>
-      <pose>-30 -100 0 0 0 0</pose>
+      <pose>-30 -100 1.5 0 0 0</pose>
     </include>
 
     <!-- ============================================================ -->

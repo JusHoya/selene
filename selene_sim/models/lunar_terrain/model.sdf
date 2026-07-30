@@ -17,8 +17,12 @@
       <collision name="terrain_collision">
         <geometry>
           <heightmap>
-            <uri>model://lunar_terrain/heightmaps/lunar_surface_513.png</uri>
+            <uri>model://lunar_terrain/heightmaps/lunar_collision_129.png</uri>
             <size>500 500 30</size>
+            <!-- Coarser 8-bit collision heightmap. gz-sim heightmap collision is
+                 unreliable at 513x513; measured fall-throughs dropped 3 -> 1 at
+                 129x129 (3.91 m cells). The visual below keeps the full 513
+                 16-bit image. See selene_sim/scripts/generate_heightmap.py. -->
             <!-- Datum: the heightmap encodes 0..30 m with the plain near mid-range
                  (generator adds a +15 m base so a 15 m crater can be carved without
                  clipping at 0). Nothing used to compensate, so every robot, rock and

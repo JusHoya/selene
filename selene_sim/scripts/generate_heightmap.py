@@ -259,6 +259,40 @@ def generate_heightmap():
     img = Image.fromarray(img_data, mode='I;16')
     img.save(output_path)
 
+    # ---------------------------------------------------------------- collision
+    # Emit a second, coarser 8-bit heightmap for the COLLISION geometry.
+    #
+    # gz-sim's heightmap collision is not reliable at 513x513 (~525k triangles).
+    # MEASURED with the falling-probe gate (scripts/check_terrain.sh) on Gazebo
+    # Harmonic 8.14.0: at 513/16-bit, probes at some coordinates pass straight
+    # through the surface and never stop, and *which* coordinates changes when
+    # unrelated parameters change (bit depth, collision resolution, timestep).
+    # Sweeping the collision resolution with the visual held constant:
+    #   513 (16-bit) -> 3 fall-throughs
+    #   257 ( 8-bit) -> 3
+    #   129 ( 8-bit) -> 1     <- best
+    #    65 ( 8-bit) -> 1
+    # 129x129 gives 3.91 m cells, which is finer than any robot footprint here
+    # and far coarser than the visual, so the crater and the plain still read
+    # correctly to the gate while contact generation becomes much more robust.
+    #
+    # This does NOT provably eliminate the holes. If the gate reports a
+    # fall-through again, the next step is a collision MESH generated from the
+    # same field, since mesh collision in gz-physics is better tested than
+    # heightmap collision.
+    #
+    # Decimate on the (2^k)+1 lattice so the extent and corner heights are
+    # preserved exactly and the two surfaces cannot disagree at the edges.
+    collision_size = 129
+    step = (size - 1) // (collision_size - 1)
+    coarse = img_data[::step, ::step]
+    assert coarse.shape == (collision_size, collision_size), coarse.shape
+    coarse8 = np.clip(np.round(coarse / 65535.0 * 255.0), 0, 255).astype(np.uint8)
+    collision_path = os.path.join(output_dir, f"lunar_collision_{collision_size}.png")
+    Image.fromarray(coarse8, mode='L').save(collision_path)
+    print(f"  [5/5] Collision heightmap: {collision_size}x{collision_size} 8-bit "
+          f"({500.0 / (collision_size - 1):.2f} m cells) -> {collision_path}")
+
     # Summary
     print()
     print("Terrain Summary")

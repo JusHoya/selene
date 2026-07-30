@@ -31,8 +31,17 @@
 set -uo pipefail
 
 WS="${SELENE_WS:-$HOME/selene}"
-PROBE_DROP_Z="${PROBE_DROP_Z:-45}"     # well above the tallest terrain
-PROBE_RADIUS=0.3
+# Probe dynamics are tuned so this gate measures the TERRAIN, not the probe.
+# A small fast sphere on a large triangle mesh can pass straight through the
+# surface: dropping 0.3 m spheres from 45 m at a 2 ms step produced convincing
+# "no collision geometry" reports whose membership changed with unrelated
+# parameters (heightmap bit depth, collision resolution, timestep). A lower drop
+# (less impact speed), a bigger probe and a finer step make contact generation
+# reliable. With the datum applied the terrain spans about -17 m (crater floor)
+# to +6 m (eastern ridge), so 12 m clears everything at low impact speed.
+PROBE_DROP_Z="${PROBE_DROP_Z:-12}"
+PROBE_STEP="${PROBE_STEP:-0.0005}"
+PROBE_RADIUS=0.5
 SETTLE_SECONDS="${SETTLE_SECONDS:-30}"
 FAIL=0
 
@@ -70,7 +79,7 @@ add scout_02     -80 -110 1.5
 add excavator_01 -65 -105 1.5
 add hauler_01    -75 -105 1.5
 # Depot / recharge station (world_params.yaml, lunar_psr.sdf) — really placed
-add depot        -30 -100 0.0
+add depot        -30 -100 1.5
 # PSR centre, and two references well OUTSIDE the 60 m radius. Probes at exactly
 # r=60 sit on the rim and read as crater floor, which makes the depth test lie.
 add psr_centre  -100 -150 "$SURVEY"
@@ -98,7 +107,7 @@ trap cleanup EXIT INT TERM
   echo '<sdf version="1.9"><world name="terraincheck">'
   echo '  <gravity>0 0 -1.62</gravity>'
   echo '  <physics name="fast" type="ode">'
-  echo '    <max_step_size>0.002</max_step_size><real_time_factor>0</real_time_factor>'
+  echo "    <max_step_size>$PROBE_STEP</max_step_size><real_time_factor>0</real_time_factor>"
   echo '  </physics>'
   echo '  <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>'
   echo '  <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>'
@@ -124,8 +133,29 @@ echo "  workspace: $WS"
 echo "  probes:    $(echo "$POINTS" | wc -w) dropped from z=${PROBE_DROP_Z} m"
 echo ""
 
-gz sim -s -r -v 1 "$WORLD" > /tmp/selene_check_terrain.log 2>&1 &
+# Start PAUSED, then unpause once the heightmap is loaded.
+#
+# With `gz sim -s -r` the server begins stepping physics while the heightmap
+# collision is still being built, so probes fall freely for the first moments.
+# Removing that race did NOT on its own eliminate the spurious "no collision"
+# reports — the probe tuning above and the coarser collision heightmap did the
+# real work — but it removes one confounder from a measurement whose whole job is
+# to be trustworthy, and it costs a few seconds. Keep it.
+gz sim -s -v 1 "$WORLD" > /tmp/selene_check_terrain.log 2>&1 &
 GZ_PID=$!
+
+# Wait for the world to be up, then let the heightmap finish loading.
+for _ in $(seq 1 40); do
+    if gz topic -l 2>/dev/null | grep -q "/world/terraincheck/"; then break; fi
+    sleep 0.5
+done
+sleep "${HEIGHTMAP_LOAD_SECONDS:-10}"
+
+gz service -s /world/terraincheck/control \
+    --reqtype gz.msgs.WorldControl --reptype gz.msgs.Boolean \
+    --timeout 5000 --req 'pause: false' > /dev/null 2>&1 \
+    || echo "  WARNING: could not unpause the world; results will be meaningless"
+
 sleep "$SETTLE_SECONDS"
 timeout 25 gz topic -e -t /world/terraincheck/dynamic_pose/info -n 1 \
     2>/dev/null > /tmp/selene_check_terrain_poses.txt
