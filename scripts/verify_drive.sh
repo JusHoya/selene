@@ -102,7 +102,13 @@ stop_gz() {
     kill -KILL "$GZ_PID" 2>/dev/null
     return 0
 }
-trap stop_gz EXIT INT TERM
+# The signal traps EXIT EXPLICITLY. A handler ending in `return 0` does not stop
+# the script: it runs and execution RESUMES, so a SIGTERM'd run could tear down
+# the server and then still print a verdict. Same fix as check_terrain.sh and
+# check_drive.sh. stop_gz is idempotent, so running it twice is harmless.
+trap stop_gz EXIT
+trap 'stop_gz; exit 130' INT
+trap 'stop_gz; exit 143' TERM
 
 echo "SELENE plane-only drive smoke test (NOT terrain validation)"
 echo "  models:  $MODELS"

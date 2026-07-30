@@ -48,7 +48,13 @@ set -uo pipefail
 WS="${SELENE_WS:-$HOME/selene}"
 DRIVE_ROBOT="${DRIVE_ROBOT:-scout_01}"
 DRIVE_SPEED="${DRIVE_SPEED:-0.4}"      # m/s, matches the nav layer's cruise speed
-DRIVE_SECONDS="${DRIVE_SECONDS:-12}"
+DRIVE_SECONDS="${DRIVE_SECONDS:-12}"      # SIMULATION seconds, not wall seconds
+# Wall-clock safety multiple for the sim-time drive loop. At real-time factor r a
+# DRIVE_SECONDS drive takes DRIVE_SECONDS/r of wall clock, so this caps how slow a
+# server this gate will wait for: 8 tolerates r down to 0.125. It exists to stop a
+# STALLED server hanging CI, not to bound a slow one — a capped run still produces
+# an honest verdict from the sim time it actually covered.
+DRIVE_WALL_CAP="${DRIVE_WALL_CAP:-8}"
 TURN_RATE="${TURN_RATE:-0.35}"         # rad/s
 TURN_SECONDS="${TURN_SECONDS:-8}"
 SETTLE_SECONDS="${SETTLE_SECONDS:-8}"
@@ -58,6 +64,10 @@ SETTLE_SECONDS="${SETTLE_SECONDS:-8}"
 HEIGHTMAP_LOAD_SECONDS="${HEIGHTMAP_LOAD_SECONDS:-12}"
 
 # --- tolerances, and why they are these numbers -----------------------------
+# These fractions are of the distance commanded over the MEASURED simulation
+# duration, so they are independent of how fast the host runs Gazebo. A slow
+# runner now shortens both the target and the distance together instead of
+# failing the gate; see drive().
 # Ideal distance is DRIVE_SPEED * DRIVE_SECONDS = 4.80 m at the defaults. Known
 # systematic losses: DiffDrive's own <max_linear_acceleration>0.5</...> costs a
 # 0.8 s ramp = 0.16 m (3.3%); wheel slip on regolith friction measured 0.5-4%;
@@ -184,12 +194,69 @@ m = re.search(r"pose\s*\{.*?position\s*\{(.*?)\}", sys.stdin.read(), re.S)
 f = dict(re.findall(r"([xyz]):\s*(-?[\d.eE+-]+)", m.group(1))) if m else {}
 print(f.get("x", "nan"), f.get("y", "nan"))'
 }
-drive() {  # publish $1 repeatedly for $2 seconds
-    local twist="$1" secs="$2" end
-    end=$(( $(date +%s) + secs ))
-    while [ "$(date +%s)" -lt "$end" ]; do
-        gz topic -t "/model/$DRIVE_ROBOT/cmd_vel" -m gz.msgs.Twist -p "$twist" >/dev/null 2>&1
+sim_ms() {  # simulation time in integer milliseconds; empty if unreadable
+    timeout 8 gz topic -e -t "/world/$WORLD_NAME/stats" -n 1 2>/dev/null | python3 -c '
+import re, sys
+m = re.search(r"sim_time\s*\{(.*?)\}", sys.stdin.read(), re.S)
+if m:
+    d = dict(re.findall(r"(sec|nsec):\s*(\d+)", m.group(1)))
+    print(int(d.get("sec", 0)) * 1000 + int(d.get("nsec", 0)) // 1000000)'
+}
+rtf() {     # real-time factor the server is actually achieving
+    timeout 8 gz topic -e -t "/world/$WORLD_NAME/stats" -n 1 2>/dev/null | python3 -c '
+import re, sys
+m = re.search(r"real_time_factor:\s*([\d.eE+-]+)", sys.stdin.read())
+print(round(float(m.group(1)), 4) if m else "nan")'
+}
+
+# DRIVE THE ROBOT FOR A DURATION IN *SIMULATION* TIME, AND REPORT WHAT IT GOT.
+#
+# This used to bound the drive with wall clock (`date +%s`) while the verdict
+# compared world displacement against `speed * secs` — a SIMULATION-time target.
+# lunar_psr.sdf caps the server at <real_time_factor>1.0</real_time_factor>, so
+# the sim can only ever run at or below real time: at real-time factor r a 12 s
+# wall drive covers 12*r seconds of sim time and (linearly) r times the distance,
+# while the acceptance floor stayed at 70% of the full command. The measured
+# margins are 93.5-98.7%, so a runner below r~0.75 failed this gate for a reason
+# that has nothing to do with driving. That is the single most likely way the CI
+# job goes red incorrectly.
+#
+# So: loop until the requested SIM seconds have elapsed, and echo the sim seconds
+# actually covered so the verdict can be computed against what really happened.
+# Overshoot is therefore harmless and self-correcting — the caller compares
+# against the measured duration, not the requested one.
+#
+# The wall-clock cap only stops a stalled or dead server from hanging CI forever.
+# Hitting it is not silently tolerated: it warns, and the (short) measured
+# duration still produces an honest verdict rather than a fabricated one.
+drive() {  # publish $1 until $2 seconds of SIM time pass; echo sim seconds covered
+    local twist="$1" secs="$2" t0 now wall_end i=0 s
+    t0=$(sim_ms)
+    if [ -z "$t0" ]; then
+        echo "FAIL: cannot read sim time from /world/$WORLD_NAME/stats" >&2
+        return 1
+    fi
+    wall_end=$(( $(date +%s) + secs * DRIVE_WALL_CAP + 15 ))
+    now=$t0
+    while [ $(( now - t0 )) -lt $(( secs * 1000 )) ]; do
+        gz topic -t "/model/$DRIVE_ROBOT/cmd_vel" -m gz.msgs.Twist -p "$twist" \
+            >/dev/null 2>&1
+        i=$(( i + 1 ))
+        # One stats read costs ~88 ms, about the same as one publish, so sampling
+        # every 5th iteration keeps the cmd_vel stream dense without doubling the
+        # loop cost.
+        if [ $(( i % 5 )) -eq 0 ]; then
+            s=$(sim_ms)
+            [ -n "$s" ] && now=$s
+            if [ "$(date +%s)" -ge "$wall_end" ]; then
+                echo "  WARNING: wall-clock cap reached after $(( now - t0 )) ms of" >&2
+                echo "           sim time (wanted $(( secs * 1000 )) ms). The server is" >&2
+                echo "           running far below real time, or has stalled." >&2
+                break
+            fi
+        fi
     done
+    python3 -c "print(($now - $t0) / 1000.0)"
 }
 
 echo "SELENE drive acceptance check"
@@ -239,12 +306,15 @@ sleep "$SETTLE_SECONDS"
 P0=$(pose)
 [ -n "$P0" ] || { echo "FAIL: $DRIVE_ROBOT has no pose — did it spawn? See $LOG"; exit 1; }
 O0=$(odom)
-drive "linear: {x: $DRIVE_SPEED}" "$DRIVE_SECONDS"
+RTF=$(rtf)
+echo "  real-time factor: $RTF  (the verdict is computed from measured SIM time,"
+echo "                          so this is diagnostic, not load-bearing)"
+DRIVE_SIM_SECS=$(drive "linear: {x: $DRIVE_SPEED}" "$DRIVE_SECONDS") || exit 1
 gz topic -t "/model/$DRIVE_ROBOT/cmd_vel" -m gz.msgs.Twist -p 'linear: {x: 0.0}' >/dev/null 2>&1
 sleep 1
 P1=$(pose)
 O1=$(odom)
-drive "angular: {z: $TURN_RATE}" "$TURN_SECONDS"
+TURN_SIM_SECS=$(drive "angular: {z: $TURN_RATE}" "$TURN_SECONDS") || exit 1
 gz topic -t "/model/$DRIVE_ROBOT/cmd_vel" -m gz.msgs.Twist \
     -p 'linear: {x: 0.0}, angular: {z: 0.0}' >/dev/null 2>&1
 sleep 1
@@ -252,7 +322,9 @@ P2=$(pose)
 
 stop_gz
 
-python3 - "$SZ" "$DRIVE_SPEED" "$DRIVE_SECONDS" "$TURN_RATE" "$TURN_SECONDS" \
+# NOTE the third and fifth arguments are the MEASURED sim durations, not the
+# requested DRIVE_SECONDS / TURN_SECONDS. See drive().
+python3 - "$SZ" "$DRIVE_SPEED" "$DRIVE_SIM_SECS" "$TURN_RATE" "$TURN_SIM_SECS" \
          "$MIN_FRACTION" "$MAX_FRACTION" "$MAX_SLIP_PCT" "$MIN_TURN_RAD" \
          "$P0" "$P1" "$P2" "$O0" "$O1" <<'PY'
 import math
@@ -285,6 +357,8 @@ print(f"{'after turn':14}{p2[0]:>12.6f} {p2[1]:>12.6f} {p2[2]:>10.6f} {p2[5]:>10
 print()
 print(f"  spawned at z          {spawn_z:.6f}   settled at z {p0[2]:.6f} "
       f"({p0[2] - spawn_z:+.6f})")
+print(f"  drive duration        {secs:.3f} s of SIMULATION time "
+      f"(the target the distance below is judged against)")
 print(f"  commanded distance    {commanded:.4f} m")
 print(f"  WORLD  displacement   {world:.4f} m   ({100 * world / commanded:.1f}% of command)")
 print(f"  ODOM   displacement   {odo:.4f} m")

@@ -14,17 +14,38 @@
 
 set -uo pipefail
 
-REPORT="phase5_validation_report.md"
 P=$HOME/selene
+# ABSOLUTE, and anchored to the workspace. This was a bare relative filename, so
+# the report landed in whatever directory the caller happened to be in — including
+# the repo checkout, where it is gitignored by nothing and would be committed by a
+# `git add -A`. It is written before the first check, so it landed there even on
+# runs that then failed immediately.
+REPORT="${SELENE_PHASE5_REPORT:-$P/phase5_validation_report.md}"
 LAUNCH_LOG=/tmp/selene_unified_launch.log
 PASS=0
 FAIL=0
 
 # ROS 2 setup.bash references unset vars; disable nounset just for sourcing.
+#
+# THE PRE-FLIGHT IS CHECKED. `set +u` with no `set -e` meant a missing workspace
+# was survivable: `cd` failed, the script carried on IN THE CALLER'S DIRECTORY,
+# `source install/setup.bash` failed too, and every check below then ran against a
+# workspace that had never been sourced — reporting failures whose real cause
+# ("there is no build here") appeared nowhere in the report.
+if [ ! -f /opt/ros/jazzy/setup.bash ]; then
+    echo "ERROR: ROS 2 Jazzy not found at /opt/ros/jazzy/setup.bash" >&2
+    echo "       run scripts/setup_wsl2.sh first." >&2
+    exit 1
+fi
+if [ ! -f "$P/install/setup.bash" ]; then
+    echo "ERROR: no built workspace at $P/install/setup.bash" >&2
+    echo "       run scripts/sync_and_build.sh first." >&2
+    exit 1
+fi
 set +u
 source /opt/ros/jazzy/setup.bash
-cd "$P"
-source install/setup.bash
+cd "$P" || { echo "ERROR: cannot cd to $P" >&2; exit 1; }
+source "$P/install/setup.bash"
 set -u
 
 
@@ -49,21 +70,39 @@ check() {
     echo "[$result] $n. $desc - $details"
 }
 
+# Tear down ONLY the process group this script started.
+#
+# This used to finish with a burst of host-wide pattern kills:
+#     pkill -f "gz sim"; pkill -f "gz-sim-server"; pkill -f rosbridge
+#     pkill -f "react-scripts"; pkill -f "http.server 3000"
+# which is exactly the pattern check_drive.sh:145 forbids ("Never pattern-match on
+# 'gz sim' ... a broad pkill here would take down a developer's session"). It is
+# worse now than it was: scripts/check_terrain.sh and scripts/check_drive.sh are
+# wired into CI and both run `gz sim`, so this teardown would SIGKILL a concurrent
+# gate mid-measurement and the gate would report a Gazebo failure it did not cause.
+#
+# `ros2 launch` is started with setsid below, so it leads its own process group and
+# the negative-PID kill reaches every child it spawned — gz, rosbridge, the node
+# server — without matching anything this script did not start.
 cleanup() {
     echo ""
-    echo "Tearing down launch process..."
-    if [ -n "${LAUNCH_PID:-}" ]; then
-        kill $LAUNCH_PID 2>/dev/null
-        wait $LAUNCH_PID 2>/dev/null || true
-        pkill -f "ros2 launch selene_sim unified_sim" 2>/dev/null
-        pkill -f "gz sim" 2>/dev/null
-        pkill -f "gz-sim-server" 2>/dev/null
-        pkill -f "rosbridge" 2>/dev/null
-        pkill -f "react-scripts" 2>/dev/null
-        pkill -f "http.server 3000" 2>/dev/null
-    fi
+    echo "Tearing down launch process group..."
+    [ -n "${LAUNCH_PGID:-}" ] || return 0
+    kill -TERM "-$LAUNCH_PGID" 2>/dev/null
+    for _ in $(seq 1 20); do
+        kill -0 "-$LAUNCH_PGID" 2>/dev/null || return 0
+        sleep 0.5
+    done
+    kill -KILL "-$LAUNCH_PGID" 2>/dev/null
+    return 0
 }
+# The signal traps EXIT EXPLICITLY. A handler ending in `return` does not stop the
+# script — it runs and execution RESUMES — so folding INT/TERM into the EXIT trap
+# would let a cancelled run tear the system down and then carry on writing PASS
+# rows for checks it never made. Same fix as check_terrain.sh / check_drive.sh.
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Prefer the prebuilt dashboard bundle when one exists: the react-scripts dev
 # server has to compile the bundle before port 3000 answers, which dominated the
@@ -86,9 +125,19 @@ else
 fi
 
 echo "[1/8] Starting unified launch..."
-ros2 launch selene_sim unified_sim.launch.py $LAUNCH_ARGS > "$LAUNCH_LOG" 2>&1 &
+# setsid so the launch leads its OWN process group. That is what lets cleanup()
+# kill the whole tree it spawns (gz, rosbridge, the dashboard server) with a
+# single negative-PID signal, instead of the host-wide pattern kills this script
+# used to end with. Without setsid the launch shares this script's group and
+# `kill -TERM -$$` would signal the script itself.
+setsid ros2 launch selene_sim unified_sim.launch.py $LAUNCH_ARGS \
+    > "$LAUNCH_LOG" 2>&1 &
 LAUNCH_PID=$!
-echo "Launch PID: $LAUNCH_PID"
+# With setsid the child is its own group leader, so PGID == PID. Read it back
+# rather than assuming, and fall back to the PID if ps is unavailable.
+LAUNCH_PGID=$(ps -o pgid= -p "$LAUNCH_PID" 2>/dev/null | tr -d ' ')
+LAUNCH_PGID="${LAUNCH_PGID:-$LAUNCH_PID}"
+echo "Launch PID: $LAUNCH_PID (process group $LAUNCH_PGID)"
 echo "Waiting 30s for boot..."
 sleep 30
 

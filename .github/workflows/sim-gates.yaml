@@ -42,30 +42,46 @@ name: Simulation gates
 #      the terrain gate reports BURIED and the job fails.
 # Until then, treat a red run here as a real signal but not a merge blocker.
 #
-# KNOWN RISK, stated rather than papered over: check_drive.sh times its drive with
-# WALL CLOCK (`date +%s`) while judging the result against a fraction of the
-# commanded distance, and lunar_psr.sdf caps the server at real_time_factor 1.0.
-# So a run at real-time factor r covers roughly r x the distance, and a slow
-# runner fails the gate for a reason that has nothing to do with terrain.
+# KNOWN RISK, stated rather than papered over, and with the numbers.
 #
-# MIN_FRACTION is 0.70. All four legs measured on developer hardware
-# (2026-07-30, WSL2 Ubuntu 24.04.3, gz-sim 8.14.0, 32 cores, against the fixed
-# datum and the current spawn heights):
-#     scout_01     97.9% of command    slip -0.80%    settled -0.265 m
-#     scout_02     97.7%               slip -1.07%    settled -0.270 m
-#     excavator_01 93.5%               slip +1.04%    settled -0.345 m
-#     hauler_01    95.3%               slip -0.96%    settled -0.345 m
-# The binding case is excavator_01: 0.70/0.935 means its leg starts failing below
-# RTF ~0.75. Treat a FAIL whose "% of command" sits just under 70% as a runner
-# speed problem to investigate, NOT as a terrain regression — the settled-z line
-# is the discriminator, because a buried robot settles UPWARD (positive) while all
-# four above settle downward onto the surface.
+# check_drive.sh used to time its drive with WALL CLOCK while judging the result
+# against a SIM-time target, so a slow host failed the gate for a reason unrelated
+# to terrain. That is fixed: the drive now runs until the requested SIMULATION
+# seconds have elapsed, and the verdict is computed from the sim duration actually
+# achieved. The gate also prints the real-time factor it saw, read from
+# /world/lunar_psr/stats.
 #
-# Note check_drive.sh runs `gz sim -s -v 1`, and at that verbosity the server log
-# does NOT print a real-time factor — measured, so do not go looking for one in
-# the uploaded *.log files. The observable is the "% of command" line in each
-# drive step's own output, which is captured to /tmp/drive_<robot>.out and
-# uploaded on every run, green or red.
+# Baselines on developer hardware (2026-07-30, WSL2 Ubuntu 24.04.3, gz-sim 8.14.0,
+# 32 cores idle, RTF ~1.0), against the fixed datum and current spawn heights:
+#     scout_01     97.7% of command    slip -0.80%    settled -0.265 m
+#     scout_02     98.1%               slip -1.07%    settled -0.270 m
+#     excavator_01 94.8%               slip +1.04%    settled -0.345 m
+#     hauler_01    95.9%               slip -0.96%    settled -0.345 m
+# MIN_FRACTION is 0.70, so there is 25-28 points of headroom on an idle host.
+#
+# WHAT IS STILL NOT SAFE, measured by starving the gate onto one core against six
+# busy loops — the closest available analogue of a small hosted runner:
+#     run A   RTF 0.28   98.4% of command   PASS
+#     run B   RTF 0.18   28.1% of command   FAIL
+# Same code, same config. The residual failure is NOT the timing bug: in run B the
+# robot genuinely covered only 1.68 m during 14.96 s of SIMULATION time. The cause
+# is cmd_vel delivery — each `gz topic -p` is a short-lived publisher that can
+# finish before gz-transport discovery completes, and under heavy load enough of
+# them are dropped that the robot spends much of the drive uncommanded. Confirmed
+# from the other direction: a variant that published a burst of 5 and then waited
+# on sim time measured 0.0000 m — every publish in the burst was lost — while the
+# repeated-publish loop on the same starved host passed at 98.4%. So the
+# republishing is load-bearing and must not be "optimised" away.
+#
+# Practical reading of a red run: check the "% of command" and the real-time
+# factor together. A low RTF with a low percentage is a starved runner, not a
+# terrain regression. The settled-z line is the discriminator either way — a
+# buried robot settles UPWARD (positive delta), and all four baselines above
+# settle downward onto the surface.
+#
+# Also measured, so nobody repeats it: <real_time_update_rate> does NOT throttle
+# this world. Dropping it from 500 to 125 left RTF at 0.9998 and the wall clock
+# unchanged. CPU starvation is the only way found to slow the server.
 
 on:
   schedule:
