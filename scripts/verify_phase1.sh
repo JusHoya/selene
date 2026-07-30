@@ -64,7 +64,7 @@ check $? "All 3 robot types spawn in Gazebo"
 
 # Drive scout
 POSE_BEFORE=$(gz model -m scout_01 -p 2>&1 | grep -A1 "XYZ" | tail -1 | awk '{print $1}' | tr -d '[]')
-for i in $(seq 1 60); do gz topic -t /model/scout_01/cmd_vel -m gz.msgs.Twist -p "linear: {x: 0.5}" 2>/dev/null; sleep 0.05; done
+for _ in $(seq 1 60); do gz topic -t /model/scout_01/cmd_vel -m gz.msgs.Twist -p "linear: {x: 0.5}" 2>/dev/null; sleep 0.05; done
 POSE_AFTER=$(gz model -m scout_01 -p 2>&1 | grep -A1 "XYZ" | tail -1 | awk '{print $1}' | tr -d '[]')
 echo "  Scout X: $POSE_BEFORE -> $POSE_AFTER"
 MOVED=$(python3 -c "print(1 if abs(float('$POSE_AFTER') - float('$POSE_BEFORE')) > 0.5 else 0)")

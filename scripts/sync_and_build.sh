@@ -47,6 +47,7 @@ else
       "$SRC/" "$DEST/"
 fi
 
+# shellcheck source=/dev/null  # path is deliberately configurable via SELENE_ROS_SETUP
 source "$ROS_SETUP"
 
 COLCON_LOG=/tmp/selene_colcon_build.log

@@ -120,6 +120,49 @@ jobs:
       - name: Check the terrain datum
         run: python -m pytest selene_sim/test/test_heightmap_datum.py -v
 
+  # Shell and workflow linting. Cheap, and this repo needs it more than most:
+  # the two acceptance gates that decide whether a robot is buried are 700 lines
+  # of bash, and the defects found in them have been shell defects — an unchecked
+  # redirection that let a stale /tmp file be read as this run's measurement, a
+  # `trap ... EXIT INT TERM` whose handler returned instead of exiting, a
+  # `pkill -f` pattern that degenerated to `gz sim .*` when mktemp failed.
+  # shellcheck would not have caught all of those, but it is the only automated
+  # reader these files have ever had.
+  #
+  # actionlint checks the workflow SCHEMA (not just YAML syntax) and runs
+  # shellcheck over every `run:` block. It immediately found an unquoted
+  # $GITHUB_WORKSPACE in the build step below.
+  shell-lint:
+    name: Shell and workflow lint
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install linters
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          curl -fsSL -o /tmp/actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          sudo install -m755 /tmp/actionlint /usr/local/bin/actionlint
+          shellcheck --version
+          actionlint --version
+
+      # -S warning, not -S style: the goal is defects, not house style. All four
+      # gate scripts are clean at this level today, so a new finding is a real
+      # regression rather than pre-existing noise.
+      - name: shellcheck
+        shell: bash
+        run: shellcheck -S warning scripts/*.sh
+
+      - name: actionlint
+        shell: bash
+        run: actionlint -no-color -oneline
+
   build-and-test:
     needs: e2e-integration
     runs-on: ubuntu-22.04
@@ -160,7 +203,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p /ros2_ws/src
-          ln -s $GITHUB_WORKSPACE /ros2_ws/src/selene
+          # Quoted: a checkout path containing a space would otherwise make this
+          # `ln -s` create the wrong link, or two, and the build would then run
+          # against an empty src tree. Flagged by actionlint/shellcheck SC2086.
+          ln -s "$GITHUB_WORKSPACE" /ros2_ws/src/selene
           cd /ros2_ws
           source /opt/ros/humble/setup.bash
           colcon build --event-handlers console_direct+

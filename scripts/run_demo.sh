@@ -28,6 +28,7 @@ export GZ_SIM_RESOURCE_PATH=$P/selene_sim/models
 cleanup() {
     echo ""
     echo "Shutting down..."
+    # shellcheck disable=SC2046  # word splitting is intended: one PID per argument
     kill $(jobs -p) 2>/dev/null
     wait 2>/dev/null
     echo "Done."
