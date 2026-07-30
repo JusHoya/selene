@@ -204,7 +204,24 @@ jobs:
           # `from PIL import Image`. Without it that test errors at collection and
           # reddens colcon test-result. (The dedicated terrain-datum job above
           # installs it too; neither is load-bearing alone.)
-          pip3 install --upgrade pytest flake8 numpy scipy pydantic pyyaml pillow
+          # pytest is PINNED BELOW 8, and this is load-bearing. The container
+          # ships ros-humble-launch-testing, whose pytest plugin still declares
+          # the old `pytest_pycollect_makemodule(path, parent)` hook signature.
+          # pytest 8 removed that `path` parameter, so an unpinned
+          # `--upgrade pytest` installs 8.x into /usr/local, shadows the distro's
+          # 7.x, and every colcon test invocation dies at startup with
+          #     PluginValidationError: Plugin 'launch_testing' for hook
+          #     'pytest_pycollect_makemodule'
+          # before collecting a single test — measured, run 30570644912:
+          # 5 packages, 5 errors, 0 failures, "test invocation failed without
+          # generating a result file".
+          #
+          # This breakage was INVISIBLE until now. build-and-test declares
+          # `needs: e2e-integration`, and that job has been red on main since
+          # April for an unrelated missing-numpy reason, so this step was skipped
+          # on every run and never reported. Fixing the first failure is what
+          # uncovered the second.
+          pip3 install --upgrade "pytest<8" flake8 numpy scipy pydantic pyyaml pillow
 
       - name: Build workspace
         shell: bash
