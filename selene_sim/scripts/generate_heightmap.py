@@ -228,6 +228,27 @@ def generate_heightmap():
     # Map [0, 30] -> [0, 65535]
     img_data = ((height / 30.0) * 65535.0).astype(np.uint16)
 
+    # Row-order conversion at the I/O boundary — do not remove.
+    #
+    # _make_base_grid uses np.meshgrid(coords, coords), so wy ASCENDS with the row
+    # index: array row 0 is world y = -250 and row 512 is y = +250. Image and
+    # heightmap convention is the opposite — row 0 is the NORTH (+Y) edge — and
+    # Gazebo's heightmap loader follows the image convention. Writing the array
+    # rows straight out therefore mirrored the whole terrain about the equator.
+    #
+    # MEASURED before this fix (2026-07-29, Gazebo Harmonic 8.14.0, falling-probe
+    # test — see scripts/check_terrain.sh): the PSR crater carved for
+    # (-100, -150) physically rendered at (-100, +150). A probe dropped at
+    # (-100, +150) came to rest at 0.87 m on the crater floor, while the whole
+    # region around the configured (-100, -150) had no collision at all and probes
+    # fell out of the world. Every consumer — the PSR zone in world_params.yaml,
+    # the four ice deposits, the battery shadow model and the dashboard overlay —
+    # assumes (-100, -150), so the terrain was mirrored relative to all of them.
+    #
+    # Keep the terrain maths in intuitive ascending-y world coordinates and
+    # convert once, here, where the array becomes an image.
+    img_data = np.flipud(img_data)
+
     # Save
     script_dir = os.path.dirname(os.path.abspath(__file__))
     package_dir = os.path.dirname(script_dir)

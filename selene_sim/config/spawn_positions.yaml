@@ -1,7 +1,13 @@
+# Robot spawn poses. z clears the local terrain surface.
+#
+# With the terrain datum applied (selene_sim/models/lunar_terrain/model.sdf
+# <pos>0 0 -18</pos>) the plain sits at ~0 m with +/-0.7 m of undulation, so a
+# spawn z of 0.5 could still start a wheel inside the ground. 1.5 m clears the
+# undulation and lets the robot settle. Verified by scripts/check_terrain.sh.
 scouts:
-  - {x: -70, y: -110, z: 0.5, yaw: 3.14}
-  - {x: -80, y: -110, z: 0.5, yaw: 3.14}
+  - {x: -70, y: -110, z: 1.5, yaw: 3.14}
+  - {x: -80, y: -110, z: 1.5, yaw: 3.14}
 excavators:
-  - {x: -65, y: -105, z: 0.5, yaw: 3.14}
+  - {x: -65, y: -105, z: 1.5, yaw: 3.14}
 haulers:
-  - {x: -75, y: -105, z: 0.5, yaw: 3.14}
+  - {x: -75, y: -105, z: 1.5, yaw: 3.14}

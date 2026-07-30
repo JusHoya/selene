@@ -2,12 +2,31 @@
 <sdf version="1.9">
   <model name="lunar_terrain">
     <static>true</static>
+    <!-- Datum offset lives on the LINK pose, not on <heightmap><pos>.
+         The heightmap encodes 0..30 m with the plain near mid-range (the generator
+         adds a +15 m base so a 15 m crater can be carved without clipping at 0).
+         Nothing used to compensate, so every robot, rock and the depot - placed at
+         z 0..1.5 - originated ~18 m underground.
+         MEASURED with falling probes (scripts/check_terrain.sh, Gazebo Harmonic
+         8.14.0): with <heightmap><pos>0 0 -18</pos> the plain STILL rendered at
+         18.2-18.7 m, i.e. gz-sim ignores the heightmap's own pos offset. Moving the
+         same -18 m onto the link pose is what actually shifts the surface. Keep it
+         here; do not move it back into <heightmap>. -->
     <link name="terrain_link">
+      <pose>0 0 -18 0 0 0</pose>
       <collision name="terrain_collision">
         <geometry>
           <heightmap>
             <uri>model://lunar_terrain/heightmaps/lunar_surface_513.png</uri>
             <size>500 500 30</size>
+            <!-- Datum: the heightmap encodes 0..30 m with the plain near mid-range
+                 (generator adds a +15 m base so a 15 m crater can be carved without
+                 clipping at 0). Nothing used to compensate, so every robot, rock and
+                 the depot - all placed at z 0..0.5 - originated ~18 m underground.
+                 MEASURED with falling probes (scripts/check_terrain.sh): the plain
+                 renders at 17.9-18.3 m and the crater floor at ~2.6 m. Offsetting by
+                 -18 m puts the plain at ~0 (+/-0.7 m of undulation) and the crater
+                 floor near -15 m. Collision and visual MUST carry the same value. -->
             <pos>0 0 0</pos>
           </heightmap>
         </geometry>
@@ -25,6 +44,14 @@
           <heightmap>
             <uri>model://lunar_terrain/heightmaps/lunar_surface_513.png</uri>
             <size>500 500 30</size>
+            <!-- Datum: the heightmap encodes 0..30 m with the plain near mid-range
+                 (generator adds a +15 m base so a 15 m crater can be carved without
+                 clipping at 0). Nothing used to compensate, so every robot, rock and
+                 the depot - all placed at z 0..0.5 - originated ~18 m underground.
+                 MEASURED with falling probes (scripts/check_terrain.sh): the plain
+                 renders at 17.9-18.3 m and the crater floor at ~2.6 m. Offsetting by
+                 -18 m puts the plain at ~0 (+/-0.7 m of undulation) and the crater
+                 floor near -15 m. Collision and visual MUST carry the same value. -->
             <pos>0 0 0</pos>
           </heightmap>
         </geometry>
