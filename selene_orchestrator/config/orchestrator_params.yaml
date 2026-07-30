@@ -18,3 +18,38 @@ orchestrator_node:
     map_resolution: 1.0
     map_width: 500
     map_height: 500
+    # ---- FR-MAP-3: adaptive survey planning (SC-3) -------------------------
+    # Rate at which PENDING survey waypoints are re-scored against the fused
+    # map. 0.0 disables adaptation and leaves the deterministic hex lattice in
+    # place. A scout needs tens of seconds to reach a waypoint, so 0.2 Hz is
+    # already far faster than the process it steers.
+    adaptive_survey_replan_rate: 0.2
+    # Lattice waypoints that must COMPLETE before adaptation begins. INTEGER:
+    # the declared default is an int, and a float here raises
+    # ParameterTypeException at node start.
+    # Measured over 20 seeded runs against selene_sim/config/ice_deposits.yaml:
+    # adapting after 1 reading is WORSE than not adapting (0.29 vs 0.60 of
+    # second-half waypoints on >=4 wt% ground truth); after 2 it is 0.66.
+    adaptive_survey_seed_waypoints: 2
+    # Peak posterior mean (wt%) that must be found inside the zone before the
+    # planner is trusted. Below it the signal term is zero, the score
+    # degenerates to nearest-neighbour, and the remaining budget clusters
+    # beside the last scout -- worse coverage than the lattice.
+    adaptive_survey_min_signal_wt: 1.0
+    # score = w_variance*var + w_signal*signal - w_distance*dist, each term
+    # normalised across the candidate set.
+    # w_variance is INERT at the spacing below and that is not a bug:
+    # min_spacing (8.0) > ResourceMap footprint_radius (5.0), so every
+    # admissible candidate is unobserved and carries exactly prior_variance.
+    # FR-MAP-3(a) is enforced by the candidate filter, not by this weight.
+    adaptive_survey_w_variance: 1.0
+    adaptive_survey_w_signal: 0.5
+    adaptive_survey_w_distance: 0.3
+    # Minimum separation between survey waypoints, metres. Also the default
+    # radius at which the signal term probes for nearby ice, which is why it
+    # must not be raised without thought: a probe radius below
+    # (min_spacing - footprint_radius) zeroes the signal term silently.
+    adaptive_survey_min_spacing: 8.0
+    # Candidate lattice pitch, metres. 5.0 over a 60 m disc is ~450 candidates;
+    # halving it quadruples the replan cost.
+    adaptive_survey_candidate_resolution: 5.0

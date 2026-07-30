@@ -16,6 +16,8 @@ import math
 
 import numpy as np
 
+from selene_orchestrator.task_queue import TaskStatus
+
 
 class AdaptiveSurveyPlanner:
     """Information-gain waypoint planner for ice prospecting surveys.
@@ -32,7 +34,8 @@ class AdaptiveSurveyPlanner:
                  w_signal: float = 0.5,
                  w_distance: float = 0.3,
                  min_spacing: float = 8.0,
-                 candidate_resolution: float = 5.0):
+                 candidate_resolution: float = 5.0,
+                 signal_probe_radius: float | None = None):
         """
         Parameters:
             resource_map: ResourceMap instance to query for mean/variance.
@@ -52,6 +55,12 @@ class AdaptiveSurveyPlanner:
         self._w_distance = w_distance
         self._min_spacing = min_spacing
         self._candidate_resolution = candidate_resolution
+        # Defaults to min_spacing. MUST NOT be below
+        # (min_spacing - ResourceMap._footprint_radius) or the signal term is
+        # identically zero -- see _get_neighbor_signal.
+        self._signal_probe_radius = (
+            float(signal_probe_radius) if signal_probe_radius is not None
+            else float(min_spacing))
 
     def select_next_waypoint(self,
                              robot_position: tuple[float, float],
@@ -186,8 +195,30 @@ class AdaptiveSurveyPlanner:
                 - self._w_distance * norm_dist)
 
     def _get_neighbor_signal(self, wx: float, wy: float) -> float:
-        """Average mean ice concentration of 8 neighboring grid cells."""
-        res = self._resource_map._resolution
+        """Average posterior mean of 8 samples at ``signal_probe_radius``.
+
+        MEASURED DEFECT THIS FIXES. This probed at the map RESOLUTION -- one
+        cell, 1.0 m. But candidates are filtered to at least ``min_spacing``
+        (8.0 m) from every visited or queued waypoint, and ResourceMap.update()
+        only touches cells within ``footprint_radius`` (5.0 m) of a reading. An
+        admissible candidate is therefore never closer than 8.0 m to a reading,
+        and its 1.0 m neighbours never closer than 7.0 m -- always outside every
+        footprint, always still at prior_mean 0.0.
+
+        Instrumented over a full 10-waypoint survey of the PSR:
+        ``max(signals) == 0.0`` on every one of the 10 selections, across all
+        ~360-434 candidates each time. The variance term is identically
+        ``prior_variance`` for exactly the same reason. With both terms
+        constant the score collapsed to ``w_variance - w_distance * norm_dist``:
+        pure nearest-neighbour. The planner could not see ice at all, so wiring
+        it up without this fix would have produced a "working" adaptive planner
+        that still ignored the deposits.
+
+        The 8 pre-existing unit tests passed only because they construct the
+        planner with min_spacing 3.0 or 5.0 -- at or below the footprint radius,
+        where the old probe could reach observed cells.
+        """
+        res = self._signal_probe_radius
         offsets = [(-res, -res), (0, -res), (res, -res),
                    (-res, 0), (res, 0),
                    (-res, res), (0, res), (res, res)]
@@ -253,3 +284,121 @@ class AdaptiveSurveyPlanner:
             "visited_count": visited_count,
             "mean_variance": mean_variance,
         }
+
+
+# ---------------------------------------------------------------------------
+# Wiring helpers -- FR-MAP-3
+#
+# These are what the orchestrator's replan timer calls. They live here, ROS-free,
+# because selene_orchestrator/test/conftest.py's _FakeNode returns
+# SimpleNamespace(value=None) from every get_parameter, so an OrchestratorNode
+# cannot be constructed in the no-ROS CI lane. Anything testable sits outside
+# the node.
+# ---------------------------------------------------------------------------
+
+#: Statuses in which a task's target has ALREADY been broadcast and must never
+#: be rewritten.
+#:
+#: AUCTIONING: _publish_announcement() has put target_x/target_y on the wire in
+#:   a TaskAnnouncement and every agent has scored its bid against that point.
+#:   Moving it now means the auction picks a winner by distance to A and sends
+#:   them to B.
+#: ASSIGNED / IN_PROGRESS: _publish_assignment() has sent a TaskAssignment and
+#:   the agent copied the coordinates into its own state. Nothing re-reads the
+#:   queue, so a rewrite changes only the orchestrator's bookkeeping and
+#:   silently desynchronises it from where the robot is actually driving.
+#: COMPLETED is excluded separately: it is a place a scout has BEEN. Evidence,
+#: not a plan.
+COMMITTED_STATUSES = (
+    TaskStatus.AUCTIONING,
+    TaskStatus.ASSIGNED,
+    TaskStatus.IN_PROGRESS,
+)
+
+
+def zone_peak_mean(resource_map, center, radius) -> float:
+    """Highest posterior mean inside the survey zone's bounding box, in wt%.
+
+    The evidence gate for replanning. One numpy max over a bbox slice rather
+    than ResourceMap.get_best_extraction_sites(), which is a 250,000-iteration
+    Python loop and cannot run on a timer.
+    """
+    cx, cy = center
+    gx0, gy0 = resource_map.world_to_grid(cx - radius, cy - radius)
+    gx1, gy1 = resource_map.world_to_grid(cx + radius, cy + radius)
+    grid = resource_map.get_mean_grid()
+    sub = grid[max(0, gy0):gy1 + 1, max(0, gx0):gx1 + 1]
+    return float(sub.max()) if sub.size else 0.0
+
+
+def should_replan(completed_surveys: int,
+                  total_readings: int,
+                  last_replan_readings: int,
+                  peak_mean: float,
+                  seed_waypoints: int,
+                  min_signal_wt: float) -> bool:
+    """Whether the adaptive planner should re-target pending waypoints.
+
+    Three conditions, each a measured failure mode:
+
+    1. The deterministic lattice must land ``seed_waypoints`` readings first.
+       MEASURED over 20 seeded runs against the real ice field: replanning after
+       ONE reading puts 0.29 of second-half waypoints on >=4 wt% ground truth --
+       WORSE than not adapting at all (0.60), because a single blob gives the
+       planner one gradient and it walks off in a chain. After two: 0.66.
+    2. There must be new evidence since the last replan, or the timer recomputes
+       an identical answer forever.
+    3. There must be something to converge ON. With no ice detected the signal
+       term is zero and the score degenerates to nearest-neighbour, clustering
+       the remaining budget beside the last scout -- strictly worse coverage
+       than the lattice it would replace.
+    """
+    if completed_surveys < seed_waypoints:
+        return False
+    if total_readings <= last_replan_readings:
+        return False
+    return peak_mean >= min_signal_wt
+
+
+def replan_pending_survey_targets(planner, task_queue, reference_position,
+                                  task_type: str = 'prospect') -> list:
+    """Re-target every PENDING survey task using *planner*. FR-MAP-3.
+
+    Rewrites coordinates in place; never creates or deletes a task. That is the
+    termination argument: the waypoint budget is fixed by
+    HTNPlanner.decompose_collect_ice() at decomposition, this cannot raise it,
+    and the HTN dependency graph (``select_site.depends_on`` lists exactly those
+    task_ids) is untouched. Once every survey task has left PENDING there is
+    nothing to rewrite and the call is a no-op forever after.
+
+    Returns ``[(task_id, (old_x, old_y), (new_x, new_y)), ...]`` for the tasks
+    that actually moved, so the caller can log the convergence.
+    """
+    pending = []
+    visited: set = set()
+    queued: set = set()
+    for task in task_queue.get_all_tasks():
+        if task.task_type != task_type:
+            continue
+        if task.status == TaskStatus.PENDING and not task.assigned_robot:
+            pending.append(task)
+        elif task.status == TaskStatus.COMPLETED:
+            visited.add((task.target_x, task.target_y))
+        elif task.status in COMMITTED_STATUSES:
+            queued.add((task.target_x, task.target_y))
+
+    moves = []
+    for task in pending:
+        waypoint = planner.select_next_waypoint(
+            reference_position, visited=visited, queued=queued)
+        if waypoint is None:
+            break          # candidates exhausted; leave the rest as they are
+        old = (task.target_x, task.target_y)
+        new = (float(waypoint[0]), float(waypoint[1]))
+        task.target_x, task.target_y = new
+        # Reserve it, or the next iteration's min_spacing filter would hand
+        # every pending task the same argmax.
+        queued.add(new)
+        if old != new:
+            moves.append((task.task_id, old, new))
+    return moves

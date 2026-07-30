@@ -57,8 +57,29 @@ from selene_orchestrator.task_auction import TaskAuction, Bid
 from selene_orchestrator.resource_map import ResourceMap
 from selene_orchestrator import resource_map_viz as rmviz
 from selene_orchestrator.htn_planner import HTNPlanner
-from selene_orchestrator.adaptive_survey import AdaptiveSurveyPlanner
+from selene_orchestrator.adaptive_survey import (
+    AdaptiveSurveyPlanner,
+    replan_pending_survey_targets,
+    should_replan,
+    zone_peak_mean,
+)
 from selene_isru.inventory import MaterialInventory
+
+
+# ---- Survey zone ---------------------------------------------------------- #
+# The PSR this mission surveys. Used by BOTH the HTN decomposition
+# (_generate_survey_tasks) and the FR-MAP-3 adaptive planner, which have to
+# agree: the planner only proposes candidates inside this disc, so a
+# disagreement would re-target waypoints outside the zone the mission was
+# planned for. These two numbers were previously written out twice, once in
+# _generate_survey_tasks and once as AdaptiveSurveyPlanner's constructor
+# defaults, and only coincidence kept them equal.
+SURVEY_ZONE_CENTER: tuple[float, float] = (-100.0, -150.0)
+SURVEY_ZONE_RADIUS: float = 60.0
+
+# Task type carrying survey waypoints, as created by
+# HTNPlanner.decompose_collect_ice().
+SURVEY_TASK_TYPE: str = 'prospect'
 
 
 # ---- Operator-injected task constants ------------------------------------ #
@@ -399,6 +420,35 @@ class OrchestratorNode(Node):
         # 9M vertices with alpha blending. Beyond the cap the observed set is
         # decimated with a deterministic stride, never truncated.
         self.declare_parameter('resource_map_max_marker_cells', 20000)
+        # ---- FR-MAP-3: adaptive survey planning ----
+        # Rate at which PENDING survey waypoints are re-scored against the fused
+        # map. <= 0 disables adaptation and leaves the static hex lattice in
+        # place, mirroring resource_map_publish_rate. 0.2 Hz because a scout
+        # takes tens of seconds to reach a waypoint; one replan costs ~20 ms of
+        # Python for 8 pending tasks at ~430 candidates each.
+        self.declare_parameter('adaptive_survey_replan_rate', 0.2)
+        # Lattice waypoints that must COMPLETE before adaptation starts.
+        # MEASURED over 20 seeded runs of the real ice field: replanning after
+        # ONE reading puts 0.29 of second-half waypoints on >=4 wt% ground
+        # truth, WORSE than not adapting at all (0.60), because a single blob
+        # gives one gradient and the planner chains away from it. After two:
+        # 0.66. Must be an int; a float raises ParameterTypeException at start.
+        self.declare_parameter('adaptive_survey_seed_waypoints', 2)
+        # Peak posterior mean (wt%) that must exist in the zone before the
+        # planner is trusted to converge on anything.
+        self.declare_parameter('adaptive_survey_min_signal_wt', 1.0)
+        # FR-MAP-3: "Weights are configurable."
+        # w_variance is INERT at the shipped spacing, and that is not a bug:
+        # min_spacing (8.0 m) exceeds ResourceMap's footprint_radius (5.0 m), so
+        # every admissible candidate is unobserved and carries exactly
+        # prior_variance. FR-MAP-3(a) "highest uncertainty first" is enforced by
+        # the candidate FILTER, not by the score. Kept configurable because the
+        # PRD asks for it, and because a min_spacing below 5.0 m revives it.
+        self.declare_parameter('adaptive_survey_w_variance', 1.0)
+        self.declare_parameter('adaptive_survey_w_signal', 0.5)
+        self.declare_parameter('adaptive_survey_w_distance', 0.3)
+        self.declare_parameter('adaptive_survey_min_spacing', 8.0)
+        self.declare_parameter('adaptive_survey_candidate_resolution', 5.0)
         self.declare_parameter('map_resolution', 1.0)
         self.declare_parameter('map_width', 500)
         self.declare_parameter('map_height', 500)
@@ -421,6 +471,11 @@ class OrchestratorNode(Node):
         self._map_frame_id = self.get_parameter('resource_map_frame_id').value
         self._map_max_marker_cells = self.get_parameter(
             'resource_map_max_marker_cells').value
+        replan_rate = self.get_parameter('adaptive_survey_replan_rate').value
+        self._adaptive_seed_waypoints = int(
+            self.get_parameter('adaptive_survey_seed_waypoints').value)
+        self._adaptive_min_signal_wt = float(
+            self.get_parameter('adaptive_survey_min_signal_wt').value)
 
         # ---- Core modules ----
         self._fleet = FleetMonitor(heartbeat_timeout=heartbeat_timeout)
@@ -436,7 +491,29 @@ class OrchestratorNode(Node):
 
         # ---- Phase 4 modules ----
         self._htn_planner = HTNPlanner(self._task_queue, self._resource_map)
-        self._adaptive_survey = AdaptiveSurveyPlanner(self._resource_map)
+        # FR-MAP-3. The zone comes from the module constants so it cannot
+        # drift from the HTN decomposition. signal_probe_radius is deliberately
+        # NOT a ROS parameter: it defaults to min_spacing inside the planner,
+        # and a value below (min_spacing - footprint_radius) silently zeroes the
+        # signal term, which is the exact defect this change fixes.
+        self._adaptive_survey = AdaptiveSurveyPlanner(
+            self._resource_map,
+            psr_center=SURVEY_ZONE_CENTER,
+            psr_radius=SURVEY_ZONE_RADIUS,
+            w_variance=float(
+                self.get_parameter('adaptive_survey_w_variance').value),
+            w_signal=float(
+                self.get_parameter('adaptive_survey_w_signal').value),
+            w_distance=float(
+                self.get_parameter('adaptive_survey_w_distance').value),
+            min_spacing=float(
+                self.get_parameter('adaptive_survey_min_spacing').value),
+            candidate_resolution=float(
+                self.get_parameter(
+                    'adaptive_survey_candidate_resolution').value),
+        )
+        # Reading count at the last replan; the "new evidence" half of the gate.
+        self._adaptive_last_readings = 0
         self._inventory = MaterialInventory()
 
         # ---- Tracking ----
@@ -548,6 +625,18 @@ class OrchestratorNode(Node):
             self.get_logger().warn(
                 'resource_map_publish_rate is %r; the fused resource map and '
                 'the RViz2 overlay will NOT be published.' % (map_rate,))
+
+        # FR-MAP-3. Same disable-on-non-positive-rate convention as the map
+        # publisher above: a rate of 0 is the documented way to fall back to the
+        # deterministic lattice, not a crash.
+        if replan_rate and replan_rate > 0.0:
+            self.create_timer(1.0 / replan_rate, self._adaptive_survey_tick,
+                              callback_group=self._timer_cb_group)
+        else:
+            self.get_logger().warn(
+                'adaptive_survey_replan_rate is %r; survey waypoints will stay '
+                'on the static hex lattice and FR-MAP-3 is inactive.'
+                % (replan_rate,))
 
         # ---- Generate survey tasks ----
         self._generate_survey_tasks()
@@ -851,6 +940,92 @@ class OrchestratorNode(Node):
         msg.elapsed_sim_time = elapsed
         self._progress_pub.publish(msg)
 
+    def _adaptive_survey_tick(self) -> None:
+        """FR-MAP-3: re-target PENDING survey waypoints from the fused map.
+
+        This is the call site the adaptive planner never had. It runs on a timer
+        rather than at decomposition because the planner's whole input -- the
+        posterior in ResourceMap -- is empty until scouts start reporting.
+
+        It rewrites the targets of PENDING survey tasks and never creates or
+        removes one. Three consequences, all deliberate:
+
+        - Termination is structural. The waypoint budget is fixed by
+          HTNPlanner.decompose_collect_ice(); this cannot raise it. Once every
+          survey task has left PENDING the call is a permanent no-op.
+        - The HTN dependency graph survives. ``select_site.depends_on`` lists
+          exactly the task_ids created at decomposition, so SelectSite still
+          resolves when the survey finishes -- and now resolves on a posterior
+          built from waypoints that chased the ice.
+        - Nothing already announced or assigned is touched. See
+          COMMITTED_STATUSES in adaptive_survey.py for why that is not optional.
+        """
+        completed = sum(
+            1 for t in self._task_queue.get_all_tasks()
+            if t.task_type == SURVEY_TASK_TYPE
+            and t.status == TaskStatus.COMPLETED
+        )
+        total_readings = self._resource_map.get_total_readings()
+        peak = zone_peak_mean(
+            self._resource_map, SURVEY_ZONE_CENTER, SURVEY_ZONE_RADIUS)
+
+        if not should_replan(
+                completed_surveys=completed,
+                total_readings=total_readings,
+                last_replan_readings=self._adaptive_last_readings,
+                peak_mean=peak,
+                seed_waypoints=self._adaptive_seed_waypoints,
+                min_signal_wt=self._adaptive_min_signal_wt):
+            return
+
+        self._adaptive_last_readings = total_readings
+        reference = self._survey_reference_position()
+        moves = replan_pending_survey_targets(
+            self._adaptive_survey, self._task_queue, reference,
+            task_type=SURVEY_TASK_TYPE,
+        )
+        if not moves:
+            return
+
+        # INFO because this IS the SC-3 evidence: the sequence of these lines is
+        # the record that waypoints moved toward the ice, and the only such
+        # record if nobody is watching RViz.
+        first_id, first_old, first_new = moves[0]
+        self.get_logger().info(
+            'FR-MAP-3 adaptive survey: %d pending waypoint(s) re-targeted '
+            '(peak %.2f wt%%, %d readings, ref (%.1f, %.1f)); '
+            '%s (%.1f, %.1f) -> (%.1f, %.1f)'
+            % (len(moves), peak, total_readings, reference[0], reference[1],
+               first_id, first_old[0], first_old[1],
+               first_new[0], first_new[1])
+        )
+
+    def _survey_reference_position(self) -> tuple[float, float]:
+        """Distance datum for waypoint scoring: the scout centroid.
+
+        FR-MAP-3(b) says "distance_to_robot", but a PENDING waypoint has no
+        robot: the auction decides who services it, and the auction does not run
+        until the waypoint is announced, which is after this. So the per-robot
+        distance the PRD names is not knowable at re-plan time. The centroid of
+        the online prospect-capable robots is the fleet-level stand-in, and
+        w_distance (0.3) is the smallest of the three weights.
+
+        Falls back to the zone centre before any scout has reported.
+
+        FRAME: these are dead-reckoned odom poses (see D-08), the same frame
+        ResourceMapUpdate.location is in, so the scoring is self-consistent even
+        though neither is world-true.
+        """
+        positions = [
+            self._fleet.get_robot_position(rid)
+            for rid in self._fleet.get_robots_with_capability(SURVEY_TASK_TYPE)
+        ]
+        positions = [p for p in positions if p is not None]
+        if not positions:
+            return SURVEY_ZONE_CENTER
+        return (sum(p[0] for p in positions) / len(positions),
+                sum(p[1] for p in positions) / len(positions))
+
     def _htn_advance(self) -> None:
         """Advance the HTN planner — resolve virtual tasks, spawn downstream."""
         self._htn_planner.check_and_advance()
@@ -945,8 +1120,8 @@ class OrchestratorNode(Node):
     def _generate_survey_tasks(self) -> None:
         """Decompose the initial ISRU mission objective via HTN planner."""
         self._htn_planner.decompose_collect_ice(
-            zone_center=(-100.0, -150.0),
-            zone_radius=60.0,
+            zone_center=SURVEY_ZONE_CENTER,
+            zone_radius=SURVEY_ZONE_RADIUS,
             quantity_kg=100.0,
             depot=(50.0, 50.0),
         )
