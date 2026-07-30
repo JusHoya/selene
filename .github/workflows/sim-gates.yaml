@@ -188,7 +188,18 @@ jobs:
           mkdir -p /ws/src
           ln -s "$GITHUB_WORKSPACE" /ws/src/selene
           cd /ws
+          # `set +u` around the source is REQUIRED, not tidiness. ROS 2's
+          # setup.bash reads unset variables, so under `set -u` it aborts at
+          # /opt/ros/jazzy/setup.bash line 8 with
+          #     AMENT_TRACE_SETUP_FILES: unbound variable
+          # and the step dies before colcon is ever reached — measured, run
+          # 30556108109, which failed in 84 ms having produced no colcon output
+          # at all. Every script in scripts/ already brackets its ROS source this
+          # way (check_terrain.sh, check_drive.sh, sync_and_build.sh); this
+          # workflow was the one place that did not.
+          set +u
           source /opt/ros/jazzy/setup.bash
+          set -u
           colcon build --packages-select selene_sim --event-handlers console_direct+
           test -f /ws/install/setup.bash
           ls /ws/install/selene_sim/share/selene_sim/models/lunar_terrain/heightmaps/
