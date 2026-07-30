@@ -158,10 +158,23 @@ jobs:
           # run in headless mode.") and comes up on EGL, so NO Xvfb and no DISPLAY
           # are needed — but an EGL *vendor driver* is. Removing the vendor JSON
           # directory is what actually breaks it.
+          # The build toolchain is NOT implied by ros-base. selene_sim depends on
+          # selene_msgs, which is ament_cmake + rosidl_generate_interfaces, so the
+          # workspace build needs a C++ compiler, cmake, the rosidl generators and
+          # colcon itself. Measured, run 30568732753: with only ros-base present,
+          # `colcon build --packages-select selene_sim` fails immediately with
+          #     Failed to find /ws/install/selene_msgs/share/selene_msgs/package.sh
+          # because --packages-select does not pull in dependencies. Building
+          # selene_msgs is pure overhead for gates that only read selene_sim's
+          # share directory, but faking the share dir instead would make this job
+          # test something other than the workspace the project actually builds.
           apt-get install -y --no-install-recommends \
             gz-harmonic \
             libegl1 libegl-mesa0 libgl1-mesa-dri \
-            python3-yaml
+            python3-yaml \
+            build-essential cmake \
+            python3-colcon-common-extensions \
+            ros-jazzy-rosidl-default-generators
           gz sim --versions
 
       - name: Environment
@@ -200,7 +213,11 @@ jobs:
           set +u
           source /opt/ros/jazzy/setup.bash
           set -u
-          colcon build --packages-select selene_sim --event-handlers console_direct+
+          # --packages-up-to, NOT --packages-select: selene_sim build-depends on
+          # selene_msgs and colcon's ament_python task sources the dependency's
+          # package.sh, so selecting selene_sim alone fails on a cold workspace.
+          # (It appears to work on a warm one, which is how this got shipped.)
+          colcon build --packages-up-to selene_sim --event-handlers console_direct+
           test -f /ws/install/setup.bash
           ls /ws/install/selene_sim/share/selene_sim/models/lunar_terrain/heightmaps/
 
