@@ -42,6 +42,19 @@ name: Simulation gates
 #      the terrain gate reports BURIED and the job fails.
 # Until then, treat a red run here as a real signal but not a merge blocker.
 #
+# CRITERION 2 IS SATISFIED. Run 30569743405, workflow_dispatch on a throwaway
+# ci-poison-test branch carrying only a four-line change (all spawn z -> 1.5),
+# went red on ubuntu-24.04:
+#     scout_01      1.50   1.45   ok (+0.05 m)
+#     scout_02      1.50   1.34   ok (+0.16 m)
+#     excavator_01  1.50   2.63   BURIED by 1.13 m
+#     hauler_01     1.50   3.62   BURIED by 2.12 m
+#     RESULT: FAIL — 2 problem(s)
+# The job failed at the terrain gate, the four drive legs were skipped, and the
+# artifact still uploaded. The gate can go red on GitHub hardware, not only pass.
+#
+# CRITERION 1 stands at 1 of 10 — run 30569088970, 6m48s, all six steps green.
+#
 # KNOWN RISK, stated rather than papered over, and with the numbers.
 #
 # check_drive.sh used to time its drive with WALL CLOCK while judging the result
@@ -59,8 +72,21 @@ name: Simulation gates
 #     hauler_01    95.9%               slip -0.96%    settled -0.345 m
 # MIN_FRACTION is 0.70, so there is 25-28 points of headroom on an idle host.
 #
+# WHAT GITHUB HARDWARE ACTUALLY DID, run 30569088970 on ubuntu-24.04 (public repo,
+# 4 vCPU / 16 GB). The starvation risk below did NOT materialise — RTF held at
+# 0.9997-1.0 for all four legs:
+#     scout_01     97.4% of command   slip -0.58%   settled -0.264670
+#     scout_02     98.2%              slip -0.93%   settled -0.270320
+#     excavator_01 94.7%              slip +0.61%   settled -0.344760
+#     hauler_01    96.6%              slip -1.28%   settled -0.344500
+# Within 0.7 points of the developer-hardware figures above, and the settled-z
+# values match to SIX DECIMALS across two different machines — the physics is
+# reproducible, not merely close. Terrain gate PSR depth 14.21 m, identical.
+# /dev/shm was 64 MB in the container, as predicted, and it did not matter.
+#
 # WHAT IS STILL NOT SAFE, measured by starving the gate onto one core against six
-# busy loops — the closest available analogue of a small hosted runner:
+# busy loops — the closest available analogue of a small hosted runner, and still
+# the right thing to worry about on a 2 vCPU private-repo runner:
 #     run A   RTF 0.28   98.4% of command   PASS
 #     run B   RTF 0.18   28.1% of command   FAIL
 # Same code, same config. The residual failure is NOT the timing bug: in run B the
