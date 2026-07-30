@@ -65,14 +65,29 @@
     <!-- GROUND CLEARANCE. The wheels sit 0.06 m BELOW base_link, not level with
          it. base_link is at z=0.12 with a 0.15 m-tall chassis, so the chassis
          bottom is at 0.045 m; wheels of radius 0.1 at the same height as
-         base_link put the wheel bottom at 0.02 m, leaving 25 mm of clearance.
-         MEASURED consequence on the real lunar terrain: the chassis grounded out,
-         the wheels spun free, and the robot reported 4.27 m of odometry while
-         moving 0.00 m in the world - 100% slip at every collision-heightmap
-         resolution (129/257/513). It drove fine only on the flat plane used by
-         scripts/verify_drive.sh. Dropping the wheels 0.06 m gives ~85 mm of
-         clearance. wheel_separation (0.5) and wheel_radius (0.1) are unchanged,
-         so DiffDrive kinematics are unaffected. -->
+         base_link would put the wheel bottom at 0.02 m, leaving 25 mm of
+         clearance. Dropping the wheels 0.06 m puts the wheel bottom 0.04 m BELOW
+         the model origin and gives ~85 mm of clearance. wheel_separation (0.5)
+         and wheel_radius (0.1) are unchanged, so DiffDrive kinematics are
+         unaffected. Consequence used by everything downstream: a settled scout's
+         model origin sits at (local surface height + 0.04 m) - MEASURED 2.532000
+         against a surveyed surface of 2.4925 at (-45,-92), a 0.5 mm agreement.
+
+         CORRECTION - the previous version of this comment claimed the 25 mm
+         clearance was the MEASURED cause of "the chassis grounded out, the wheels
+         spun free, 100% slip on the real lunar terrain". That is wrong and the
+         clearance change never fixed anything. The 100% slip had nothing to do
+         with clearance: the robot was spawned ~1.0 m BELOW the terrain collision
+         surface and was entombed in the heightfield. Evidence: raising ONLY the
+         spawn z from 1.5 to 2.8, with this model byte-identical, took world
+         displacement from 0.0000 m to 4.6958 m in the same 12 s at 0.4 m/s; and
+         the symptom was insensitive to clearance precisely because 60 mm of
+         clearance cannot matter against 1000 mm of burial. See
+         selene_sim/config/spawn_positions.yaml for the survey and the numbers,
+         and scripts/check_drive.sh for the gate that now catches it.
+         The extra clearance is kept anyway - it is measured-good and gives the
+         chassis room on the 3.91 m collision-heightmap cells - but it is not a
+         fix for anything. -->
     <link name="front_left_wheel">
       <pose relative_to="base_link">0.22 0.25 -0.06 -1.5708 0 0</pose>
       <inertial>
@@ -288,14 +303,19 @@
       <odom_publish_frequency>20</odom_publish_frequency>
       <frame_id>odom</frame_id>
       <child_frame_id>base_link</child_frame_id>
-      <!-- Dead-man switch: zero the wheels if no cmd_vel arrives for 0.5 s,
-           so a crashed or stalled agent_node cannot leave the robot driving.
-           This is a defence in depth only — the primary guard is the software
-           stop in AgentNode._stop_navigation(). NOT YET VALIDATED: whether
-           the installed gz-sim (Harmonic / gz-sim8) DiffDrive honours
-           <cmd_timeout> has not been confirmed on this machine (no Gazebo
-           available). If it is unsupported the element is simply ignored by
-           the plugin and provides no protection. -->
+      <!-- Intended as a dead-man switch: zero the wheels if no cmd_vel arrives
+           for 0.5 s. MEASURED: IT DOES NOTHING on the installed Gazebo. The
+           string "cmd_timeout" does not occur in either installed DiffDrive
+           build - `strings ... | grep -cx cmd_timeout` returns 0 for both
+           /opt/ros/jazzy/opt/gz_sim_vendor/lib/gz-sim-8/plugins/libgz-sim8-diff-drive-system.so.8.11.0
+           and /usr/lib/x86_64-linux-gnu/gz-sim-8/plugins/libgz-sim8-diff-drive-system.so.8.14.0
+           (the same check returns 1 for "max_linear_acceleration", which the
+           plugin does implement). gz-sim ignores unrecognised plugin elements
+           silently, with no warning even at -v 4, so nothing flags this.
+           There is therefore NO dead-man switch in the simulation: the only stop
+           is the software one in AgentNode._stop_navigation(). Kept, not deleted,
+           so that a future gz-sim which implements the element starts honouring
+           it - but do not count it as a safety layer today. -->
       <cmd_timeout>0.5</cmd_timeout>
     </plugin>
 

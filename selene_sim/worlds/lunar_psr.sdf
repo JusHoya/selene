@@ -6,11 +6,24 @@
          MUST be a direct child of <world>. SDF 1.9 defines <gravity> at world
          scope only; a <gravity> nested inside <physics> is ignored, which
          silently left this world running at Earth gravity.
-         NOT YET VALIDATED in Gazebo (no Gazebo available in the authoring
-         environment) - only that the SDF still parses as XML. -->
+         NOW VALIDATED in Gazebo Harmonic (gz-sim 8.11.0): with this element at
+         world scope a scout spawned on the real terrain at its configured pose
+         drives 4.6958 m in 12 s against 4.6740 m of odometry (0.5% slip), and a
+         hauler 4.4197 m against 4.6065 m (4.1% slip). Lunar gravity is not
+         marginal for these vehicles - see scripts/check_drive.sh. -->
     <gravity>0 0 -1.62</gravity>
 
-    <!-- Physics: step size / real-time settings -->
+    <!-- Physics: step size / real-time settings.
+         type="ode" is a NO-OP and is kept only because removing it would be a
+         behaviour-free churn: MEASURED - there is no ODE engine plugin installed
+         (only dartsim, bullet, bullet-featherstone and tpe under
+         gz-physics-7/engine-plugins), and the server log reports
+         "Loaded [gz::physics::dartsim::Plugin]". Every <surface><friction><ode>
+         block in this project's models is still read by sdformat's generic
+         mapping and honoured by dartsim; the "ode" label is not.
+         Do NOT set <real_time_update_rate>0</real_time_update_rate> here
+         expecting "as fast as possible": in gz-sim Harmonic that throttles the
+         server to ~0.03x real time. Use <real_time_factor>0</real_time_factor>. -->
     <physics name="lunar_physics" type="ode">
       <max_step_size>0.002</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -61,15 +74,22 @@
     </include>
 
     <!-- Processing depot marker.
-         z=1.5 rather than 0: with the terrain datum applied the plain sits at
-         0.3-1.1 m depending on local undulation, so a marker at z=0 is partly
-         underground (measured 0.82 m buried at this XY by
-         scripts/check_terrain.sh). Matching the robot spawn height keeps it
-         clear of the undulation without depending on the exact datum. -->
+         The marker is STATIC, so unlike a robot it never settles - whatever z is
+         written here is where it stays, and it must be placed by measurement.
+         MEASURED collision surface at (-30,-100) = +1.8051 m (probe sphere
+         pinned to a prismatic Z-only joint so it cannot roll off the sample
+         point; the free-sphere probes in scripts/check_terrain.sh roll tens of
+         metres downhill under lunar gravity before they are read, which is how
+         the old "plain sits at 0.3-1.1 m" figure was arrived at).
+         The marker is a cylinder of radius 1.0 and length 0.1, so its centre
+         must sit at surface + 0.05 to rest on the ground: 1.8051 + 0.05 = 1.855,
+         rounded up to 1.86 so the disc's underside is 5 mm clear.
+         The previous z=1.5 put the disc's TOP at 1.55, i.e. 0.26 m below the
+         surface - the depot was entirely inside the terrain and invisible. -->
     <include>
       <uri>model://depot_marker</uri>
       <name>depot</name>
-      <pose>-30 -100 1.5 0 0 0</pose>
+      <pose>-30 -100 1.86 0 0 0</pose>
     </include>
 
     <!-- ============================================================ -->

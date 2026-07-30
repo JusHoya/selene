@@ -371,9 +371,31 @@
       </axis>
     </joint>
 
-    <!-- Drill arm -->
+    <!-- Drill arm.
+         TRAVEL POSITION. The arm is 0.4 m tall and hangs from base_link (which
+         is at model z=0.14), so its pose here fixes how far the drill tip
+         reaches below the vehicle. The wheels have radius 0.12 and their centres
+         are level with base_link, so the WHEEL CONTACT LINE is at model z=+0.02.
+         At the previous pose z=-0.1 the arm centre sat at model z=+0.04 and its
+         tip at model z=-0.16, i.e. 0.18 m BELOW the wheels.
+         MEASURED on a FLAT PLANE under lunar gravity - not on the terrain, on a
+         plane, so this was purely a model defect and nothing to do with the
+         heightmap: the excavator settled at model z=0.063114 with pitch
+         -0.25732 rad (-14.7 deg), its driven wheel joints turned 38.754 rad
+         (4.65 m of arc), odometry read 4.6505 m, and
+         `gz model -m excavator_01 -p` reported displacement 0.0000 m. 100% slip.
+         DERIVED from that pose, not separately measured: at pitch -0.25732 the
+         drill box's leading bottom edge sits at world z=0.00000 (on the ground),
+         the front wheel bottoms at 0.155 m and the rear wheel bottoms at 0.002 m.
+         So the vehicle was high-centred on its own drill with four of its six
+         wheels off the ground. Contact forces were not measured.
+         Raising the arm to z=+0.16 puts the tip at model z=+0.10, i.e. 0.08 m
+         ABOVE the wheel contact line, and the vehicle then settles level
+         (pitch 0.00000, model z = surface - 0.02) and drives 4.8706 m in 12 s at
+         0.4 m/s on the same plane. The <dynamics> added to drill_joint below is
+         what keeps it there. -->
     <link name="drill_arm">
-      <pose relative_to="base_link">0.4 0 -0.1 0 0 0</pose>
+      <pose relative_to="base_link">0.4 0 0.16 0 0 0</pose>
       <inertial>
         <mass>5</mass>
         <inertia>
@@ -413,6 +435,31 @@
           <lower>0</lower>
           <upper>0.3</upper>
         </limit>
+        <!-- Nothing in SELENE actuates this joint in Gazebo: the drill is
+             modelled in the HAL/skill layer (selene_agent/.../skills/excavate.py
+             drives a HAL actuator, not a Gazebo joint), and there is no
+             JointPositionController on this model. An unactuated prismatic joint
+             pointing down is pulled to its lower stop by gravity, so without
+             these two terms the arm deploys itself the moment the sim starts and
+             drags on the ground. MEASURED, flat plane, lunar gravity, over 12 s
+             of settling followed by 12 s of driving at 0.4 m/s:
+               raised arm, no <dynamics>   -> drill_joint settles at +0.08000,
+                                              which is exactly the travel needed
+                                              to put the tip on the ground
+               raised arm, with <dynamics> -> drill_joint settles at +0.01209 and
+                                              stays there through 12 s of driving,
+                                              leaving the tip 68 mm clear
+             Both still drive (5.109 m vs 4.871 m in 12 s); the second keeps the
+             drill off the ground, which is what a vehicle in transit should do.
+             200 is not a tuned figure - it only has to hold a 5 kg arm against
+             1.62 m/s^2, i.e. 8.1 N. An <effort> limit was tried too and made no
+             difference (drill_joint settled at the same +0.01209), so it is not
+             included. If a drill controller is ever added it must overcome these
+             terms, or replace them with a proper actuator. -->
+        <dynamics>
+          <damping>200</damping>
+          <friction>200</friction>
+        </dynamics>
       </axis>
     </joint>
 
@@ -472,14 +519,19 @@
       <odom_publish_frequency>20</odom_publish_frequency>
       <frame_id>odom</frame_id>
       <child_frame_id>base_link</child_frame_id>
-      <!-- Dead-man switch: zero the wheels if no cmd_vel arrives for 0.5 s,
-           so a crashed or stalled agent_node cannot leave the robot driving.
-           This is a defence in depth only — the primary guard is the software
-           stop in AgentNode._stop_navigation(). NOT YET VALIDATED: whether
-           the installed gz-sim (Harmonic / gz-sim8) DiffDrive honours
-           <cmd_timeout> has not been confirmed on this machine (no Gazebo
-           available). If it is unsupported the element is simply ignored by
-           the plugin and provides no protection. -->
+      <!-- Intended as a dead-man switch: zero the wheels if no cmd_vel arrives
+           for 0.5 s. MEASURED: IT DOES NOTHING on the installed Gazebo. The
+           string "cmd_timeout" does not occur in either installed DiffDrive
+           build - `strings ... | grep -cx cmd_timeout` returns 0 for both
+           /opt/ros/jazzy/opt/gz_sim_vendor/lib/gz-sim-8/plugins/libgz-sim8-diff-drive-system.so.8.11.0
+           and /usr/lib/x86_64-linux-gnu/gz-sim-8/plugins/libgz-sim8-diff-drive-system.so.8.14.0
+           (the same check returns 1 for "max_linear_acceleration", which the
+           plugin does implement). gz-sim ignores unrecognised plugin elements
+           silently, with no warning even at -v 4, so nothing flags this.
+           There is therefore NO dead-man switch in the simulation: the only stop
+           is the software one in AgentNode._stop_navigation(). Kept, not deleted,
+           so that a future gz-sim which implements the element starts honouring
+           it - but do not count it as a safety layer today. -->
       <cmd_timeout>0.5</cmd_timeout>
     </plugin>
 
