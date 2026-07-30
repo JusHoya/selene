@@ -5,6 +5,13 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  # Dispatchable so this pipeline can be exercised on a feature branch BEFORE it
+  # is merged. That is not hypothetical: this workflow has been red on main since
+  # 2026-04-23, for three months, because the e2e job there installs `pytest`
+  # without numpy and dies at collection — and `build-and-test` declares
+  # `needs: e2e-integration`, so the whole pipeline goes with it. The fix is on
+  # this branch and could not be verified before merging without this trigger.
+  workflow_dispatch:
 
 # ---------------------------------------------------------------------------
 # KNOWN LIMITATION — ROS distro gap (unresolved, deliberately not papered over)
