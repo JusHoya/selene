@@ -18,23 +18,33 @@ Args:
                  the react-scripts dev server (see dashboard.launch.py; requires
                  `cd selene_dashboard && npm run build` beforehand)
 
-Note: Sprint 0's simulation.launch.py currently hardcodes a 2/1/1 fleet at the
-Gazebo spawn level (its spawn loops are literal range(2)/range(1)/range(1)
-despite declaring the num_* arguments). The args here flow through to all
-downstream stages (orchestrator, agents) and will fully drive the fleet once the
-spawn loop in simulation.launch.py is parameterized.
+FLEET SIZE
+----------
+The num_* arguments drive the fleet end to end: fleet_robot_ids is generated
+from them and handed to the orchestrator and to one agent launch per robot, and
+simulation.launch.py builds that exact number of Gazebo spawns, bridges and
+sensor nodes from them.
 
-FLEET SIZE / DASHBOARD CAVEAT
------------------------------
-The num_scouts / num_excavators / num_haulers arguments below are honoured by
-this file: fleet_robot_ids is generated from them and handed to the orchestrator
-and to one agent launch per robot. The dashboard, however, must discover the
-fleet dynamically for any count other than the 2/1/1 default. A dashboard with a
-hardcoded robot list will not render the extra robots at all, yet those robots
-still bid on and get assigned tasks — so they appear as invisible "phantom"
-assignees in the task table while never showing up in the fleet view. Until the
-dashboard's discovery path is confirmed working, treat non-default counts as a
-headless / CLI-only configuration.
+That was not always true. Until 2026-07-30 simulation.launch.py declared the
+same three arguments and then spawned from literal range(2)/range(1)/range(1),
+so `num_scouts:=3` started a third AGENT — registering with the fleet, bidding
+on tasks and winning them — with no Gazebo model behind it. It presented as a
+coordination bug rather than a launch bug (FR-SIM-7(c), deviation D-07).
+
+The fleet is bounded by spawn_positions.yaml, not by the arguments: every z
+there is a MEASURED collision surface plus a 0.30 m margin, so asking for more
+robots than the file describes now fails the launch with a message explaining
+how to survey another pose. It does not invent one — a guessed z spawns a robot
+inside the terrain, where it reports healthy odometry and never moves.
+
+DASHBOARD CAVEAT
+----------------
+The dashboard must discover the fleet dynamically for any count other than the
+2/1/1 default. A dashboard with a hardcoded robot list will not render the extra
+robots, yet those robots still bid on and get assigned tasks — so they appear as
+invisible assignees in the task table while never showing in the fleet view.
+Until the dashboard's discovery path is confirmed, treat non-default counts as a
+headless / CLI configuration.
 """
 
 from launch import LaunchDescription
@@ -83,6 +93,12 @@ def _launch_setup(context, *args, **kwargs):
             'num_scouts': str(num_scouts),
             'num_excavators': str(num_excavators),
             'num_haulers': str(num_haulers),
+            # FR-SIM-7(d). Passed straight through; empty means the packaged
+            # default. Without these the counts were configurable here and the
+            # world was not, which is half a requirement.
+            'world': LaunchConfiguration('world').perform(context),
+            'ice_config': LaunchConfiguration('ice_config').perform(context),
+            'spawn_config': LaunchConfiguration('spawn_config').perform(context),
         }.items(),
     )
 
@@ -164,6 +180,15 @@ def generate_launch_description():
         DeclareLaunchArgument('num_excavators', default_value='1'),
         DeclareLaunchArgument('num_haulers', default_value='1'),
         DeclareLaunchArgument('headless', default_value='false'),
+        DeclareLaunchArgument(
+            'world', default_value='',
+            description='World SDF to load. Empty = the packaged lunar_psr.sdf.'),
+        DeclareLaunchArgument(
+            'ice_config', default_value='',
+            description='Ice deposit layout YAML. Empty = the packaged default.'),
+        DeclareLaunchArgument(
+            'spawn_config', default_value='',
+            description='Robot spawn poses YAML. Empty = the packaged default.'),
         DeclareLaunchArgument(
             'rviz', default_value='false',
             description='Start RViz2 with the FR-MAP-4 resource-map overlay '

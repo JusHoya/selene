@@ -85,10 +85,31 @@
 #
 # yaw -2.33 rad points each robot at the PSR centre, so the first navigation leg
 # is roughly straight ahead.
+# FLEET SIZE. The first two scouts, first excavator and first hauler are the
+# default 2/1/1 fleet. The rest exist so the fleet can actually be staged up to
+# the ten robots NFR-1.1 and NFR-1.4 specify ("up to 10 robots"):
+#     ros2 launch selene_sim unified_sim.launch.py \
+#         num_scouts:=4 num_excavators:=3 num_haulers:=3
+# simulation.launch.py takes the first N of each group and FAILS THE LAUNCH if
+# N exceeds what is listed here, rather than inventing a pose — a guessed z puts
+# the robot inside the terrain. Adding an eleventh means surveying it: put the
+# coordinate in the POINTS list of scripts/check_terrain.sh, run it, and read
+# surface_z.
+#
+# Every added pose was checked against the same constraints as the original four
+# before being measured: outside the 60 m PSR radius (63.1-90.6 m), clear of the
+# depot's 10 m radius (22.1-26.6 m), and >= 7.0 m from every other spawn.
+# Surveyed 2026-07-30, same gate and same run as the four above.
 scouts:
   - {x: -45, y: -92, z: 1.75, yaw: -2.33}   # surface +1.446014
   - {x: -45, y: -85, z: 1.65, yaw: -2.33}   # surface +1.340096
+  - {x: -45, y: -78, z: 1.67, yaw: -2.33}   # surface +1.364892
+  - {x: -52, y: -109, z: 4.14, yaw: -2.33}  # surface +3.835680
 excavators:
   - {x: -45, y: -105, z: 2.94, yaw: -2.33}  # surface +2.633854
+  - {x: -52, y: -88, z: 2.03, yaw: -2.33}   # surface +1.720789
+  - {x: -52, y: -95, z: 2.48, yaw: -2.33}   # surface +2.176777
 haulers:
   - {x: -45, y: -112, z: 3.93, yaw: -2.33}  # surface +3.621368
+  - {x: -45, y: -119, z: 4.28, yaw: -2.33}  # surface +3.975844
+  - {x: -52, y: -102, z: 3.46, yaw: -2.33}  # surface +3.158512
