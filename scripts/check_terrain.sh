@@ -15,11 +15,20 @@
 #   2. Nothing compensated for the generator's elevation datum, so every robot,
 #      rock and the depot originated metres below the surface.
 #
-# Neither is visible from the configs, and neither produces an error message —
-# robots simply sit inside solid geometry. So the check drops probe spheres from
-# above each coordinate the software cares about and reads where they come to
-# rest from Gazebo's own pose feed. That is the external authority; the
-# heightmap PNG is not.
+# AND THIS GATE ITSELF CERTIFIED A BURIED SPAWN. Until 2026-07-29 its probes were
+# free spheres: they landed, ROLLED DOWNHILL, and were read at the bottom of the
+# slope, under-reporting the surface by up to 5 m. On that evidence a spawn z of
+# 1.5 m was passed as clear at (-45,-92)/(-45,-105)/(-45,-112), where the true
+# surfaces are 2.49 / 4.01 / 5.27 m. Every robot began inside the terrain, wheels
+# spinning, odometry advancing, world displacement exactly zero. Probes are now
+# pinned to a prismatic Z slide so they cannot move laterally, and the reading is
+# the joint position rather than a settled body pose.
+#
+# None of this is visible from the configs, and none of it produces an error
+# message — robots simply sit inside solid geometry with their wheels turning. So
+# the check lowers a laterally-pinned probe onto every coordinate the software
+# cares about and reads the slide joint's position. Gazebo is the external
+# authority; the heightmap PNG is not, and neither is a free-rolling probe.
 #
 # USAGE
 #   bash scripts/check_terrain.sh            # uses ~/selene workspace install
@@ -74,12 +83,42 @@ POINTS=""
 add() { POINTS="$POINTS $1:$2:$3:$4"; }
 
 # Robot spawns (selene_sim/config/spawn_positions.yaml) — really placed
-add scout_01     -45  -92 1.5
-add scout_02     -45  -85 1.5
-add excavator_01 -45 -105 1.5
-add hauler_01    -45 -112 1.5
+# Placement heights are READ FROM THE CONFIG, not hard-coded. This gate used to
+# assert a literal 1.5 for every robot; when spawn_positions.yaml moved to
+# per-robot heights the gate went on testing a value the system no longer uses,
+# and reported spurious burial.
+# Resolve from the installed share dir first (works wherever the script is copied
+# to), then the source tree next to this script.
+if [ -z "${SPAWNS_YAML:-}" ]; then
+    for cand in "$SHARE/config/spawn_positions.yaml"                 "$(dirname "$0")/../selene_sim/config/spawn_positions.yaml"; do
+        [ -f "$cand" ] && { SPAWNS_YAML="$cand"; break; }
+    done
+fi
+if [ -z "${SPAWNS_YAML:-}" ] || [ ! -f "$SPAWNS_YAML" ]; then
+    echo "FAIL: cannot find spawn_positions.yaml; set SPAWNS_YAML." >&2
+    exit 1
+fi
+eval "$(python3 - "$SPAWNS_YAML" <<'PYCFG'
+import re, sys
+rows = []
+for line in open(sys.argv[1]):
+    m = re.match(r'\s*-\s*\{x:\s*(-?[\d.]+),\s*y:\s*(-?[\d.]+),\s*z:\s*(-?[\d.]+)', line)
+    if m:
+        rows.append(m.groups())
+names = ['scout_01', 'scout_02', 'excavator_01', 'hauler_01']
+for n, (x, y, z) in zip(names, rows):
+    print(f'add {n} {x} {y} {z}')
+PYCFG
+)"
+for want in scout_01 scout_02 excavator_01 hauler_01; do
+    case "$POINTS" in
+        *"$want:"*) ;;
+        *) echo "FAIL: $want was not read from $SPAWNS_YAML" >&2; exit 1 ;;
+    esac
+done
 # Depot / recharge station (world_params.yaml, lunar_psr.sdf) — really placed
-add depot        -30 -100 1.5
+# depot marker z tracks lunar_psr.sdf (static, so it never settles)
+add depot        -30 -100 1.86
 # PSR centre, and two references well OUTSIDE the 60 m radius. Probes at exactly
 # r=60 sit on the rim and read as crater floor, which makes the depth test lie.
 add psr_centre  -100 -150 "$SURVEY"
@@ -119,14 +158,26 @@ trap cleanup EXIT INT TERM
   for p in $POINTS; do
       IFS=: read -r _n px py _pz <<<"$p"
       i=$((i + 1))
-      printf '  <model name="probe%d"><pose>%s %s %s 0 0 0</pose><link name="l">' \
-             "$i" "$px" "$py" "$PROBE_DROP_Z"
+      # Each probe is PINNED to a world-fixed anchor by a prismatic joint on Z so it
+      # can only descend. Free spheres ROLLED DOWNHILL before being read, which is
+      # how this gate certified a spawn z of 1.5 m as clear when the true surface
+      # was up to 5 m higher. See the header.
+      printf '  <model name="probe%d"><pose>%s %s 0 0 0 0</pose>' "$i" "$px" "$py"
+      printf '<link name="anchor"><pose>0 0 %s 0 0 0</pose>' "$PROBE_DROP_Z"
+      printf '<inertial><mass>1</mass><inertia><ixx>0.1</ixx><iyy>0.1</iyy><izz>0.1</izz>'
+      printf '<ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial></link>'
+      printf '<joint name="fix" type="fixed"><parent>world</parent><child>anchor</child></joint>'
+      printf '<link name="ball"><pose>0 0 %s 0 0 0</pose>' "$PROBE_DROP_Z"
       printf '<inertial><mass>5</mass><inertia><ixx>0.2</ixx><iyy>0.2</iyy><izz>0.2</izz>'
       printf '<ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>'
       printf '<collision name="c"><geometry><sphere><radius>%s</radius></sphere></geometry>' "$PROBE_RADIUS"
       printf '<surface><friction><ode><mu>1</mu><mu2>1</mu2></ode></friction>'
       printf '<bounce><restitution_coefficient>0</restitution_coefficient></bounce></surface>'
-      printf '</collision></link></model>\n'
+      printf '</collision></link>'
+      printf '<joint name="slide" type="prismatic"><parent>anchor</parent><child>ball</child>'
+      printf '<axis><xyz>0 0 1</xyz><limit><lower>-60</lower><upper>0</upper></limit>'
+      printf '<dynamics><damping>0</damping><friction>0</friction></dynamics></axis></joint>'
+      printf '</model>\n'
   done
   echo '</world></sdf>'
 } > "$WORLD"
@@ -160,8 +211,19 @@ gz service -s /world/terraincheck/control \
     || echo "  WARNING: could not unpause the world; results will be meaningless"
 
 sleep "$SETTLE_SECONDS"
-timeout 25 gz topic -e -t /world/terraincheck/dynamic_pose/info -n 1 \
-    2>/dev/null > /tmp/selene_check_terrain_poses.txt
+# A pinned probe's descent IS the slide joint position, which is exact and needs
+# no pose bookkeeping:  surface = PROBE_DROP_Z + joint_position - PROBE_RADIUS
+: > /tmp/selene_check_terrain_poses.txt
+NPROBES=$(echo "$POINTS" | wc -w)
+for j in $(seq 1 "$NPROBES"); do
+    jp=$(timeout 15 gz topic -e -t "/world/terraincheck/model/probe${j}/joint_state" -n 1 2>/dev/null \
+         | python3 -c "
+import re, sys
+t = sys.stdin.read()
+m = re.search(r'name:\s*\"slide\".*?position:\s*(-?[0-9eE.+-]+)', t, re.S)
+print(m.group(1) if m else 'nan')")
+    echo "probe${j} ${jp}" >> /tmp/selene_check_terrain_poses.txt
+done
 
 # Bounded teardown. `gz sim` does not always die on SIGTERM, and a bare `wait`
 # after a kill that the child survived blocks this script forever — which would
@@ -185,17 +247,19 @@ import sys
 points = sys.argv[1].split()
 radius = float(sys.argv[2])
 
-txt = open('/tmp/selene_check_terrain_poses.txt').read()
+import os
+DROP = float(os.environ.get('PROBE_DROP_Z', '12'))
 z_by_probe = {}
-for name, body in re.findall(r'name:\s*"([^"]+)"(.*?)(?=name:\s*"|\Z)', txt, re.S):
-    if not re.fullmatch(r'probe\d+', name):
+for line in open('/tmp/selene_check_terrain_poses.txt'):
+    parts = line.split()
+    if len(parts) != 2:
         continue
-    m = re.search(r'position\s*\{(.*?)\}', body, re.S)
-    if not m:
-        continue
-    fields = dict(re.findall(r'([xyz]):\s*(-?[\d.eE+]+)', m.group(1)))
-    if 'z' in fields:
-        z_by_probe[name] = float(fields['z'])
+    name, jp = parts
+    try:
+        # jp is the prismatic slide position: negative descent from DROP.
+        z_by_probe[name] = DROP + float(jp)
+    except ValueError:
+        pass          # 'nan' -> no reading; reported as missing below
 
 if not z_by_probe:
     print("FAIL: no probe poses were read from Gazebo. Is the world loading?")
@@ -209,11 +273,16 @@ for idx, spec in enumerate(points, start=1):
     name, x, y, pz = spec.split(':')
     x, y, pz = float(x), float(y), float(pz)
     z = z_by_probe.get(f'probe{idx}')
+    if z is not None and z != z:          # NaN: no joint reading came back
+        print(f"{name:<14} {x:>6.0f} {y:>6.0f} {pz:>9.2f} {'NO DATA':>10}   MEASUREMENT FAILED")
+        failures.append(f"{name}: probe returned no reading (NaN) - measurement failed, "
+                        f"NOT a pass")
+        continue
     if z is None:
         print(f"{name:<14} {x:>6.0f} {y:>6.0f} {pz:>9.2f} {'--':>10}   NO POSE")
         failures.append(f"{name}: no pose reported")
         continue
-    if z < -100:
+    if z <= -55:
         print(f"{name:<14} {x:>6.0f} {y:>6.0f} {pz:>9.2f} {'none':>10}   FELL THROUGH (no collision)")
         failures.append(f"{name} ({x:.0f},{y:.0f}): no collision geometry")
         continue
@@ -237,7 +306,7 @@ print()
 centre = surfaces.get('psr_centre')
 rim = [surfaces[k] for k in ('plain_north', 'plain_east') if k in surfaces]
 mirror = surfaces.get('mirror_check')
-if centre is not None and rim:
+if centre is not None and centre == centre and rim and all(r == r for r in rim):
     rim_mean = sum(rim) / len(rim)
     depth = rim_mean - centre
     print(f"PSR depth at (-100,-150): outside {rim_mean:.2f} m - centre {centre:.2f} m "
@@ -251,7 +320,7 @@ else:
     print("PSR depth: could not evaluate (missing probe results)")
     failures.append("PSR depth not evaluable")
 
-if mirror is not None and centre is not None:
+if mirror is not None and mirror == mirror and centre is not None and centre == centre:
     if mirror < centre:
         print(f"  FAIL: (-100,+150) at {mirror:.2f} m is LOWER than the configured "
               f"centre at {centre:.2f} m — terrain looks mirrored in Y.")
