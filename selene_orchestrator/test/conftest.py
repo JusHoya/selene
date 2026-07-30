@@ -253,6 +253,97 @@ def _stub_geometry_msgs() -> type:
     return _Point
 
 
+def _stub_std_and_viz_msgs() -> None:
+    """Stub the std_msgs / visualization_msgs / builtin_interfaces surface.
+
+    orchestrator_node imports these for the FR-MAP-4 overlay. They are ordinary
+    ROS 2 interface packages, so on a machine with a sourced workspace the real
+    ones win and none of this runs; in the pure-Python CI lane, where the e2e
+    test imports orchestrator_node with no ROS at all, these keep the import
+    graph resolvable.
+    """
+    std_msg = _stub_module('std_msgs.msg', probe='Header')
+    if std_msg is not None:
+        class _Header:
+            def __init__(self, stamp=None, frame_id=''):
+                self.stamp = stamp if stamp is not None else MagicMock()
+                self.frame_id = frame_id
+
+        class _ColorRGBA:
+            def __init__(self, r=0.0, g=0.0, b=0.0, a=0.0):
+                self.r, self.g, self.b, self.a = (
+                    float(r), float(g), float(b), float(a))
+
+        std_msg.Header = _Header
+        std_msg.ColorRGBA = _ColorRGBA
+        _ensure_stub_parent('std_msgs', ('std_msgs.msg',))
+
+    bi_msg = _stub_module('builtin_interfaces.msg', probe='Duration')
+    if bi_msg is not None:
+        class _Duration:
+            def __init__(self, sec=0, nanosec=0):
+                self.sec = int(sec)
+                self.nanosec = int(nanosec)
+
+        bi_msg.Duration = _Duration
+        _ensure_stub_parent('builtin_interfaces', ('builtin_interfaces.msg',))
+
+    viz_msg = _stub_module('visualization_msgs.msg', probe='Marker')
+    if viz_msg is not None:
+        class _Vec3:
+            def __init__(self):
+                self.x = self.y = self.z = 0.0
+
+        class _Quat:
+            def __init__(self):
+                self.x = self.y = self.z = 0.0
+                self.w = 0.0
+
+        class _Pose:
+            def __init__(self):
+                self.position = _Vec3()
+                self.orientation = _Quat()
+
+        class _Marker:
+            # The constants orchestrator_node names. CUBE_LIST is 6; 8 is
+            # POINTS. Getting these wrong renders the wrong primitive, so they
+            # are spelled out rather than left as MagicMock attributes, which
+            # would compare equal to nothing and silently pass.
+            ARROW = 0
+            CUBE = 1
+            SPHERE = 2
+            CYLINDER = 3
+            LINE_STRIP = 4
+            LINE_LIST = 5
+            CUBE_LIST = 6
+            SPHERE_LIST = 7
+            POINTS = 8
+            ADD = 0
+            DELETE = 2
+            DELETEALL = 3
+
+            def __init__(self):
+                self.header = MagicMock()
+                self.ns = ''
+                self.id = 0
+                self.type = 0
+                self.action = 0
+                self.pose = _Pose()
+                self.scale = _Vec3()
+                self.color = None
+                self.lifetime = None
+                self.points = []
+                self.colors = []
+
+        class _MarkerArray:
+            def __init__(self, markers=None):
+                self.markers = list(markers) if markers else []
+
+        viz_msg.Marker = _Marker
+        viz_msg.MarkerArray = _MarkerArray
+        _ensure_stub_parent('visualization_msgs', ('visualization_msgs.msg',))
+
+
 def _stub_selene_msgs(point_cls: type) -> None:
     smsgs_msg = _stub_module('selene_msgs.msg', probe='BidResponse')
     if smsgs_msg is not None:
@@ -270,6 +361,16 @@ def _stub_selene_msgs(point_cls: type) -> None:
                 'extracted_quantity': 0.0, 'in_transit_quantity': 0.0,
                 'deposited_quantity': 0.0, 'fleet_distance_total': 0.0,
                 'fleet_energy_total': 0.0, 'elapsed_sim_time': 0.0,
+            }),
+            ('ResourceMap', {
+                # FR-MAP-1(e). Sparse snapshot: four parallel per-cell arrays
+                # plus the geometry needed to place them.
+                'header': lambda: MagicMock(), 'resolution': 0.0,
+                'width': 0, 'height': 0, 'origin': point_cls,
+                'prior_mean': 0.0, 'prior_variance': 0.0,
+                'total_observations': 0,
+                'cell_index': list, 'cell_mean': list,
+                'cell_variance': list, 'cell_observation_count': list,
             }),
             ('ResourceMapUpdate', {
                 'location': point_cls, 'ice_concentration': 0.0,
@@ -363,6 +464,7 @@ def install_ros_stubs() -> None:
     """
     _stub_rclpy()
     point_cls = _stub_geometry_msgs()
+    _stub_std_and_viz_msgs()
     _stub_selene_msgs(point_cls)
     _stub_selene_isru_if_missing()
 
