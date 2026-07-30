@@ -36,12 +36,18 @@ permission slip. This file replaces it.
 | FR-DASH-5 Manual Task Injection | P1 | Delivered with deviation (D-04) |
 | FR-DASH-6 Robot Override | P2 | Delivered with deviation (D-05) |
 | FR-DASH-7 Mission Progress | P1 | Delivered with deviation (D-06) |
-| FR-SIM-7 Launch & Config (full) | P0 | Delivered with deviation (D-07) |
+| FR-SIM-7 Launch & Config (full) | P0 | **Delivered 2026-07-30** (D-07 closed) |
 | FR-MAP-4 RViz2 Visualization | P1 | **Delivered 2026-07-30** (D-08 closed) |
 
-Eight of nine requirements are code-complete. One is partially delivered
-(FR-SIM-7). FR-MAP-4 was closed on 2026-07-30 together with its blocker,
-FR-MAP-1(e)(f) - see D-08 and D-09.
+All nine Phase 5 requirements are now delivered. Five carry named deviations
+(D-01..D-05) that are defects on delivered features rather than unmet
+clauses; D-06 is the one substantive gap remaining, and it is not a Phase 5
+requirement alone -- it also blocks Phase 6 Demo 1 and SC-1.
+
+Closed on 2026-07-30: D-07 (FR-SIM-7), D-08 (FR-MAP-4) and D-09
+(FR-MAP-1(e)(f)). Separately, FR-MAP-3 -- P0 Phase 4 scope that had never
+run in a live system -- was wired in on the same day; see the note after
+D-10.
 
 ---
 
@@ -168,26 +174,52 @@ never called in production.
 
 ---
 
-## D-07 — FR-SIM-7: robot counts and world files are not actually configurable
+## D-07 - FR-SIM-7: robot counts and world files not configurable - CLOSED 2026-07-30
 
-**Specified** (`docs/PRD.md:256-264`): parameterised robot counts; configurable
-world file and ice deposit layout.
+**Was**: `simulation.launch.py` declared `num_scouts` / `num_excavators` /
+`num_haulers` and then built the fleet from literal `range(2)`, `range(1)`,
+`range(1)`. The arguments existed and did nothing. Worse than a no-op:
+`unified_sim.launch.py` honours the same arguments for the orchestrator and the
+agents and passes them down, so `num_scouts:=3` started a third agent that
+registered with the fleet, bid on tasks and won them, with no Gazebo model behind
+it. It presented as a coordination bug. The world file and deposit layout were
+hardcoded, so clause (d) was unmet too.
 
-**Actual**: `simulation.launch.py` declares `num_scouts` / `num_excavators` /
-`num_haulers` (`:41-46`) and then spawns with literal `range(2)`, `range(1)`,
-`range(1)` (`:125,127,129`; sensor nodes at `:166,180`). `unified_sim.launch.py`
-honours the arguments for the orchestrator and agent nodes and passes them to a
-launch file that ignores them — so `num_scouts:=3` starts a third agent that bids
-on and wins tasks **with no Gazebo model behind it**. The file documents this
-itself at `unified_sim.launch.py:21-37`.
+**Now**: the file is an `OpaqueFunction`, which is what allows the counts to be
+read at all -- a `LaunchConfiguration` cannot be resolved at description time,
+which is why the literals were there. Spawn, bridge and sensor nodes are built
+from a single fleet list that cannot disagree with itself. `world`,
+`ice_config` and `spawn_config` are launch arguments, and
+`unified_sim.launch.py` passes all six through.
 
-The world file and deposit layout are hardcoded at `simulation.launch.py:26,31`
-and are not launch arguments.
+**No procedural spawn fallback.** Asking for more robots than
+`spawn_positions.yaml` describes fails the launch with a message naming the
+shortfall and how to survey another pose. Every z in that file is a measured
+collision surface plus 0.30 m; inventing one puts a robot inside the terrain,
+which is the defect this project spent months on.
 
-**Impact**: the fleet cannot be staged above 2/1/1, so NFR-1.1 and NFR-1.4
-("up to 10 robots") cannot be exercised in Phase 6 without launch work first.
+So `spawn_positions.yaml` now describes a ten-robot fleet (4 scouts, 3
+excavators, 3 haulers), because a configurable count is useless if the config
+describes four robots. That is what NFR-1.1 and NFR-1.4 ("up to 10 robots")
+need. The six new poses were geometry-checked before being measured -- that
+pre-check rejected two candidates at 9.4 m and 8.2 m from the depot, inside its
+10 m radius -- then surveyed with `check_terrain.sh` in the same run as the
+original four.
 
----
+**MEASURED, and the first measurement was wrong.** Requesting 4/3/3 initially
+reported 5 of 10 models in Gazebo while all ten create nodes logged "Entity
+creation successful" -- the signature of querying the wrong server. A leftover
+`gz sim` from the previous probe was answering. Re-run with each launch in its
+own `GZ_PARTITION` and a straggler check first:
+
+    2/1/1 -> 4 models    scout_01 scout_02 excavator_01 hauler_01
+    4/3/3 -> 10 models   all ten, correctly named
+
+`num_scouts:=9` exits 1 naming the file and the shortfall.
+`world:=/nonexistent` exits 1 saying so. `check_terrain.sh` reads every entry,
+so it now gates all ten poses -- all pass at +0.30/+0.31 m -- and
+`check_drive.sh` on `scout_03`, a new pose, drives 98.0% of command and settles
+downward.
 
 ## D-08 - FR-MAP-4: RViz2 resource-map visualization - CLOSED 2026-07-30
 
@@ -317,6 +349,48 @@ state machine.** It is not by itself evidence that the Phase 5 exit gate was met
 
 ---
 
+---
+
+## FR-MAP-3 - adaptive survey never ran - CLOSED 2026-07-30
+
+Not a Phase 5 deviation: FR-MAP-3 is P0 **Phase 4** scope
+(`docs/PRD.md:434-442`), and Phase 4 was recorded as complete. It is listed here
+because SC-3 is a Phase 6 acceptance criterion and the gap was found during this
+work.
+
+`AdaptiveSurveyPlanner` shipped with 8 green unit tests and zero production call
+sites -- `self._adaptive_survey` appeared exactly once in `orchestrator_node.py`,
+the assignment that created it. What ran was a fixed hex lattice of 10 points
+computed once at decomposition, before any reading existed.
+
+**Wiring it up alone would not have worked.** At the shipped defaults
+`min_spacing` (8.0 m) exceeds `ResourceMap._footprint_radius` (5.0 m), so no
+admissible candidate has ever been observed -- and `_get_neighbor_signal` probed
+at the map *resolution*, 1.0 m, sampling points 7-9 m from the nearest reading,
+outside every footprint. Measured over a full survey: `max(signal) == 0.0` on
+every one of 10 selections across all ~360-434 candidates, with the variance
+term identically `prior_variance` for the same reason. Both terms constant, so
+the score collapsed to pure nearest-neighbour. The 8 existing tests passed only
+because they use `min_spacing` of 3.0 or 5.0, at or below the footprint radius.
+
+Now: PENDING survey targets are re-scored on a timer at
+`adaptive_survey_replan_rate`, with the lattice seeding the first two waypoints;
+committed targets (AUCTIONING / ASSIGNED / IN_PROGRESS) are never rewritten;
+termination is structural because the function cannot create a task.
+
+SC-3 measured over the real deposit field, deterministic:
+
+    static    first half 2.21 -> second half 3.40 wt%,  60% of second half >=4
+    adaptive  first half 3.86 -> second half 5.34 wt%,  80%
+
+1.57x the second-half mean, with waypoints landing 5.0 m from deposit centres at
+7.33 wt%. Live on ROS 2 Jazzy the replan fires and logs its re-targets.
+
+**Still true**: readings are indexed in each robot's dead-reckoned odom frame
+(see D-08), so "converge on the deposits" is measured in that frame. The map is
+self-consistent; the region sampled is not where the robot physically is.
+
+
 ## Recommended disposition
 
 Phase 5 is **code-complete against seven of nine requirements** and its executable
@@ -329,6 +403,10 @@ It should **not** be recorded as "exit gate passed" without either:
 2. strengthening checks 1, 2, 4 and 6, adding a `send_to_location` check, and
    performing the PRD's visual methods — then closing on evidence.
 
-D-09 was closed on 2026-07-30, and D-08 with it. D-06 remains the one that
-propagates: it blocks Phase 6 acceptance criteria and is not an orchestrator
-one-liner - it needs a HAL and simulation change.
+Closed on 2026-07-30: D-07, D-08, D-09, and FR-MAP-3. **D-06 is now the only
+remaining substantive gap**, and it is the one that propagates: it blocks
+Phase 6 Integration Demo 1 step 3 and SC-1, and it is not an orchestrator
+one-liner -- no HAL populates `mass_kg`, and `hopper_node.py` publishes
+kilograms into a field documented as a 0-1 fraction, so it needs a HAL and
+simulation change. D-01..D-05 are defects on delivered dashboard features and
+are not Phase 6 blockers.
