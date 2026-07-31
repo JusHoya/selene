@@ -22,8 +22,17 @@ made in a browser, in Gazebo or on the wire, and named as such. Three figures
 this register published as measurements are **superseded** — they were measured
 in a frame that has since been proved not to be the frame they claimed. One
 theory this register carried, and one the repository's own configuration files
-asserted as fact, are **refuted**. Still uncommitted, still on
-`phase5-hardening`, still at base commit `bab8af6`.
+asserted as fact, are **refuted**.
+
+**Provenance, and it changed under this amendment.** Every entry below was
+written and verified against the **uncommitted** working tree on branch
+`phase5-hardening` at base commit `bab8af6`, which is what the `file:line`
+citations point into. Partway through the amendment the branch owner committed
+that tree as `30403a8` ("Phase 5 hardening: run the system, and record what
+running it found" — 134 files, +29,815 / -1,420), so those citations now point
+into committed code on `phase5-hardening` and are more stable than this document
+originally claimed. **Nothing here was committed by this register's own
+author.**
 
 **Read "Verification limits" at the bottom before quoting anything here as
 evidence.** The 2026-07-30 closures of D-01..D-06 and D-10 were written and
@@ -240,10 +249,10 @@ introduced three more of the same species: the collision window is narrower
 than the label it now guards, the battery gauge was freed from the label but
 never added to the collision plan, and the colour-blind-safe state
 abbreviation is still gated on the label having been placed — the exact
-coupling D-01 removed from the gauge. **All three are open and tracked as
-D-16.** They are not in this entry because they are new defects, not an
-incomplete fix of the old one: the FSM-state encoding D-01 was opened for is
-delivered.
+coupling D-01 removed from the gauge. **All three were tracked as D-16, and
+all three are now fixed — D-16 is closed.** They were not folded into this
+entry because they were new defects, not an incomplete fix of the old one: the
+FSM-state encoding D-01 was opened for is delivered.
 
 ---
 
@@ -451,7 +460,7 @@ is clean and `CI=true npx react-scripts build` compiles (85.12 kB gzipped,
 39 B smaller than before the deletion), which proves it compiles and nothing
 about how it draws.
 
-### Three of the review's findings were not repaired and have their own numbers
+### Three of the review's findings were not repaired and got their own numbers (all now closed)
 
 The two reviews raised nine findings between them. Two were repaired (the
 unreachable-gray documentation-and-pinning above, and the `ResourceGraph`
@@ -468,10 +477,16 @@ wrong picture on screen with no error anywhere — and are tracked separately:
 - **D-18** — the "verbatim pair" diverges on a non-finite cell mean: the JS
   renders the ramp floor, the Python raises inside the ROS publish timer.
 
-**D-02 stays "implemented, not demonstrated".** Nothing was rendered by the
-implementation, by either review, or by the repair. Whether the alpha band the
-shipped fleet actually produces — 0.451 to about 0.73 over a real survey — is
-legible against dark terrain is exactly the question none of this can answer.
+~~**D-02 stays "implemented, not demonstrated".**~~ **All three were fixed and
+closed on 2026-07-31, and the heatmap was rendered in Chrome** — see this
+entry's status block at the top. Nothing was rendered by the implementation, by
+either review, or by the repair; the browser came afterwards, and it immediately
+found a defect none of the three reviews had: the legend's labels collided into
+`unsure5 wt% shownconfident` (D-17). **The question this paragraph named is
+still unanswered**: whether the alpha band the shipped fleet actually produces —
+0.451 to about 0.73 over a real survey — is legible as a confidence gradient
+against dark terrain is a judgement nobody has recorded making, and the Chrome
+pass did not itemise it.
 
 ---
 
@@ -984,13 +999,24 @@ Demo 1 step 3 (`docs/PRD.md:895`) and SC-1, and it meant FR-ISRU-2's acceptance
 could not be demonstrated at all. Those are now unblocked **in code**; the demo
 itself has still not been run.
 
-**What "implemented, not demonstrated" costs here specifically.** The three
-defects above were all on the nominal path, all invisible to a green suite, and
-all found only because someone re-derived the chain by executing it. Two of them
-existed for a few hours; break 2 (D-11) existed for two phases. The chain from
-Gazebo's physics through the sim nodes, the HAL, the skills, DDS and the
-orchestrator has **never been run end to end**, and the only way to know whether
-a fourth defect of this shape is sitting in it is to run it.
+**What "implemented, not demonstrated" cost here specifically, and what running
+it then found.** The three defects above were all on the nominal path, all
+invisible to a green suite, and all found only because someone re-derived the
+chain by executing it. Two existed for a few hours; break 2 (D-11) existed for
+two phases. This paragraph used to end "the chain … has never been run end to
+end, and the only way to know whether a fourth defect of this shape is sitting
+in it is to run it."
+
+**It was run, and there were three more.** D-19: nothing on this chain could
+ever start, because the agent recharged after every task and `SelectSite` never
+resolved. D-23: nothing on it could ever finish, because the depot was on the
+far side of a 34° crater wall. D-27: the conservation alarm at the end of it
+fired on every healthy haul, below its own printing precision. **All three were
+invisible to the same green suite**, and none of them is a defect in the ledger
+code this entry describes — they are in the parameter wiring, the world file and
+a tolerance constant. That is what running a chain end to end buys, and it is
+the argument for item 4 of the disposition having been the right thing to worry
+about most.
 
 ---
 
@@ -1676,6 +1702,10 @@ than taken from the fixer's report:**
     ... same four, reversed order                 -> 542 passed, 1 skipped in 1.70s
 
     all five packages, one process                -> 604 passed, 1 skipped in 2.19s
+
+Those three figures are a **record of that moment**, not the current baseline.
+Re-measured on the evening of 2026-07-31 they are 826/1, 120/1 and 947/1; see
+Verification limits item 19, and note the two-package lane regression below.
 
 The single skip is the honest one (`selene_hal`'s Gazebo backend needs a real
 `rclpy`). These figures are **six higher** than the fixer's report records
@@ -2692,7 +2722,7 @@ displacement failure, or start the measurement from rest.
 
 ---
 
-## D-36 — the two-package test lane is red again, from the opposite direction to D-14 — OPEN
+## D-36 — the two-package test lane is red again, from the opposite direction to D-14 — FIXED 2026-07-31
 
 **Found 2026-07-31 (evening) by this register's owner, by re-running every lane
 the register documents instead of copying its own numbers forward.**
@@ -2720,10 +2750,32 @@ five packages on the path; so does the operator's Windows lane. **D-14's rule wa
 true**: a cross-package assertion needs a guard for the lanes that do not span
 those packages, or it converts a missing optional dependency into a red suite.
 
-**Not fixed** — this document's owner does not own that file. The fix is one line
-(`pytest.importorskip('selene_agent.navigator')` or a module-level skip) and it
-should be accompanied by a lane in CI that runs `selene_orchestrator/test` alone,
-since nothing currently does.
+**FIXED 2026-07-31**, immediately after this entry was written, by the operator
+rather than by this document's owner — the entry above stands as written because
+it is the record of how the defect was found.
+
+`test_terrain_guard.py:343`'s bare `from selene_agent.navigator import
+OccupancyGrid` is now `pytest.importorskip('selene_agent.navigator', reason=...)`,
+with the two-lane reasoning recorded in the test's own docstring. **Both halves
+were measured, and the second is the one that matters:**
+
+    gate lane        518 passed, 1 skipped   (was 1 failed, 518 passed)
+      SKIPPED [1] test_terrain_guard.py:358: cross-package agreement check;
+                  selene_agent is not on the gate lane PYTHONPATH (D-36).
+    cross-package    test_terrain_guard.py -> 51 passed, 0 skipped
+    full lanes       826 passed / 1 skipped, sim 120 passed / 1 skipped, flake8 clean
+
+A skip is only safe if some lane still runs the assertion. The cross-package lane
+does — 51 passed, no skip — so the orchestrator/agent box agreement is still
+checked, on the lane that can check it. Had the skip fired on both lanes this
+would have been a worse defect than the red one it replaced, which is exactly
+D-14's complaint about `importorskip` and why the counts above are recorded
+rather than asserted.
+
+**Still open, and inherited from this entry**: nothing in CI runs
+`selene_orchestrator/test` alone. `e2e-integration` declares that PYTHONPATH but
+names a single test file, so it would not have caught this. A lane that runs the
+whole orchestrator suite on the two-package path is still missing.
 
 ---
 
@@ -3281,6 +3333,9 @@ described as verified, measured, or observed.**
 
     This is the lane this register has called "THE GATE LANE" and quoted at 327
     passed. It fails on an unguarded cross-package import and it is **D-36**.
+    (**FIXED later the same day**; re-measured at 518 passed / 1 skipped. The
+    reading above is preserved as the measurement that found the defect —
+    D-36 records the fix and the counts that verify it.)
     The two skips are the declared ones (`selene_hal`'s Gazebo backend needs a
     real `rclpy`; one `selene_sim` case needs `selene_hal` on the path), and the
     five-package total exceeding the sum of the lanes by one pass is the same
@@ -3293,8 +3348,10 @@ described as verified, measured, or observed.**
     lattice arithmetic in D-37 (500/129 × 128 / 2 = 248.06201550387595), and all
     four hazard figures in D-37 (`exp(−24327/5040) = 0.008`; 3/λ = 15,120).
     Every `file:line` citation in this document was opened and read on this
-    pass, **against an uncommitted working tree** — they will drift if anyone
-    edits those files before this branch is committed.
+    pass, against the working tree at base commit `bab8af6`. That tree was
+    committed mid-amendment as `30403a8`, so they are now citations into
+    committed code — but they were verified before that commit existed, and
+    they will drift if anyone edits those files.
 
     **What the dashboard build and lint do and do not prove.** `eslint`,
     `react-scripts build` and the Jest suite say the bundle compiles and that the
@@ -3400,12 +3457,16 @@ What is missing:
    behind the same unclimbable wall D-23 moved the depot away from — no run has
    hit it and nothing detects it), plus D-34, D-35 and D-36.
 
-6. **Fix D-36 before anyone trusts a lane count.** `test_terrain_guard.py`
-   hard-imports `selene_agent` without a guard, so the two-package lane this
-   register documents at 327 passed now **fails**. Neither CI nor the operator's
-   Windows lane can see it, because both put every package on the path. D-14's
-   rule was "do not add a test lane without a cross-package lane"; its converse
-   is now also true, and it should be written down as such.
+6. ~~**Fix D-36 before anyone trusts a lane count.**~~ **DONE 2026-07-31** —
+   `test_terrain_guard.py`'s unguarded `selene_agent` import is now an
+   `importorskip`; the gate lane is 518 passed / 1 skipped and the cross-package
+   lane still RUNS the assertion (51 passed, no skip), which is the half that
+   makes the skip legitimate rather than a hiding place. See D-36.
+   **What remains from that entry**: nothing in CI runs `selene_orchestrator/test`
+   in full on the two-package path — `e2e-integration` declares that PYTHONPATH
+   but names one file, so it would not have caught this. D-14's rule was "do not
+   add a test lane without a cross-package lane"; its converse is now written
+   down in D-36, and the missing lane is still missing.
 
 7. **Run `colcon test` and `shellcheck`.** `colcon build` has run many times;
    `colcon test` never has, so the per-package test entry points are unexercised

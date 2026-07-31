@@ -103,7 +103,8 @@ Caveats a reader should know:
   traffic. The dashboard was opened in Chrome and D-01, D-02, D-03, D-04 and D-17 were
   confirmed rendering. The ISRU chain ran end to end (D-06). **D-11..D-18 are all closed.**
   **Nineteen new deviations (D-19..D-37) were opened on 2026-07-31**, eleven closed on live
-  evidence and **seven still open**: D-28, D-30, D-31, D-32, D-34, D-35, D-36 — plus **D-37,
+  evidence and **six still open**: D-28, D-30, D-31, D-32, D-34, D-35 (D-36 was fixed the
+  same evening it was opened) — plus **D-37,
   the ODE abort, whose cause is UNKNOWN.**
 - **Three deviations were mission-fatal and none of them was findable by reading tests.**
   D-19: `recharge_threshold` was declared by the orchestrator and read by nobody while the
@@ -216,22 +217,26 @@ Caveats a reader should know:
   # Everything, one process, either collection order
   PYTHONPATH="selene_orchestrator;selene_isru;selene_hal;selene_agent;selene_sim" \
     python -m pytest selene_orchestrator/test selene_isru/test selene_hal/test \
-                     selene_agent/test selene_sim/test -q                     # 947 passed, 1 skipped
+                     selene_agent/test selene_sim/test -q            # 947 passed, 1 skipped
 
   PYTHONPATH="selene_orchestrator;selene_isru;selene_hal;selene_agent" \
     python -m pytest selene_orchestrator/test selene_isru/test \
-                     selene_hal/test selene_agent/test -q                     # 826 passed, 1 skipped
-  python -m pytest selene_sim/test -q                                         # 120 passed, 1 skipped
-  cd selene_dashboard && CI=true npx react-scripts test --watchAll=false      # 39 passed, 2 suites
+                     selene_hal/test selene_agent/test -q            # 826 passed, 1 skipped
+  python -m pytest selene_sim/test -q                                # 120 passed, 1 skipped
+  cd selene_dashboard && CI=true npx react-scripts test --watchAll=false   # 39 passed
   ```
 
-  **One documented lane is currently RED — register D-36.**
-  `PYTHONPATH="selene_orchestrator;selene_isru" python -m pytest selene_orchestrator/test
-  selene_isru/test -q` gives **1 failed, 518 passed**:
-  `selene_orchestrator/test/test_terrain_guard.py:343` does a bare
-  `from selene_agent.navigator import OccupancyGrid` with no `importorskip`, so the lane fails
-  rather than skips when `selene_agent` is not on the path. Neither CI's `cross-package-tests`
-  job nor the four-package lane above can see it, because both put every package on the path.
+  The gate lane `PYTHONPATH="selene_orchestrator;selene_isru" python -m pytest
+  selene_orchestrator/test selene_isru/test -q` gives **518 passed, 1 skipped**. It was
+  **1 failed, 518 passed** until 2026-07-31 (register D-36):
+  `selene_orchestrator/test/test_terrain_guard.py` did a bare
+  `from selene_agent.navigator import OccupancyGrid` with no `importorskip`, so the lane failed
+  rather than skipped when `selene_agent` was not on the path. Neither CI's `cross-package-tests`
+  job nor the four-package lane above could see it, because both put every package on the path.
+  The one skip is that test, and **the cross-package lane still runs it** (51 passed, no skip) —
+  a skip is only safe while some lane still makes the assertion. **Still missing**: no CI job
+  runs `selene_orchestrator/test` in full on the two-package path, so nothing would catch a
+  recurrence.
 
   Three rules follow and all three are earned. **Do not "complete" the ROS-free stubs** in
   `selene_orchestrator/test/conftest.py` so another package's imports resolve against them —

@@ -339,8 +339,28 @@ def test_the_orchestrator_and_the_agent_refuse_the_same_box():
     The values are pinned across the four configuration files by
     ``selene_sim/test/test_world_extent_agrees.py``; this pins the two
     IMPLEMENTATIONS against each other on the same numbers.
+
+    D-36. This import used to be unguarded, and it made THE GATE LANE red --
+    ``PYTHONPATH="selene_orchestrator;selene_isru" pytest selene_orchestrator/test
+    selene_isru/test``, which is the lane CI's ``e2e-integration`` job declares
+    and the one this register calls the gate. ``selene_agent`` is not on that
+    path, so a cross-package agreement test cannot run there and must say so
+    rather than error. It DOES run on the cross-package lane, which is where the
+    agreement is actually checked.
+
+    This is D-14 from the opposite direction: that deviation was a stub leaking
+    ACROSS packages and aborting collection; this one is a test reaching across
+    packages on a lane that deliberately has only two. Both are invisible unless
+    some job runs the narrow lane and some other job runs the wide one -- CI now
+    does both (``e2e-integration`` and ``cross-package-tests``), which is what
+    makes this skip safe rather than a hiding place.
     """
-    from selene_agent.navigator import OccupancyGrid
+    navigator = pytest.importorskip(
+        'selene_agent.navigator',
+        reason='cross-package agreement check; selene_agent is not on the gate '
+               'lane PYTHONPATH (D-36). Runs on the cross-package lane.',
+    )
+    OccupancyGrid = navigator.OccupancyGrid
 
     grid = OccupancyGrid(
         width=int(2 * DEFAULT_TERRAIN_HALF_EXTENT_M),
