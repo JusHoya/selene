@@ -16,6 +16,25 @@ const COMMAND_LABELS = {
   send_to_location: 'Send to picked location',
 };
 
+// D-05: how many override records this panel shows. The list is now derived
+// from state.taskEvents, which the reducer keeps across robot selections and
+// across a page reload, so this is a display window rather than the entire
+// memory of what the operator did.
+const MAX_RECENT_ACTIONS = 5;
+
+// D-05: absolute time-of-day for a TaskEvent stamp.
+//
+// TaskEvent.stamp is the ORCHESTRATOR's wall clock. Rendering it as "12s ago"
+// would silently turn any clock skew between the orchestrator host and the
+// operator's browser into a fabricated elapsed time, so it is rendered
+// absolutely — wrong by the same skew, but not claiming to have measured
+// anything. formatRelativeTime below is still used for stateHistory, whose
+// timestamps this browser took itself.
+function formatClockTime(ms) {
+  if (!ms) return '--:--:--';
+  return new Date(ms).toLocaleTimeString();
+}
+
 function formatRelativeTime(timestamp) {
   const diff = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (diff < 60) return `${diff}s ago`;
@@ -35,9 +54,22 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
   const pickerResult = state?.pickerResult;
   const pickerMode = state?.pickerMode;
   const pickerRobotId = state?.pickerContext?.robotId;
+  const taskEvents = state?.taskEvents;
 
-  // Wave2-A4: Recent override action history (in-memory, last 5)
-  const [recentActions, setRecentActions] = useState([]);
+  // D-05: override history is no longer local component state.
+  //
+  // It used to be a five-entry useState, and App.jsx keys this component on
+  // robot_id (App.jsx:289, which stays — the battery rolling window and the
+  // pending-confirmation panel need it), so selecting another robot unmounted
+  // the component and destroyed the list. Every record of what the operator had
+  // done to that robot vanished on a click, and none of it survived a reload.
+  //
+  // The authoritative record now arrives in TaskQueueState.events and lives in
+  // the reducer, which is where it survives both. `pendingActions` below covers
+  // only the service round-trip window, before the orchestrator's own event
+  // comes back.
+  const [pendingActions, setPendingActions] = useState([]);
+  const nextLocalIdRef = useRef(0);
 
   // A-window-confirm: pending override awaiting in-app confirmation.
   // { command, target } | null
@@ -71,20 +103,11 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [robot?.battery_level]);
 
-  // Wave2-A4: Send override helper — records outcome to recentActions
-  const recordAction = (cmd, result, message) => {
-    setRecentActions((prev) => {
-      const next = [
-        ...prev,
-        {
-          time: new Date().toLocaleTimeString(),
-          cmd,
-          result,
-          message: message || '',
-        },
-      ];
-      return next.slice(-5);
-    });
+  // D-05: settle one optimistic entry with what the service call returned.
+  const settleLocalAction = (localId, result, message) => {
+    setPendingActions((prev) => prev.map((a) => (
+      a.localId === localId ? { ...a, result, message: message || '' } : a
+    )));
   };
 
   // A-window-confirm: actually send the override. The confirmation step lives
@@ -98,10 +121,45 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
   // pre-change observation; the fixed path has not itself been re-measured.
   const runOverride = async (command, target = { x: 0, y: 0, z: 0 }) => {
     if (!robot) return;
+
+    // D-05: the optimistic entry, and the seq floor that retires it.
+    //
+    // seqFloor is the highest TaskEvent seq we hold at the instant of the call.
+    // The orchestrator appends a TaskEvent for every operator command it
+    // handles — accepted or rejected — so the first operator event for this
+    // robot and this action with a HIGHER seq is this call coming back, and the
+    // optimistic row is dropped in favour of the authoritative one. seq is used
+    // rather than a timestamp because it needs no clock agreement between the
+    // two machines.
+    //
+    // Imprecise in exactly one window: if no snapshot has arrived yet the floor
+    // is -1, so an OLDER event for the same command, replayed out of the
+    // orchestrator's ring, can retire the row early. The authoritative row for
+    // the real command then arrives within one publish period anyway, so the
+    // cost is a row that stops saying "local" half a second early.
+    const localId = nextLocalIdRef.current + 1;
+    nextLocalIdRef.current = localId;
+    const held = taskEvents || [];
+    const seqFloor = held.length > 0 ? held[held.length - 1].seq : -1;
+    setPendingActions((prev) => [
+      ...prev,
+      {
+        localId,
+        seqFloor,
+        cmd: command,
+        time: new Date().toLocaleTimeString(),
+        result: 'sending',
+        message: '',
+      },
+    ].slice(-MAX_RECENT_ACTIONS));
+
     // A8: callService is null when rosbridge is disconnected — surface that as
-    // a visible failed action rather than doing nothing.
+    // a visible failed action rather than doing nothing. Note that this one is
+    // never reconciled away: the orchestrator never saw the command, so no
+    // TaskEvent will ever arrive for it, and the local record is the only
+    // record there is.
     if (!callService) {
-      recordAction(command, 'fail', 'rosbridge not connected');
+      settleLocalAction(localId, 'fail', 'rosbridge not connected');
       return;
     }
     try {
@@ -111,12 +169,14 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
         { robot_id: robot.robot_id, command, target },
       );
       if (result && result.success) {
-        recordAction(command, 'ok', result.message || '');
+        settleLocalAction(localId, 'ok', result.message || '');
       } else {
-        recordAction(command, 'fail', (result && result.message) || 'rejected by orchestrator');
+        settleLocalAction(
+          localId, 'fail', (result && result.message) || 'rejected by orchestrator',
+        );
       }
     } catch (err) {
-      recordAction(command, 'fail', err?.message || 'call failed');
+      settleLocalAction(localId, 'fail', err?.message || 'call failed');
     }
   };
 
@@ -158,6 +218,69 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
       setPendingOverride({ command: 'send_to_location', target: { x, y, z: 0 } });
     }
   }, [pickerResult, pickerMode, pickerRobotId, robotId, dispatch]);
+
+  // D-05: the authoritative override history for this robot, newest first.
+  //
+  // Derived, not stored — so it is identical whether the operator has been
+  // watching this robot for an hour or has just selected it, and whether or not
+  // the page has been reloaded since the command was issued. The orchestrator
+  // replays its whole event ring in every TaskQueueState snapshot, so a browser
+  // that loads mid-mission gets the recent overrides for free.
+  const operatorActions = useMemo(() => {
+    const events = taskEvents || [];
+    const rows = [];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (rows.length >= MAX_RECENT_ACTIONS) break;
+      const e = events[i];
+      if (e.kind !== 'operator' || e.robot_id !== robotId) continue;
+      rows.push({
+        key: `event-${e.seq}`,
+        time: formatClockTime(e.stamp_ms),
+        cmd: e.action,
+        // TaskEvent.accepted is the orchestrator's own verdict, including on
+        // commands it REJECTED — which the old local list could only record
+        // when the rejection came back through this component's own call.
+        result: e.accepted ? 'ok' : 'fail',
+        message: e.detail,
+        local: false,
+      });
+    }
+    return rows;
+  }, [taskEvents, robotId]);
+
+  // D-05: retire an optimistic entry once its authoritative event arrives.
+  useEffect(() => {
+    const events = taskEvents || [];
+    setPendingActions((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.filter((p) => !events.some(
+        (e) => e.kind === 'operator'
+          && e.robot_id === robotId
+          && e.action === p.cmd
+          && e.seq > p.seqFloor
+      ));
+      // Returning `prev` unchanged is what keeps this effect from looping: the
+      // state identity only changes when something was actually retired.
+      return next.length === prev.length ? prev : next;
+    });
+  }, [taskEvents, robotId]);
+
+  // Optimistic rows first (they are the newest by construction), then the
+  // authoritative ones.
+  const recentActions = useMemo(() => {
+    const local = pendingActions
+      .slice()
+      .reverse()
+      .map((a) => ({
+        key: `local-${a.localId}`,
+        time: a.time,
+        cmd: a.cmd,
+        result: a.result,
+        message: a.message,
+        local: true,
+      }));
+    return [...local, ...operatorActions].slice(0, MAX_RECENT_ACTIONS);
+  }, [pendingActions, operatorActions]);
 
   // Wave2-A4: Time-to-empty estimate from a 30s rolling window of battery samples.
   // Uses batteryTick so it recomputes on each new sample without us having to
@@ -204,6 +327,7 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
     pose,
     velocity,
     battery_level,
+    battery_capacity_wh,
     current_task_id,
     task_progress,
     capabilities,
@@ -284,6 +408,19 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
               <span className="robot-detail__battery-charging">
                 <span className="robot-detail__battery-charging-dot" />
                 Charging
+              </span>
+            )}
+            {/* D-06: the robot's own RCDL battery capacity, reported by the
+                agent on RobotState.battery_capacity_wh. Rendered only when
+                positive: 0 means the agent predates the field, which is
+                "unknown", not "a robot with no battery". This is the number
+                FleetMonitor now converts battery_level deltas to watt-hours
+                with, in place of a single hardcoded 50 Wh for every robot. */}
+            {typeof battery_capacity_wh === 'number'
+              && Number.isFinite(battery_capacity_wh)
+              && battery_capacity_wh > 0 && (
+              <span className="robot-detail__battery-capacity">
+                {battery_capacity_wh.toFixed(0)} Wh capacity
               </span>
             )}
             {/* Wave2-A4: Time-to-empty estimate (30s rolling window) */}
@@ -425,14 +562,24 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
           <div className="robot-detail__recent-actions">
             <div className="robot-detail__subsection-label">Recent Actions</div>
             <ul className="robot-detail__recent-actions-list">
-              {recentActions.slice().reverse().map((a, i) => (
+              {recentActions.map((a) => (
                 <li
-                  key={`${a.time}-${i}`}
+                  key={a.key}
                   className="robot-detail__recent-action"
                 >
                   <div className="robot-detail__recent-action-head">
                     <span className="robot-detail__recent-action-time">{a.time}</span>
-                    <span className="robot-detail__recent-action-cmd">{a.cmd}</span>
+                    <span className="robot-detail__recent-action-cmd">
+                      {a.cmd}
+                      {/* D-05: an entry this browser is still waiting on, or one
+                          the orchestrator never received. Marked so it is not
+                          read as part of the orchestrator's own record. */}
+                      {a.local && (
+                        <span className="robot-detail__recent-action-local">
+                          local
+                        </span>
+                      )}
+                    </span>
                     <span
                       className={`robot-detail__recent-action-result robot-detail__recent-action-result--${a.result}`}
                     >

@@ -1,6 +1,11 @@
 """Simulated extraction process for Excavator drill/heater.
 
 Computes extraction rate based on local ice concentration and drill power.
+
+Reads ``/{robot_id}/odom_world``, not ``/{robot_id}/odom``: the concentration
+field is placed in world metres by ``ice_deposits.yaml``, and Gazebo's raw
+odometry is dead-reckoned from each robot's spawn pose. See
+``selene_sim/selene_sim/world_frame.py`` and register D-08.
 """
 
 import math
@@ -10,6 +15,8 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32, Bool
 import yaml
 import os
+
+from selene_sim.world_frame import WORLD_ODOM_TOPIC
 
 
 class ExtractionNode(Node):
@@ -40,7 +47,7 @@ class ExtractionNode(Node):
         prefix = f'/{self.robot_id}'
 
         self.odom_sub = self.create_subscription(
-            Odometry, f'{prefix}/odom', self._odom_callback, 10)
+            Odometry, f'{prefix}/{WORLD_ODOM_TOPIC}', self._odom_callback, 10)
         self.drill_sub = self.create_subscription(
             Bool, f'{prefix}/actuators/drill_cmd', self._drill_callback, 10)
 
@@ -99,7 +106,18 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # GUARDED, because a launch-level shutdown gets there first. When the
+        # simulator dies, simulation.launch.py brings the whole system down and
+        # every node is SIGINT-ed; rclpy has already shut the context down by
+        # the time this runs, and calling it again raises
+        #   RCLError: failed to shutdown: rcl_shutdown already called
+        # out of `finally`, so the process exits 1 and the launch reports
+        # "process has died [exit code 1]". Eight of those buried the actual
+        # diagnosis in the 2026-07-31 smoke test. A clean teardown must not
+        # look like eight crashes, least of all on the one code path whose
+        # whole purpose is to be legible after a crash.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

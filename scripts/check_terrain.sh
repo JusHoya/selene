@@ -258,28 +258,56 @@ if [ -z "${WORLD_SDF:-}" ] || [ ! -f "$WORLD_SDF" ]; then
     echo "FAIL: cannot find lunar_psr.sdf; set WORLD_SDF." >&2
     exit 1
 fi
-DEPOT_Z=$(python3 - "$WORLD_SDF" <<'PYDEPOT'
+# X AND Y COME FROM THE SDF TOO, not only z. They used to be the literals
+# `-30 -100` on the `add` line below, which was the same staleness bug one field
+# over: on 2026-07-31 the depot moved to the crater floor at (-100,-150) because
+# the crater rim is 34-39 deg on every azimuth and no haul could climb out, and
+# a gate carrying the old XY would have gone on certifying an empty patch of
+# plain. Read all three, name the two markers, and the gate follows the world.
+MARKERS=$(python3 - "$WORLD_SDF" <<'PYDEPOT'
 import re
 import sys
 
 text = open(sys.argv[1]).read()
-# The <include> whose <name> is 'depot'; take that block's <pose> z.
+# Every <include> of a marker we care about, as "name x y z".
+wanted = ('depot', 'recharge_pad')
 for block in re.findall(r'<include>(.*?)</include>', text, re.S):
-    if re.search(r'<name>\s*depot\s*</name>', block):
-        pose = re.search(r'<pose>\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)', block)
-        if pose:
-            print(pose.group(3))
-            break
+    name = re.search(r'<name>\s*([\w]+)\s*</name>', block)
+    if not name or name.group(1) not in wanted:
+        continue
+    pose = re.search(
+        r'<pose>\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)', block)
+    if pose:
+        print(name.group(1), pose.group(1), pose.group(2), pose.group(3))
 PYDEPOT
 )
-if [ -z "$DEPOT_Z" ]; then
-    echo "FAIL: could not read the depot marker's pose z from $WORLD_SDF" >&2
+if [ -z "$MARKERS" ]; then
+    echo "FAIL: could not read a marker pose from $WORLD_SDF" >&2
     exit 1
 fi
-add depot        -30 -100 "$DEPOT_Z"
+case "$MARKERS" in
+    *depot*) ;;
+    *) echo "FAIL: no <include> named 'depot' in $WORLD_SDF" >&2; exit 1 ;;
+esac
+while read -r m_name m_x m_y m_z; do
+    [ -n "$m_name" ] || continue
+    add "$m_name" "$m_x" "$m_y" "$m_z"
+done <<EOF
+$MARKERS
+EOF
 # PSR centre, and two references well OUTSIDE the 60 m radius. Probes at exactly
 # r=60 sit on the rim and read as crater floor, which makes the depth test lie.
-add psr_centre  -100 -150 "$SURVEY"
+#
+# THE CENTRE PROBE IS CONDITIONAL, and that is not fussiness. Every probe is a
+# real body dropped at its coordinate; two probes at ONE coordinate land on each
+# other and both readings are then a statement about the other probe. Since
+# 2026-07-31 the depot marker sits on the crater floor at exactly (-100,-150),
+# so add the survey probe only if the marker is somewhere else, and let the
+# depth verdict below fall back to the depot's own reading when it is not.
+case "$MARKERS" in
+    *"depot -100 -150"*) ;;
+    *) add psr_centre  -100 -150 "$SURVEY" ;;
+esac
 add plain_north -100  -20 "$SURVEY"
 add plain_east    10 -150 "$SURVEY"
 # The four ice deposits (ice_deposits.yaml) — coordinates, not placed objects
@@ -661,7 +689,13 @@ for idx, spec in enumerate(points, start=1):
 # The PSR must be a depression relative to its own rim, and the mirror control
 # must NOT be one. This catches a re-introduced row-order flip.
 print()
+# Since 2026-07-31 the depot marker occupies (-100,-150) and the dedicated
+# survey probe is suppressed to keep two bodies off one coordinate (see the
+# `add psr_centre` block above). Either probe measures the same surface, so
+# take whichever one the world put there.
 centre = surfaces.get('psr_centre')
+if centre is None:
+    centre = surfaces.get('depot')
 rim = [surfaces[k] for k in ('plain_north', 'plain_east') if k in surfaces]
 mirror = surfaces.get('mirror_check')
 if centre is not None and centre == centre and rim and all(r == r for r in rim):

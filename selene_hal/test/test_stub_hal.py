@@ -46,3 +46,34 @@ def test_stub_range_estimate():
     battery = hal.get_battery()
     range_m = battery.estimate_range_m(0.5)
     assert range_m > 0
+
+
+def test_stub_transfer_actuator_records_the_authorised_bound():
+    """The bound must survive the whole call chain, not just the ABC signature.
+
+    ``TaskAssignment.quantity_kg`` is the mass the orchestrator's ledger says a
+    site actually holds. It reaches the simulation only if the skill passes it
+    to ``trigger_load``, so recording it here is what lets a skill test assert
+    the number arrived rather than assert that a method exists.
+    """
+    hal = create_hal(_get_config_path('hauler.yaml'), 'hauler_01', backend='stub')
+    bin_actuator = hal.get_actuator('transport_bin')
+
+    assert bin_actuator.load_call_count == 0
+    assert bin_actuator.last_max_kg == -1.0
+
+    bin_actuator.trigger_load(max_kg=12.0)
+
+    assert bin_actuator.load_call_count == 1
+    assert bin_actuator.last_max_kg == 12.0
+
+
+def test_stub_transfer_actuator_defaults_to_unbounded():
+    """A caller that passes nothing still means "fill to capacity"."""
+    hal = create_hal(_get_config_path('hauler.yaml'), 'hauler_01', backend='stub')
+    bin_actuator = hal.get_actuator('transport_bin')
+
+    bin_actuator.trigger_load()
+
+    assert bin_actuator.load_call_count == 1
+    assert bin_actuator.last_max_kg < 0.0

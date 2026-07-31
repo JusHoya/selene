@@ -2,6 +2,17 @@
 
 Reads ice deposit ground truth, computes concentration at robot position,
 adds Gaussian noise, and publishes scalar readings.
+
+THE POSITION IS WORLD, AND THAT IS THE WHOLE POINT OF THIS SENSOR. The deposits
+in ``ice_deposits.yaml`` are placed in world metres, so evaluating the field at
+anything else samples the wrong ground. Until 2026-07-31 this node subscribed to
+``/{robot_id}/odom``, which Gazebo dead-reckons from each robot's spawn pose,
+so it evaluated the ice field at a coordinate the robot was not at and stamped
+that coordinate onto ``ResourceMapUpdate.location``. The map was internally
+consistent -- the same wrong coordinate was both the sample point and the map
+index -- which is exactly why it looked right (register D-08). It now reads
+``/{robot_id}/odom_world`` from ``world_odometry_node``, the single place the
+spawn SE(2) is applied.
 """
 
 import math
@@ -12,6 +23,8 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32
 import yaml
 import os
+
+from selene_sim.world_frame import WORLD_ODOM_TOPIC
 
 
 class NeutronSpectrometerNode(Node):
@@ -49,9 +62,9 @@ class NeutronSpectrometerNode(Node):
 
         prefix = f'/{self.robot_id}'
 
-        # Subscribe to odometry
+        # World-referenced pose, not raw /odom. See the module docstring.
         self.odom_sub = self.create_subscription(
-            Odometry, f'{prefix}/odom', self._odom_callback, 10)
+            Odometry, f'{prefix}/{WORLD_ODOM_TOPIC}', self._odom_callback, 10)
 
         # Publishers
         self.reading_pub = self.create_publisher(
@@ -120,7 +133,18 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # GUARDED, because a launch-level shutdown gets there first. When the
+        # simulator dies, simulation.launch.py brings the whole system down and
+        # every node is SIGINT-ed; rclpy has already shut the context down by
+        # the time this runs, and calling it again raises
+        #   RCLError: failed to shutdown: rcl_shutdown already called
+        # out of `finally`, so the process exits 1 and the launch reports
+        # "process has died [exit code 1]". Eight of those buried the actual
+        # diagnosis in the 2026-07-31 smoke test. A clean teardown must not
+        # look like eight crashes, least of all on the one code path whose
+        # whole purpose is to be legible after a crash.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

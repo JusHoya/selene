@@ -211,9 +211,13 @@ class TestOverrideRobotHandler:
         assert out.success is True
         client.call_async.assert_called_once()
         assert client.call_async.call_args[0][0].command == 'cancel_task'
-        # The stranded task is released back to the queue for re-auction.
+        # The stranded task rests in INTERRUPTED, which get_next_ready
+        # re-auctions from directly (REQUEUEABLE_STATUSES). Before D-03 this
+        # was immediately overwritten with PENDING, which is what made a
+        # cancelled task indistinguishable from a fresh queue entry.
         task = task_queue.get_task('task_err')
-        assert task.status == TaskStatus.PENDING
+        assert task.status == TaskStatus.INTERRUPTED
+        assert task.status_reason == 'operator_cancel_task'
         assert task.progress_metadata == {'reason': 'operator_cancel_task'}
 
     def test_override_robot_offline_rejected(self, task_queue, fleet_monitor,
@@ -266,11 +270,14 @@ class TestOverrideRobotHandler:
         out = override_robot_logic(ctx, req, resp)
 
         assert out.success is True
-        # Task was interrupted + re-PENDING so the auction loop can
-        # re-auction it after the robot becomes available.
+        # Task rests in INTERRUPTED and the auction loop re-dispatches it from
+        # there once a robot is available (D-03: INTERRUPTED is a resting
+        # status and is in REQUEUEABLE_STATUSES).
         task = task_queue.get_task('task_42')
-        assert task.status == TaskStatus.PENDING
+        assert task.status == TaskStatus.INTERRUPTED
+        assert task.status_reason == 'operator_cancel_task'
         assert task.progress_metadata == {'reason': 'operator_cancel_task'}
+        assert task.assigned_robot == ''
 
         # Agent client was called with the right command + monotonic seq.
         client.call_async.assert_called_once()
@@ -347,7 +354,8 @@ class TestOverrideRobotHandler:
 
         assert out.success is True
         task = task_queue.get_task('task_7')
-        assert task.status == TaskStatus.PENDING
+        assert task.status == TaskStatus.INTERRUPTED
+        assert task.status_reason == 'operator_force_recharge'
         assert task.progress_metadata == {'reason': 'operator_force_recharge'}
         client.call_async.assert_called_once()
         cmd_req = client.call_async.call_args[0][0]

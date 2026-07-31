@@ -26,12 +26,38 @@ class CellState(IntEnum):
     UNKNOWN = 2
 
 
+#: Default metres a goal must keep clear of the grid edge. The grid spans the
+#: terrain exactly (500 x 500 m at 1.0 m from -250, -250 --
+#: ``selene_agent/config/nav_params.yaml``), so its edge IS the heightfield edge
+#: and a goal on the last cell is a goal at the cliff. Overridden by
+#: ``navigation.terrain_margin_m``; the derivation of the 10.0 m is in
+#: ``selene_sim/config/world_params.yaml`` beside ``safety_margin_m``, and
+#: ``selene_sim/test/test_world_extent_agrees.py`` fails the build if the two
+#: files stop agreeing.
+DEFAULT_TERRAIN_MARGIN_M: float = 10.0
+
+
 class OccupancyGrid:
     """2-D grid map used for path planning.
 
     Each cell stores an occupancy state and an optional traversal cost
     (e.g. slope penalty).  World coordinates are continuous (meters);
     grid coordinates are integer cell indices.
+
+    IT ALSO CARRIES THE TERRAIN SAFE AREA. The grid's extent and the simulated
+    terrain's extent are the same square, so this class already knows where the
+    ground stops; ``terrain_margin`` is how far inside that edge a goal must
+    stay. Past the edge there is no collision surface at all -- a robot falls,
+    and the falling body's AABB eventually leaves the integer range ODE's
+    broadphase converts it into, which aborts the simulator (register D-06's
+    successor; see ``selene_sim/config/world_params.yaml``).
+
+    Before 2026-07-31 this bound existed but was applied in the WRONG FRAME:
+    every pose reaching the planner was dead-reckoned ``/odom``, so a goal that
+    passed ``is_in_bounds`` in odom metres could be 200 m off the map in world
+    metres. The frame fix (``selene_sim/selene_sim/world_frame.py``) is what
+    makes this bound mean anything; the margin is what makes it survive
+    ``PathFollower``'s 1.0 m arrival tolerance.
     """
 
     def __init__(
@@ -41,12 +67,23 @@ class OccupancyGrid:
         resolution: float = 1.0,
         origin_x: float = -250.0,
         origin_y: float = -250.0,
+        # DEFAULTS TO ZERO, and ``from_config`` defaults to
+        # DEFAULT_TERRAIN_MARGIN_M instead. The margin is a property of the
+        # DEPLOYMENT — how much of a real heightfield's edge to stay off — and
+        # this constructor is a bare geometric object that unit tests build at
+        # 20 x 20 m, where a 10 m inset leaves no admissible goal at all. Zero
+        # is not "unguarded": the goal is still bounded by the grid extent,
+        # which in the shipped configuration IS the terrain extent. Production
+        # never reaches this default; every agent builds its grid through
+        # ``from_config`` from ``selene_agent/config/nav_params.yaml``.
+        terrain_margin: float = 0.0,
     ):
         self._width = width
         self._height = height
         self._resolution = resolution
         self._origin_x = origin_x
         self._origin_y = origin_y
+        self._terrain_margin = max(0.0, float(terrain_margin))
         self._grid = np.zeros((height, width), dtype=np.int8)
         self._cost_grid = np.zeros((height, width), dtype=np.float32)
 
@@ -68,6 +105,32 @@ class OccupancyGrid:
 
     def is_in_bounds(self, gx: int, gy: int) -> bool:
         return 0 <= gx < self._width and 0 <= gy < self._height
+
+    # -- Terrain safe area ----------------------------------------------------
+
+    def terrain_safe_area(self) -> tuple[float, float, float, float]:
+        """``(x_min, x_max, y_min, y_max)`` in world metres, margin applied."""
+        m = self._terrain_margin
+        return (
+            self._origin_x + m,
+            self._origin_x + self._width * self._resolution - m,
+            self._origin_y + m,
+            self._origin_y + self._height * self._resolution - m,
+        )
+
+    def is_on_terrain(self, wx: float, wy: float) -> bool:
+        """True when a world point is safely inside the terrain footprint.
+
+        A non-finite coordinate is OUTSIDE, and checked explicitly rather than
+        left to fall out of the comparisons: NaN compares false against
+        everything, so the right answer would have been reached by accident, and
+        a NaN target is precisely what produces the unbounded collision AABB
+        this guard exists to prevent.
+        """
+        if not (math.isfinite(wx) and math.isfinite(wy)):
+            return False
+        x_min, x_max, y_min, y_max = self.terrain_safe_area()
+        return x_min <= wx <= x_max and y_min <= wy <= y_max
 
     def get_cell(self, gx: int, gy: int) -> CellState:
         if not self.is_in_bounds(gx, gy):
@@ -125,6 +188,8 @@ class OccupancyGrid:
             resolution=float(nav.get("grid_resolution", 1.0)),
             origin_x=float(nav.get("origin_x", -250.0)),
             origin_y=float(nav.get("origin_y", -250.0)),
+            terrain_margin=float(
+                nav.get("terrain_margin_m", DEFAULT_TERRAIN_MARGIN_M)),
         )
         inflation = float(nav.get("obstacle_inflation_radius", 0.5))
 
@@ -202,6 +267,30 @@ class AStarPlanner:
             return PlanResult([], 0.0, False, "start out of bounds")
         if not grid.is_in_bounds(gx, gy):
             return PlanResult([], 0.0, False, "goal out of bounds")
+
+        # THE TERRAIN GUARD, and it sits here because this is the single choke
+        # point every commanded motion passes through: Navigator.plan_to() calls
+        # it for every skill, for the recharge path and for an operator
+        # send_to_location. Refusing rather than clamping, because a plan the
+        # caller did not ask for is worse than a named failure the FSM already
+        # knows how to handle -- plan_to returns PlanResult.success False and
+        # the agent retries or fails the task, with the reason in the log.
+        #
+        # It is a SECOND line of defence: the orchestrator refuses an
+        # out-of-terrain target when the operator injects it, where there is a
+        # human to tell. This one catches everything else -- a stale target, a
+        # future planner, a NaN -- because past the terrain edge there is no
+        # collision surface and the resulting fall aborts the whole simulator,
+        # not just the task.
+        if not grid.is_on_terrain(*goal_xy):
+            x_min, x_max, y_min, y_max = grid.terrain_safe_area()
+            return PlanResult(
+                [], 0.0, False,
+                f"goal ({goal_xy[0]:.1f}, {goal_xy[1]:.1f}) is outside the "
+                f"terrain safe area x [{x_min:.1f}, {x_max:.1f}] "
+                f"y [{y_min:.1f}, {y_max:.1f}]; driving there would take the "
+                f"robot off the heightfield",
+            )
         if grid.get_cell(sx, sy) == CellState.OCCUPIED:
             return PlanResult([], 0.0, False, "start is occupied")
         if grid.get_cell(gx, gy) == CellState.OCCUPIED:

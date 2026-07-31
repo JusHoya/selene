@@ -21,16 +21,39 @@
   color: var(--text-secondary);
 }
 
-.resource-legend__bar-container {
+/* D-17: the two 10px bars this replaces are gone, not restyled. They drew a
+   pure concentration ramp at certainty 1.0 and a certainty ramp at one fixed
+   concentration; neither was a colour law the map applies. `__swatch` is the
+   two-dimensional version — concentration across, certainty up — and the row
+   exists to hang the numeric certainty end labels beside it. */
+.resource-legend__swatch-row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 6px;
 }
 
-.resource-legend__bar {
+/* The certainty axis labels. justify-content: space-between puts them at the
+   two ends of the swatch's own height, so they stay aligned with the axis
+   whatever SWATCH_HEIGHT_PX is set to in the component. */
+.resource-legend__yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-muted);
+  min-width: 22px;
+}
+
+.resource-legend__swatch {
   flex: 1;
-  height: 10px;
   border-radius: 3px;
+  /* The border matters more than it did on the old bars: the bottom of the
+     swatch composites to within a few units of the backdrop by design (see
+     LEGEND_BACKDROP_RGB in ResourceLegend.jsx), so without an outline its
+     extent would be invisible exactly where its content is. */
   border: 1px solid var(--border);
 }
 
@@ -40,6 +63,31 @@
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-muted);
+}
+
+/* When the tick labels are placed in a swatch-row (so they inherit the
+   certainty-label gutter), they have to take the swatch's share of the row. */
+.resource-legend__swatch-row .resource-legend__labels {
+  flex: 1;
+}
+
+/* D-02: provenance and liveness of the posterior, plus the rejected-snapshot
+   count. Muted because it is reference information, not an alert — except
+   __warn, which is a real fault: App.jsx only increments `dropped` when a
+   ResourceMap arrives with parallel arrays of unequal length, which
+   ResourceMap.msg:74 requires a consumer to reject. */
+.resource-legend__source {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.resource-legend__warn {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: #ffc107;
+  letter-spacing: 0.02em;
 }
 
 .resource-legend__toggle {

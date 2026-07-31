@@ -28,9 +28,12 @@ sensors:
     frame: bin_link
     capacity_kg: 50
     power_draw: 0.5
+  # World-referenced pose, not Gazebo's raw dead-reckoned /odom. See the long
+  # note on the same entry in scout.yaml, selene_sim/world_frame.py, and
+  # register D-08.
   - name: odometry
     type: odometry
-    topic: odom
+    topic: odom_world
     frame: base_link
     update_rate: 20
     power_draw: 0

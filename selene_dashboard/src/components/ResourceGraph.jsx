@@ -38,10 +38,42 @@ function nodeRadius(concentration) {
   return MIN_NODE_RADIUS + t * (MAX_NODE_RADIUS - MIN_NODE_RADIUS);
 }
 
-/** Map sensor_uncertainty (0–1) to alpha (inverted: low uncertainty = high alpha) */
-function uncertaintyAlpha(uncertainty) {
-  return Math.max(0.15, Math.min(1.0, 1.0 - uncertainty * 0.8));
-}
+// Opacity of a reading node — a CONSTANT, deliberately, as of 2026-07-31.
+//
+// WHAT WAS HERE:
+//     /** Map sensor_uncertainty (0–1) to alpha */
+//     Math.max(0.15, Math.min(1.0, 1.0 - uncertainty * 0.8))
+// and it had both of D-02's defects, in the view one header click from the
+// fleet map, untouched while D-02 was closed against FleetMap.
+//
+// 1. THE AXIS WAS INERT. `sensor_uncertainty` arrives from
+//    ResourceMapUpdate (App.jsx:154). ProspectSkill averages the sigmas its
+//    HAL sensor reports (prospect.py:136-143) and agent_node drops any
+//    reading whose sigma is non-finite or <= 0 (agent_node.py:997-1005), so
+//    what reaches this function is the RCDL's noise_stddev — and
+//    `noise_stddev: 0.5` in selene_hal/config/scout.yaml:16 is the ONLY one
+//    declared on a scalar_field sensor anywhere in the tree. Every node
+//    therefore drew at 1 - 0.5*0.8 = 0.6, forever. That is exactly the
+//    "opacity axis carries no information" defect D-02 was opened for.
+// 2. THE UNITS WERE WRONG. The docstring called the input a 0–1 fraction; it
+//    is a standard deviation in wt%, unbounded above. A fleet with
+//    `noise_stddev: 2.0` would have clamped every node to alpha 0.15 and made
+//    the whole graph nearly invisible — the same fraction-vs-unit confusion
+//    as D-06 break 1 (hopper kilograms published into a 0–1 field).
+//
+// REMOVED RATHER THAN REPOINTED AT THE POSTERIOR. This view is deliberately
+// the per-READING picture: individual samples, their spatial proximity and
+// their agreement. The fused posterior — where a real per-cell confidence
+// exists — is the fleet map's raster (D-02), and pulling state.resourceMap in
+// here to look each reading up would make this a second, worse heatmap. A
+// raw reading carries no confidence to encode, so the honest thing is not to
+// pretend there is an axis.
+//
+// 0.6 is EXACTLY what the old expression produced under the shipped RCDL, so
+// nothing on this screen changes today. If a fleet ever ships scouts with
+// differing noise_stddev, restore a modulation in the correct units (sigma in
+// wt%, not a fraction) rather than reinstating the line above.
+const NODE_ALPHA = 0.6;
 
 /** Euclidean distance between two world-space points */
 function worldDist(a, b) {
@@ -196,7 +228,7 @@ function drawNodes(ctx, nodes, time, offsetX, offsetY, scale, hoveredIdx, select
     const x = (node.x + offsetX) * scale;
     const y = (node.y + offsetY) * scale;
     const r = nodeRadius(reading.ice_concentration) * scale;
-    const alpha = uncertaintyAlpha(reading.sensor_uncertainty);
+    const alpha = NODE_ALPHA;
     const isHovered = idx === hoveredIdx;
     const isSelected = idx === selectedIdx;
     const isHighConcentration = reading.ice_concentration > 5;
@@ -690,9 +722,15 @@ function ResourceGraph({ readings, onClose }) {
             </span>
           </div>
           <div className="resource-graph__tooltip-row">
-            <span className="resource-graph__tooltip-label">Uncertainty</span>
+            {/* A sigma in wt%, not a percentage. This read
+                `(uncertainty * 100).toFixed(0)}%` and showed the shipped
+                scout's 0.5 wt% noise floor as "50%", which an operator would
+                read as a half-scale error bar on a 0-10 wt% quantity rather
+                than the +/-0.5 wt% it is. Same unit confusion as the alpha
+                axis this file used to drive off the same field. */}
+            <span className="resource-graph__tooltip-label">Sensor sigma</span>
             <span className="resource-graph__tooltip-value">
-              {(tooltip.uncertainty * 100).toFixed(0)}%
+              &plusmn;{tooltip.uncertainty.toFixed(2)} wt%
             </span>
           </div>
           <div className="resource-graph__tooltip-row">

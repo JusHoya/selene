@@ -58,9 +58,34 @@ spawn_robot() {
     ros2 run ros_gz_bridge parameter_bridge \
         /model/${ROBOT_ID}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist \
         /model/${ROBOT_ID}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry \
+        /model/${ROBOT_ID}/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V \
         --ros-args \
         -r /model/${ROBOT_ID}/cmd_vel:=/${ROBOT_ID}/cmd_vel \
-        -r /model/${ROBOT_ID}/odometry:=/${ROBOT_ID}/odom &
+        -r /model/${ROBOT_ID}/odometry:=/${ROBOT_ID}/odom \
+        -r /model/${ROBOT_ID}/pose:=/${ROBOT_ID}/pose_truth &
+
+    # /${ROBOT_ID}/pose_truth is the model's TRUE world pose, published by the
+    # PosePublisher block in models/<type>/model.sdf. world_odometry_node
+    # publishes it as /${ROBOT_ID}/odom_world when pose_source is `localisation`
+    # (the default), and compares it against the dead-reckoned estimate either
+    # way. Without the bridge entry that node runs degraded and raises a
+    # CRITICAL FleetAlert about it once a minute — which is the intended
+    # behaviour, not a reason to silence the alert.
+    #
+    # THE FRAME CONVERSION. Without this node nothing publishes
+    # /${ROBOT_ID}/odom_world, which is the topic every RCDL now declares for
+    # the odometry sensor and the topic the four sim nodes below subscribe to —
+    # the agent would wait in IDLE for odometry that never arrives, and the
+    # battery and the spectrometer would sample forever at (0, 0).
+    #
+    # spawn_yaw is 0 here because THIS SCRIPT SPAWNS WITH NO YAW (the create
+    # call above sets position only), unlike simulation.launch.py which takes
+    # the full pose from spawn_positions.yaml. The transform must describe the
+    # placement that actually happened, so passing -2.33 "to match the config"
+    # would be exactly wrong. spawn_z is likewise the literal 3 used above.
+    ros2 run selene_sim world_odometry_node --ros-args \
+        -p robot_id:=$ROBOT_ID \
+        -p spawn_x:=$X -p spawn_y:=$Y -p spawn_z:=3.0 -p spawn_yaw:=0.0 &
 
     ros2 run selene_sim battery_node --ros-args \
         -p robot_id:=$ROBOT_ID -p robot_type:=$ROBOT_TYPE \
@@ -76,18 +101,39 @@ spawn_robot() {
         ros2 run selene_sim extraction_node --ros-args \
             -p robot_id:=$ROBOT_ID \
             -p ice_config_file:=$P/selene_sim/config/ice_deposits.yaml &
+        # rcdl_path is REQUIRED by hopper_node: it reads capacity_kg and
+        # transfer_rate out of the same RCDL the agent's HAL is built from, so
+        # the fraction the node publishes and the kilograms the HAL derives
+        # cannot disagree (deviation D-06). Without it the node raises
+        # ValueError at construction and the excavator's fill sensor never
+        # publishes -- the same silent failure class D-06 is about.
+        # simulation.launch.py resolves the same file via FindPackageShare;
+        # this hand-rolled script uses the $P/selene_hal/config/ form that
+        # start_agent already uses at :95.
         ros2 run selene_sim hopper_node --ros-args \
             -p robot_id:=$ROBOT_ID \
-            -p ice_config_file:=$P/selene_sim/config/ice_deposits.yaml &
+            -p ice_config_file:=$P/selene_sim/config/ice_deposits.yaml \
+            -p rcdl_path:=$P/selene_hal/config/excavator.yaml &
     fi
 
     if [ "$ROBOT_TYPE" = "hauler" ]; then
+        # rcdl_path is REQUIRED by bin_load_node -- see the hopper_node note.
         ros2 run selene_sim bin_load_node --ros-args \
-            -p robot_id:=$ROBOT_ID &
+            -p robot_id:=$ROBOT_ID \
+            -p rcdl_path:=$P/selene_hal/config/hauler.yaml &
     fi
 }
 
 # Helper: start an agent node
+#
+# BID WEIGHTS ARE NOT SET HERE, DELIBERATELY (deviation D-13). `ros2 run` with
+# no override leaves agent_node.py:114-116's declared defaults in place, which
+# are the same three numbers selene_agent/launch/agent.launch.py now passes.
+# Restating them here would create a second copy to keep in step with the first
+# — and the whole of D-13 is a number written in a place that did not feed the
+# code that reads it. To tune bidding under this script, add
+# `-p bid_weight_distance:=<x>` below; the deployment knob for the launch path
+# is agent.launch.py.
 start_agent() {
     local ROBOT_ID=$1 ROBOT_TYPE=$2 RCDL=$3 ORCH=$4
     ros2 run selene_agent agent_node --ros-args \

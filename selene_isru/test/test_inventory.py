@@ -156,3 +156,183 @@ def test_mission_progress():
     assert progress["extracted"] == 20.0
     assert progress["in_transit"] == 10.0
     assert progress["deposited"] == 5.0
+
+
+# --- D-06: at_site, the overdraw check, and what conservation now means ---
+
+
+def test_material_sits_at_the_site_until_it_is_loaded():
+    """The term the shipped check_conservation() omitted entirely.
+
+    ``record_extraction``'s own docstring says material stays at the site until
+    ``record_load``, but the invariant asserted ``extracted == in_transit +
+    deposited`` -- false the moment an excavator ran ahead of a hauler, which
+    is the normal state of the pipeline.
+    """
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 19.0)
+
+    assert inv.get_total_at_site() == 19.0
+    assert inv.get_site_available("s1") == 19.0
+    assert inv.get_total_in_transit() == 0.0
+    assert inv.check_conservation(), inv.get_mission_progress()
+
+    inv.record_load("hauler_01", "s1", 19.0)
+    assert inv.get_total_at_site() == 0.0
+    assert inv.get_site_available("s1") == 0.0
+    assert inv.get_total_in_transit() == 19.0
+    assert inv.check_conservation()
+
+
+def test_record_load_raises_on_an_unknown_site():
+    """Matching record_extraction. Crediting a load to a site nobody declared
+    opens a bucket the identity knows nothing about, and it then holds
+    trivially again -- the precise failure this class shipped with."""
+    inv = MaterialInventory()
+    with pytest.raises(KeyError):
+        inv.record_load("hauler_01", "nonexistent", 5.0)
+    with pytest.raises(KeyError):
+        inv.get_site_available("nonexistent")
+
+
+def test_record_load_clamps_to_the_site_balance_and_returns_it():
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+
+    accepted = inv.record_load("hauler_01", "s1", 25.0)
+    assert accepted == 10.0
+    assert inv.get_robot_cargo("hauler_01") == 10.0
+    assert inv.get_total_at_site() == 0.0
+
+
+def test_an_overdraw_is_banked_as_unaccounted_not_created():
+    """The real cross-instrument check: the excavator's hopper sensor and the
+    hauler's load cell disagree about the same material. FR-ISRU-2's
+    acceptance is exactly a statement that this stays zero."""
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+    inv.record_load("hauler_01", "s1", 25.0)
+
+    assert inv.get_unaccounted_kg() == 15.0
+    assert inv.check_conservation() is False
+    assert inv.get_mission_progress()["unaccounted"] == 15.0
+
+
+def test_conservation_identity_still_closes_under_an_overdraw():
+    """Only the unaccounted clause fails. The identity closes structurally --
+    which is precisely why it is not the interesting half."""
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+    inv.record_load("hauler_01", "s1", 25.0)
+
+    p = inv.get_mission_progress()
+    assert p["extracted"] == pytest.approx(
+        p["at_site"] + p["in_transit"] + p["deposited"])
+
+
+def test_conservation_tolerates_a_sub_tolerance_overdraw():
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+    inv.record_load("hauler_01", "s1", 10.005)
+    assert inv.get_unaccounted_kg() == pytest.approx(0.005)
+    assert inv.check_conservation() is True
+
+
+def test_at_site_totals_across_several_sites():
+    inv = MaterialInventory()
+    inv.register_site("alpha", (0.0, 0.0), estimated_kg=50.0)
+    inv.register_site("beta", (100.0, 0.0), estimated_kg=200.0)
+    inv.record_extraction("alpha", "excavator_01", 12.0)
+    inv.record_extraction("beta", "excavator_02", 8.0)
+    inv.record_load("hauler_01", "alpha", 5.0)
+
+    assert inv.get_site_available("alpha") == 7.0
+    assert inv.get_site_available("beta") == 8.0
+    assert inv.get_total_at_site() == 15.0
+    assert inv.check_conservation()
+
+
+def test_a_negative_load_is_ignored_rather_than_crediting_backwards():
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+    assert inv.record_load("hauler_01", "s1", -5.0) == 0.0
+    assert inv.get_robot_cargo("hauler_01") == 0.0
+    assert inv.get_unaccounted_kg() == 0.0
+
+
+# ------------------------------------------------------- the overdraw tolerance
+
+def test_a_float32_sized_overdraw_is_credited_not_banked():
+    """THE 2026-07-31 NUMBER, reproduced.
+
+    That run's hauler reported loading 1.0109e-4 kg more than the excavator
+    said it had extracted -- 53 float32 ulps at 19 kg, which is what two
+    instruments agreeing perfectly look like after both readings have crossed
+    the wire as float32 and been multiplied by a capacity. With no tolerance the
+    ledger banked all of it, so ``unaccounted_kg`` was non-zero on a haul in
+    which nothing went wrong, and the WARNING it raised printed
+    "0.00 kg is unaccounted" -- an alert firing below its own precision.
+    """
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 19.01289939880371)
+
+    accepted = inv.record_load("hauler_01", "s1", 19.01300048828125,
+                               tolerance_kg=0.001)
+
+    assert accepted == pytest.approx(19.01300048828125, abs=1e-12)
+    assert inv.get_unaccounted_kg() == 0.0
+    assert inv.check_conservation()
+
+
+def test_the_identity_still_closes_when_an_overdraw_is_credited():
+    """Crediting the robot without crediting the site would break the identity.
+
+    ``extracted == at_site + in_transit + deposited`` is the one thing
+    MaterialInventory must never break, so the tolerated excess is added to the
+    site's extracted total as well as to the robot's cargo.
+    """
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+    inv.record_load("hauler_01", "s1", 10.0005, tolerance_kg=0.001)
+
+    progress = inv.get_mission_progress()
+    assert progress["extracted"] == pytest.approx(10.0005, abs=1e-12)
+    assert progress["at_site"] == pytest.approx(0.0, abs=1e-12)
+    assert progress["in_transit"] == pytest.approx(10.0005, abs=1e-12)
+    assert progress["unaccounted"] == 0.0
+    assert inv.check_conservation()
+
+
+def test_an_overdraw_above_the_tolerance_is_still_banked_in_full():
+    """The tolerance forgives instrument noise, not material.
+
+    Only the part above the tolerance used to be a candidate for forgiveness;
+    it is not forgiven at all. A 15 kg overdraw is banked whole -- not
+    15 kg minus a gram -- because the discrepancy IS 15 kg.
+    """
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+
+    accepted = inv.record_load("hauler_01", "s1", 25.0, tolerance_kg=0.001)
+
+    assert accepted == 10.0
+    assert inv.get_unaccounted_kg() == 15.0
+    assert not inv.check_conservation()
+
+
+def test_the_default_tolerance_is_the_strict_old_behaviour():
+    """A caller who has not thought about resolution gets the strict version."""
+    inv = MaterialInventory()
+    inv.register_site("s1", (0.0, 0.0), estimated_kg=100.0)
+    inv.record_extraction("s1", "excavator_01", 10.0)
+    assert inv.record_load("hauler_01", "s1", 10.0005) == 10.0
+    assert inv.get_unaccounted_kg() == pytest.approx(0.0005)

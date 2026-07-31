@@ -240,12 +240,23 @@ class GazeboIMUSensor(IMUSensor):
 
 
 class GazeboFillLevelSensor(FillLevelSensor):
-    """Subscribes to std_msgs/Float32 representing fill fraction."""
+    """Subscribes to a std_msgs/Float32 topic carrying a fill FRACTION.
+
+    The wire value is dimensionless 0.0-1.0 (``FillLevelReading.level``). This
+    class is the one and only place it is turned into kilograms, using the
+    ``capacity_kg`` its RCDL descriptor declares -- ``excavator.yaml:29``
+    hopper_fill 20 kg, ``hauler.yaml:29`` load_cell 50 kg -- plumbed through
+    ``SensorConfig.extra``. Leaving ``mass_kg`` at the dataclass default of 0.0
+    is not a harmless omission: ``ExcavateSkill`` reports its extracted mass as
+    the difference of two ``mass_kg`` readings, so an unpopulated field is a
+    measured zero rather than a missing measurement (deviation D-06).
+    """
 
     def __init__(self, config: SensorConfig, node, qos):
         self._config = config
         self._active = True
         self._lock = threading.Lock()
+        self._capacity_kg = self._resolve_capacity_kg(config, node)
         self._cached = FillLevelReading(
             sensor_name=config.name, is_valid=False,
         )
@@ -253,11 +264,43 @@ class GazeboFillLevelSensor(FillLevelSensor):
             Float32, config.topic, self._cb, qos,
         )
 
+    @staticmethod
+    def _resolve_capacity_kg(config: SensorConfig, node) -> float:
+        """Return the RCDL-declared capacity in kg, or 0.0 if none was declared.
+
+        Mirrors ``GazeboScalarFieldSensor._resolve_noise_stddev``: a missing /
+        non-positive / non-finite declaration is logged loudly and degrades to
+        0.0, because the alternative -- guessing a capacity -- would fabricate
+        masses that the orchestrator's ledger would then treat as measurements.
+        A 0.0 capacity makes every ``mass_kg`` zero, which is visible as
+        "nothing was extracted" rather than as a plausible wrong number.
+        """
+        raw = getattr(config, "extra", {}).get("capacity_kg")
+        try:
+            capacity = float(raw)
+        except (TypeError, ValueError):
+            capacity = 0.0
+        if not math.isfinite(capacity) or capacity <= 0.0:
+            try:
+                node.get_logger().warn(
+                    f"Fill-level sensor '{config.name}' declares no usable "
+                    f"capacity_kg in its RCDL descriptor (got {raw!r}); every "
+                    f"reading will report mass_kg = 0.0 and any skill that "
+                    f"measures a mass delta will record zero."
+                )
+            except AttributeError:  # pragma: no cover - node without logger
+                pass
+            return 0.0
+        return capacity
+
     def _cb(self, msg: Float32) -> None:
+        level = float(msg.data)
         reading = FillLevelReading(
             sensor_name=self._config.name,
             is_valid=self._active,
-            level=msg.data,
+            level=level,
+            # The single fraction -> kilogram conversion in the system.
+            mass_kg=level * self._capacity_kg,
         )
         with self._lock:
             self._cached = reading
@@ -280,7 +323,32 @@ class GazeboFillLevelSensor(FillLevelSensor):
 
 
 class GazeboOdometrySensor(OdometrySensor):
-    """Subscribes to nav_msgs/Odometry and converts to HAL OdometryReading."""
+    """Subscribes to nav_msgs/Odometry and converts to HAL OdometryReading.
+
+    THE TOPIC IS WORLD-REFERENCED, AND THIS CLASS APPLIES NO TRANSFORM.
+
+    The RCDLs point this sensor at ``odom_world``
+    (``selene_hal/config/*.yaml``), which
+    ``selene_sim/selene_sim/world_odometry_node.py`` publishes after composing
+    the robot's spawn SE(2) onto Gazebo's dead-reckoned ``odom``. Until
+    2026-07-31 it read ``odom`` directly, so ``OdometryReading.x`` / ``.y`` were
+    metres from wherever that robot happened to spawn, along an axis pointing
+    down its spawn heading -- and every consumer (the navigator, the bid score,
+    ``prospect``/``excavate``/``haul``, ``RobotState.pose``) treated them as
+    world. Register D-08.
+
+    NO ARITHMETIC HERE, deliberately. The HAL is the hardware-agnostic boundary
+    (CLAUDE.md principle 5): on real hardware this pose comes from a
+    localisation stack, and an agent that had to know its own spawn pose to
+    interpret its odometry would have a simulation artefact wired into the
+    autonomy layer. The conversion happens once, in one node, and this class is
+    unaware of which producer it is talking to.
+
+    STILL DEAD-RECKONED. World-referenced is not ground truth: the underlying
+    integration is still wheel encoders, so this pose advances perfectly while a
+    buried robot's wheels spin in solid rock (``scripts/check_drive.sh``). Any
+    check that needs the real position must ask Gazebo, not this sensor.
+    """
 
     def __init__(self, config: SensorConfig, node, qos):
         self._config = config
@@ -420,7 +488,27 @@ class GazeboDrillActuator(DrillActuator):
 
 
 class GazeboTransferActuator(TransferActuator):
-    """Publishes std_msgs/String ("load"/"unload"/"stop") to a transfer topic."""
+    """Publishes std_msgs/String to a transfer topic.
+
+    Payloads: ``"load"`` | ``"load:<kg>"`` | ``"unload"`` | ``"stop"``. The
+    bare ``"load"`` spelling is kept so an unpatched caller still works; with a
+    bound it becomes ``load:<kg>``, where ``<kg>`` is the ABSOLUTE mass to fill
+    to, not an increment. ``selene_sim/selene_sim/bin_load_node.py`` parses
+    both.
+
+    ``is_transfer_complete()`` NEVER BECOMES TRUE ON THIS BACKEND AFTER A
+    TRIGGER. This is a static observation of the code below, not something
+    observed on a running system: ``_complete`` is set ``True`` only in
+    ``__init__`` and in ``cancel_transfer``; ``trigger_load`` and
+    ``trigger_unload`` set it ``False``; nothing else assigns it, because
+    nothing subscribes to any completion signal from the simulation. Callers
+    must therefore observe completion from the FILL SENSOR -- the load cell or
+    hopper level settling -- and not from this method. ``HaulSkill`` gated on
+    it until 2026-07-30, which under this backend means every haul would sit in
+    LOADING until ``LOAD_TIMEOUT``; the stub HAL hid it by returning ``True``
+    unconditionally. Removing the flag outright is a wider interface change
+    than deviation D-06 covers, so it is recorded here instead.
+    """
 
     def __init__(self, config: ActuatorConfig, node):
         self._config = config
@@ -428,10 +516,12 @@ class GazeboTransferActuator(TransferActuator):
         self._complete = True
         self._pub = node.create_publisher(String, config.topic, 10)
 
-    def trigger_load(self) -> None:
+    def trigger_load(self, max_kg: float = -1.0) -> None:
         self._complete = False
         msg = String()
-        msg.data = "load"
+        # Negative means unbounded: fill to the container's RCDL capacity_kg,
+        # which is what the bare command has always meant.
+        msg.data = "load" if max_kg < 0.0 else f"load:{max_kg:.3f}"
         self._pub.publish(msg)
 
     def trigger_unload(self) -> None:
@@ -587,6 +677,10 @@ class GazeboHal(HalInterface):
                 # Forwarded via SensorConfig.extra so scalar-field sensors can
                 # report a real measurement sigma instead of 0.0.
                 noise_stddev=sd.noise_stddev,
+                # Likewise for fill-level sensors: the RCDL is the single
+                # source of truth for how many kilograms a full container
+                # holds, and this is the only route by which the HAL learns it.
+                capacity_kg=sd.capacity_kg,
             )
             sensor_cls = _GAZEBO_SENSOR_MAP.get(SensorType(sd.type.value))
             if sensor_cls:

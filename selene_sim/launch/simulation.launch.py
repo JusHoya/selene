@@ -29,12 +29,68 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
-    SetEnvironmentVariable, TimerAction,
+    DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction,
+    RegisterEventHandler, SetEnvironmentVariable, TimerAction,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
+#: The action name ros_gz_sim's gz_sim.launch.py gives the simulator process
+#: (/opt/ros/jazzy/share/ros_gz_sim/launch/gz_sim.launch.py:140,
+#: ExecuteProcess(..., name='gazebo')). It is what makes the launch prefix read
+#: `[gazebo-1]`, which is how the three archived ODE aborts identify themselves:
+#:     [ERROR] [gazebo-1]: process has died ... exit code 134
+_GZ_ACTION_NAME = 'gazebo'
+
+
+def _diagnose_simulator_exit(event, context):
+    """Say why everything is about to stop, when it is the simulator that died.
+
+    WHAT THIS IS FOR. On 2026-07-30/31 Gazebo hit an ODE assertion in collide()
+    and exited 134 three times mid-mission. `ros2 launch` SURVIVED every time:
+    the orchestrator kept auctioning, every agent kept publishing RobotState at
+    2 Hz and kept its heartbeat, and the fleet quietly stopped being connected
+    to a physics engine. The register's phrase for it is "the fleet then
+    degrades silently". The root cause of the abort is STILL UNKNOWN -- the
+    instrumented run of 2026-07-31 did not reproduce it -- so this does not fix
+    it. It makes it loud, which is a different and achievable thing.
+
+    Two mechanisms, and they are complementary rather than redundant:
+
+    * `on_exit_shutdown: 'true'` on the gz_sim include (below) is upstream's own
+      switch and is what actually brings the launch down. It is a plain
+      ExecuteProcess on_exit=Shutdown(), so it fires for ANY simulator exit,
+      including a clean one.
+    * this handler, which prints the diagnosis. Shutdown alone produces a wall
+      of "process has died" lines with no statement of which death mattered.
+
+    It fires on every process exit and filters by name, because the simulator is
+    started through an IncludeLaunchDescription and there is no action object
+    here to target.
+    """
+    name = getattr(event, 'process_name', '') or ''
+    if _GZ_ACTION_NAME not in name:
+        return None
+    code = getattr(event, 'returncode', None)
+    return [LogInfo(msg=(
+        '================================================================\n'
+        f'THE SIMULATOR EXITED (process {name}, return code {code}). Shutting '
+        'the whole launch down.\n'
+        'Nothing the fleet does after this point is meaningful: the '
+        'orchestrator will keep auctioning, every agent will keep its '
+        'heartbeat, and no pose will ever change again. That combination -- a '
+        'healthy-looking fleet attached to a dead world -- is what three '
+        'mid-mission ODE aborts produced on 2026-07-30/31, and it is why this '
+        'shuts down instead of continuing.\n'
+        'Return code 134 is SIGABRT and is the known signature:\n'
+        '  ODE INTERNAL ERROR 1: assertion "aabbBound >= dMinIntExact && '
+        'aabbBound < dMaxIntExact" failed in collide()\n'
+        'Its cause is UNKNOWN. It did not reproduce under instrumentation on '
+        '2026-07-31. Keep the log.\n'
+        '================================================================'))]
 
 
 def _positions_for(spawn_positions, group, wanted, config_path):
@@ -133,7 +189,18 @@ def _launch_setup(context, *args, **kwargs):
         ),
         # -s = server-only (no GUI). Avoids OGRE shader crashes on WSL2 and
         # keeps the footprint small; the dashboard is the operator UI.
-        launch_arguments={'gz_args': ['-s -r ', world_file]}.items(),
+        #
+        # on_exit_shutdown IS THE ANSWER TO "what should the system do when the
+        # simulator dies". Upstream defaults it to 'false', which is why
+        # `ros2 launch` outlived all three ODE aborts and left a fleet talking
+        # to a dead world. It maps to ExecuteProcess(on_exit=Shutdown()) at
+        # ros_gz_sim/launch/gz_sim.launch.py:135-146. See
+        # _diagnose_simulator_exit above for the half of this that explains
+        # itself in the log.
+        launch_arguments={
+            'gz_args': ['-s -r ', world_file],
+            'on_exit_shutdown': 'true',
+        }.items(),
     )
 
     spawn_delay = 2.0   # seconds between spawns, to avoid collision
@@ -163,11 +230,90 @@ def _launch_setup(context, *args, **kwargs):
             arguments=[
                 f'/model/{robot_id}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
                 f'/model/{robot_id}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+                # THE SECOND, INDEPENDENT POSITION ESTIMATE. /model/<name>/pose
+                # is the PosePublisher block in models/<type>/model.sdf; with
+                # <publish_model_pose> and <use_pose_vector_msg> it carries one
+                # gz.msgs.Pose_V entry holding the model's TRUE world pose, and
+                # the bridge renders that as a TFMessage whose child_frame_id is
+                # the model name. MEASURED on gz-sim 8 / ROS 2 Jazzy on
+                # 2026-07-31: a model spawned at (10, 20, 0.5) yaw 0.7 arrived
+                # on the ROS side as translation (10, 20, 0.5) with
+                # frame_id=<world>, child_frame_id=<model> -- i.e. the world
+                # pose, not a spawn-relative one.
+                #
+                # This is the simulator standing in for a localisation stack.
+                # It is NOT wired into the autonomy layer: only
+                # world_odometry_node reads it, and selene_agent /
+                # selene_orchestrator / selene_hal cannot ask the simulator
+                # where a robot really is.
+                f'/model/{robot_id}/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             ],
             remappings=[
                 (f'/model/{robot_id}/cmd_vel', f'/{robot_id}/cmd_vel'),
                 (f'/model/{robot_id}/odometry', f'/{robot_id}/odom'),
+                (f'/model/{robot_id}/pose', f'/{robot_id}/pose_truth'),
             ],
+            output='screen',
+        ))
+
+    # The container-fill sim nodes size themselves from the SAME RCDL file the
+    # agent's HAL is built from (selene_agent/launch/agent.launch.py:23-27 uses
+    # this identical construction). That is what makes "one source of truth for
+    # capacity_kg" true rather than aspirational: the sim publishes a fraction
+    # of that capacity and the HAL multiplies by that capacity, so the two
+    # cannot disagree about how many kilograms a full hopper holds.
+    #
+    # Resolved per robot TYPE, not per robot: excavator.yaml / hauler.yaml.
+    # FindPackageShare('selene_hal') is why selene_sim now carries an
+    # <exec_depend> on selene_hal (package.xml) -- the node source still
+    # imports nothing from it.
+    def rcdl_for(robot_type):
+        return PathJoinSubstitution([
+            FindPackageShare('selene_hal'), 'config', f'{robot_type}.yaml',
+        ])
+
+    # THE ONE CONVERSION POINT FOR ROBOT POSITION.
+    #
+    # Gazebo's DiffDrive dead-reckons /{robot_id}/odom from the robot's SPAWN
+    # POSE -- odom (0,0) is wherever that robot started, and the odom x-axis
+    # points along its spawn heading. Every consumer in SELENE used to read that
+    # as world coordinates, which put the resource map, the PSR shadow test and
+    # navigation in a different frame per robot and drove robots off the finite
+    # 500 m heightfield until ODE's broadphase aborted the simulator.
+    #
+    # world_odometry_node applies spawn (+) odom once and republishes
+    # /{robot_id}/odom_world. The RCDLs (selene_hal/config/*.yaml) point the
+    # agent's odometry sensor at that topic, and the four selene_sim consumer
+    # nodes below subscribe to it too.
+    #
+    # THE POSE COMES FROM `pose` -- the same dict handed to `ros_gz_sim create`
+    # above, in the same loop, from the same read of spawn_config. Not a second
+    # parse of spawn_positions.yaml: a second parse would have to re-implement
+    # the "first N of each group" selection and could disagree with the spawner
+    # about which N. See selene_sim/selene_sim/world_odometry_node.py.
+    #
+    # IT IS ALSO THE ONLY PLACE THE POSE IS CHECKED. `pose_source` selects
+    # which of the two estimates is published (see that node's docstring); the
+    # comparison between them runs either way and raises a FleetAlert on drift
+    # or on wheels-turning-body-still. The latter is not a hypothetical: on
+    # 2026-07-31 a hauler reported 126.7 m of wheel travel over 320.7 s while
+    # its body moved 6.6 cm, then unloaded 19 kg 241.577 m from the depot with
+    # nothing in the system objecting.
+    pose_source = arg('pose_source')
+    frame_actions = []
+    for robot_type, robot_id, pose in fleet:
+        frame_actions.append(Node(
+            package='selene_sim',
+            executable='world_odometry_node',
+            name=f'world_odom_{robot_id}',
+            parameters=[{
+                'robot_id': robot_id,
+                'spawn_x': float(pose['x']),
+                'spawn_y': float(pose['y']),
+                'spawn_z': float(pose['z']),
+                'spawn_yaw': float(pose.get('yaw', 0.0)),
+                'pose_source': pose_source,
+            }],
             output='screen',
         ))
 
@@ -197,7 +343,11 @@ def _launch_setup(context, *args, **kwargs):
                 package='selene_sim',
                 executable='hopper_node',
                 name=f'hopper_{robot_id}',
-                parameters=[{'robot_id': robot_id, 'ice_config_file': ice_config}],
+                parameters=[{
+                    'robot_id': robot_id,
+                    'ice_config_file': ice_config,
+                    'rcdl_path': rcdl_for(robot_type),
+                }],
                 output='screen',
             ))
             sensor_actions.append(Node(
@@ -212,12 +362,18 @@ def _launch_setup(context, *args, **kwargs):
                 package='selene_sim',
                 executable='bin_load_node',
                 name=f'bin_load_{robot_id}',
-                parameters=[{'robot_id': robot_id}],
+                parameters=[{
+                    'robot_id': robot_id,
+                    'rcdl_path': rcdl_for(robot_type),
+                }],
                 output='screen',
             ))
 
-    actions = [gz_resource_path, gz_sim,
-               *spawn_actions, *bridge_actions, *sensor_actions]
+    actions = [gz_resource_path,
+               RegisterEventHandler(OnProcessExit(
+                   on_exit=_diagnose_simulator_exit)),
+               gz_sim, *spawn_actions, *bridge_actions,
+               *frame_actions, *sensor_actions]
 
     if LaunchConfiguration('rviz').perform(context).lower() in ('true', '1'):
         actions.append(Node(
@@ -257,5 +413,14 @@ def generate_launch_description():
             'spawn_config', default_value='',
             description='Robot spawn poses YAML. Empty = '
                         'selene_sim/config/spawn_positions.yaml.'),
+        DeclareLaunchArgument(
+            'pose_source', default_value='localisation',
+            description='Which estimate /<robot>/odom_world carries. '
+                        '"localisation" = the simulator\'s true world pose, '
+                        'standing in for a localisation stack. '
+                        '"dead_reckoning" = spawn SE(2) on wheel odometry, the '
+                        'pre-2026-07-31 behaviour, whose error is unbounded. '
+                        'The divergence between the two is measured and '
+                        'alerted on either way.'),
         OpaqueFunction(function=_launch_setup),
     ])

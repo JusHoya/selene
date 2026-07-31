@@ -16,7 +16,7 @@ import math
 
 import numpy as np
 
-from selene_orchestrator.task_queue import TaskStatus
+from selene_orchestrator.task_queue import REQUEUEABLE_STATUSES, TaskStatus
 
 
 class AdaptiveSurveyPlanner:
@@ -373,6 +373,13 @@ def replan_pending_survey_targets(planner, task_queue, reference_position,
 
     Returns ``[(task_id, (old_x, old_y), (new_x, new_y)), ...]`` for the tasks
     that actually moved, so the caller can log the convergence.
+
+    "PENDING" here means REQUEUEABLE_STATUSES -- PENDING *or* INTERRUPTED.
+    Since D-03 made INTERRUPTED a resting status, a cancelled survey waypoint
+    stays there until an auction picks it up again; leaving it out would make
+    it invisible to this function in BOTH directions, so it would neither be
+    re-targeted nor reserved, and the next pending waypoint could be placed on
+    top of it inside min_spacing.
     """
     pending = []
     visited: set = set()
@@ -380,7 +387,7 @@ def replan_pending_survey_targets(planner, task_queue, reference_position,
     for task in task_queue.get_all_tasks():
         if task.task_type != task_type:
             continue
-        if task.status == TaskStatus.PENDING and not task.assigned_robot:
+        if task.status in REQUEUEABLE_STATUSES and not task.assigned_robot:
             pending.append(task)
         elif task.status == TaskStatus.COMPLETED:
             visited.add((task.target_x, task.target_y))

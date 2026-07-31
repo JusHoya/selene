@@ -1,11 +1,74 @@
+# Orchestrator parameters — FR-SIM-7(b).
+#
+# ---------------------------------------------------------------------------
+# THE TOP-LEVEL KEY IS THE NODE'S RUNTIME NAME, AND THAT COUPLING IS THE WHOLE
+# POINT OF THIS COMMENT.
+#
+# ROS 2 matches a parameter file against the name the node is RUNNING under —
+# not the package, not the executable. A file whose key matches nothing is
+# loaded and then ignored: every parameter falls back to its
+# `declare_parameter` default with no warning, no error and no log line.
+#
+# That is exactly what this file did until 2026-07-31 (deviation D-12). The key
+# said `orchestrator_node` — the name the node gives itself at
+# orchestrator_node.py:873 — while orchestrator.launch.py started it as
+# `name='orchestrator'`, so the LAUNCH path silently took defaults for
+# everything here. `scripts/start.sh` runs `ros2 run selene_orchestrator
+# orchestrator_node --ros-args --params-file <this file>` with no name remap,
+# so the same file applied correctly THERE. Two entry points, two node names,
+# one file that could only ever match one of them. It was latent only because
+# every value below happened to equal its declared default.
+#
+# Fixed by deleting the `name=` override in the launch file rather than by
+# renaming this key: `orchestrator_node` is what the node calls itself, what
+# setup.py installs the executable as, and what `ros2 run` produces, so it is
+# now the single name every entry point uses.
+#
+# `/**:` is the other correct answer — it matches any node and removes the
+# coupling entirely — and it is deliberately NOT used here for two reasons:
+# selene_agent/test/test_haul_against_fill_model.py:106 reads
+# `material_residual_tolerance_kg` out of this file BY THIS KEY so the haul
+# stop condition cannot drift from the orchestrator's fault threshold, and a
+# wildcard would hand every key below to any other node sharing the process if
+# the orchestrator is ever composed into a container.
+#
+# selene_orchestrator/test/test_params_files_are_applied.py fails the build if
+# this key and the runtime name ever disagree again, and if any key below is
+# not declared by orchestrator_node.py. It parses the launch files and
+# scripts/*.sh, so it runs in the ROS-free lane — which is where a config that
+# configures nothing has to be caught, because a running system cannot tell you
+# about it.
+# ---------------------------------------------------------------------------
 orchestrator_node:
   ros__parameters:
     auction_timeout_sec: 5.0
     heartbeat_timeout_sec: 10.0
-    recharge_threshold: 0.30
-    bid_weight_distance: 0.4
-    bid_weight_energy: 0.35
-    bid_weight_capability: 0.25
+    # recharge_threshold USED TO SIT HERE AND CONFIGURED NOTHING (deviation
+    # D-19) — the same defect as the bid weights below, found the same way.
+    # The orchestrator declared it and no line in the orchestrator ever read
+    # it; it was one of the two entries on
+    # selene_orchestrator/test/test_no_orphan_parameters.py's allow-list.
+    # Meanwhile the agent, which is what actually decides to recharge, had no
+    # battery test on that path at all and recharged after every single task.
+    #
+    # It now lives in selene_agent/launch/agent.launch.py at the same 0.30,
+    # declared by selene_agent/agent_node.py and read by
+    # agent_node._recharge_reason(). test_params_files_are_applied.py fails
+    # the build if any key in this file is not declared by
+    # orchestrator_node.py, so it cannot drift back here.
+    # bid_weight_distance / bid_weight_energy / bid_weight_capability USED TO
+    # SIT HERE AND CONFIGURED NOTHING (deviation D-13). Bidding is scored on
+    # the AGENT (selene_agent/agent_node.py:629-641) from parameters the AGENT
+    # declares (:114-116); the orchestrator declares none of the three, and
+    # ROS 2 drops an undeclared override silently rather than erroring — so
+    # editing a weight here changed no bid anywhere in the fleet. The values
+    # happened to equal the agent's own defaults, which is why it never showed
+    # up as a symptom.
+    #
+    # They now live in selene_agent/launch/agent.launch.py, in the parameter
+    # dict every agent actually receives, so editing one has an effect.
+    # test_params_files_are_applied.py fails the build if any key in this file
+    # is not declared by orchestrator_node.py, so they cannot drift back.
     fleet_state_publish_rate: 1.0
     # FR-MAP-1(e). Read since 2026-07-30; before that it was declared and
     # orphaned, and the fused map was never published at all.
@@ -18,6 +81,164 @@ orchestrator_node:
     map_resolution: 1.0
     map_width: 500
     map_height: 500
+    # ---- FR-DASH-3 / FR-DASH-6: the task-queue snapshot (D-03, D-05) -------
+    # Rate for /orchestrator/task_queue, a COMPLETE snapshot of the task table
+    # plus the operator event ring. 2.0 Hz is chosen against docs/PRD.md:1505
+    # ("task queue reflects orchestrator state within 1 second" — 1506 is the
+    # injected-task row, and this comment cited it by mistake until
+    # 2026-07-31), leaving a
+    # worst-case 500 ms publish latency before transport. <= 0 disables the
+    # topic entirely with a warning -- the dashboard's task panel then stays
+    # empty, because as of 2026-07-30 nothing reconstructs it client-side any
+    # more.
+    task_queue_publish_rate: 2.0
+    # Events replayed in every snapshot. This is a per-message cost as well as
+    # a history depth: the whole ring goes out 2x per second and the dashboard
+    # dedupes on TaskEvent.seq. TaskQueueState.events_dropped tells a client
+    # when the ring is no longer the complete history.
+    task_queue_event_history: 32
+    # ---- FR-DASH-5: the constrained auction (D-04) -------------------------
+    # Auctions a preferred robot may sit out before the preference is dropped
+    # and the task opens to any capable bidder. 3 rounds at
+    # auction_timeout_sec 5.0 is roughly 15 s of waiting. Raising it makes an
+    # operator's choice stickier at the cost of a task that sits unassigned;
+    # 1 drops the preference at the first missed auction.
+    inject_preferred_robot_max_rounds: 3
+    # ---- D-20: the auction backoff -----------------------------------------
+    # MEASURED live on ROS 2 Jazzy 2026-07-31: one prospect task reached
+    # auction round 261, re-announcing every ~5.5 s forever at INFO, because a
+    # no-bid auction re-queued straight to PENDING and get_next_ready returned
+    # the same task immediately. Only ONE auction runs at a time, so that task
+    # held the slot and starved every other PENDING task in the queue.
+    #
+    # Delay before the Nth consecutive no-bid re-announcement is
+    # base * 2**(N-1), capped at max: 5, 10, 20, 40, 80, 120, 120...
+    # base 0.0 counts failures without delaying them; the give-up bound below
+    # still applies.
+    auction_backoff_base_sec: 5.0
+    auction_backoff_max_sec: 120.0
+    # Consecutive failed auctions before the task stops being announced and
+    # rests visibly blocked (status PENDING, status_reason 'auction_abandoned',
+    # plus one WARNING FleetAlert). 5 rounds at the delays above is ~2.5 min of
+    # trying. NOT permanent: any robot arriving in IDLE re-opens every
+    # abandoned task, because a mission that deadlocks is worse than a log that
+    # floods. <= 0 disables giving up and leaves only the backoff.
+    auction_max_failed_rounds: 5
+    # ---- D-21: noticing that the simulator has died ------------------------
+    # OBSERVED live 2026-07-31 at 10 robots (num_scouts:=4 num_excavators:=3
+    # num_haulers:=3): Gazebo hit an ODE assertion in collide() and exited 134
+    # about five minutes in. `ros2 launch` survived, every agent kept
+    # publishing RobotState at 2 Hz, so heartbeat_timeout_sec saw a healthy
+    # fleet. Navigation failed fleet-wide as odom froze and the orchestrator
+    # kept auctioning into a dead simulation with no alert anywhere.
+    #
+    # Seconds a robot's pose may be unchanged before it counts as stalled. The
+    # CRITICAL alert fires only when EVERY online robot is stalled AND at least
+    # one is NAVIGATING or RETURNING, so an idle fleet at the depot does not
+    # trip it. <= 0 disables the check entirely.
+    sim_stall_timeout_sec: 20.0
+    # ---- FR-DASH-7 / FR-ISRU-2: the material ledger (D-06) -----------------
+    # The ISRU PROCESSING DEPOT every haul delivers to, world metres. It is
+    # published in TaskAssignment.depot_location, and it is NOT the recharge
+    # station.
+    #
+    # MOVED FROM (50, 50) ON 2026-07-31, and this is the number that turned a
+    # ledger entry into a delivery. (50, 50) had two defects at once. It had no
+    # physical referent -- the only depot marker in lunar_psr.sdf was 234 m away
+    # at (-30, -100), so a "delivery" landed on empty terrain -- and, worse, the
+    # route to it crossed the PSR crater rim. Evaluating the shipped height
+    # field, that rim is 34.3-39.2 deg of uphill on all 24 azimuths sampled at
+    # 15 deg spacing, and every ice deposit is INSIDE the crater. So no haul
+    # could ever complete. On 2026-07-31 one tried: the hauler pinned at r=57.5 m
+    # on the wall at a -35 deg pitch, turned its wheels at the commanded
+    # 0.395 m/s for 320.7 s while its body moved 6.6 cm, and its dead-reckoned
+    # pose walked the phantom 126.7 m to within 0.4 m of (50, 50), where it
+    # unloaded 19 kg. Ground truth had it 241.577 m away. Nothing objected.
+    #
+    # (-100, -150) is the crater floor -- flat, central to all four deposits at
+    # 20.3-22.4 m, and reachable from every one of them without crossing the
+    # rim. It now carries the `depot` marker in lunar_psr.sdf at a surveyed
+    # z, so a delivery has something to arrive at.
+    #
+    # THREE POSITIONS STILL DISAGREE and only one pair is now reconciled:
+    #   depot                            (-100, -150) here, and the SDF marker
+    #   agent recharge station default   (-30, -100)  selene_agent/agent_node.py
+    #                                                 and the recharge_pad marker
+    #   nav_params.yaml recharge station (-75, -100)  read by nothing for this
+    # The recharge station is deliberately still outside the PSR (solar), which
+    # means it is behind the same wall. See world_params.yaml.
+    #
+    # Before depot_location existed, a haul used target_location (which the HTN
+    # planner set to the depot) as its pickup and the robot's own charger as
+    # the drop-off, so it never visited the extraction site at all.
+    depot_x: -100.0
+    depot_y: -150.0
+    # MaterialEvent ids kept for duplicate suppression. The topic is RELIABLE +
+    # TRANSIENT_LOCAL, so an orchestrator that restarts is replayed each
+    # agent's history; without dedupe that replay would double the mission's
+    # mass. 4096 is ~270x the ~15 events a 100 kg mission generates.
+    material_event_dedupe_size: 4096
+    # Mass that may remain in a hopper or bin after it reported emptying before
+    # that counts as an instrument disagreement and raises a WARNING alert.
+    # 0.5 kg is 2.5% of the excavator hopper's 20 kg (excavator.yaml:29) and 1%
+    # of the hauler bin's 50 kg (hauler.yaml:29).
+    material_residual_tolerance_kg: 0.5
+    # Mass by which a hauler's load cell may exceed what the excavator's hopper
+    # sensor said it left at that site before it counts as a real disagreement.
+    #
+    # IT USED TO BE 1e-6 kg, HARD-CODED, AND THAT IS BELOW THE REPRESENTATION OF
+    # THE QUANTITY IT COMPARES. Every mass in this chain passes through float32
+    # on the wire (FillLevel.level, MaterialEvent.mass_kg), and one float32 ulp
+    # at 19 kg is 1.9e-6 kg -- twice the old tolerance. The 2026-07-31 run duly
+    # reported a 1.0109e-4 kg overdraw, which is 53 ulps of accumulated
+    # conversion error, and raised a WARNING whose own text read "reported
+    # 19.01 kg but only 19.01 kg had been extracted there; 0.00 kg is
+    # unaccounted" -- an alert firing below its own printing precision. It would
+    # fire on every successful haul.
+    #
+    # 0.001 kg is one gram: ~500 float32 ulps at these masses, so instrument
+    # noise cannot reach it, and 500x smaller than material_residual_tolerance_kg
+    # above, so a disagreement that means anything physically still trips. Mass
+    # inside the tolerance is credited to the load rather than banked in
+    # MaterialInventory's unaccounted bucket, which is what lets
+    # `unaccounted_quantity == 0.0` go back to meaning FR-ISRU-2 holds.
+    material_overdraw_tolerance_kg: 0.001
+    # ---- The terrain box every operator-supplied target must lie inside -----
+    # An operator can click anywhere on the fleet map (FR-DASH-5) and send a
+    # robot anywhere (FR-DASH-6), and until 2026-07-31 nothing bounded either
+    # number. That was survivable only while every pose in the system was in a
+    # dead-reckoned odom frame and no coordinate meant anything physical.
+    # It means something now: past the 500 m heightfield edge there is NO
+    # collision surface and the robot falls.
+    #
+    # THIS COMMENT USED TO ASSERT MORE THAN ANYONE HAD MEASURED, and the
+    # correction is left visible because that is the habit this repository is
+    # trying to keep. It said the falling body's AABB leaves the integer range
+    # ODE's broadphase converts it into,
+    #   ODE INTERNAL ERROR 1: assertion "aabbBound >= dMinIntExact &&
+    #   aabbBound < dMaxIntExact" failed in collide()
+    # "which takes Gazebo down and every robot with it. Measured by the operator
+    # three times on 2026-07-30/31." Three aborts were measured. An off-terrain
+    # fall was not, the SE(2) measurement in scripts/check_drive.sh refuted the
+    # translation-only model the theory rested on, and the instrumented run of
+    # 2026-07-31 put the fleet's true maximum |x| or |y| at 174.700 m against a
+    # 248.062 m edge. THE ABORT'S CAUSE IS UNKNOWN. The guard is still right --
+    # commanding a robot off the world is a defect whatever ODE does about it --
+    # but it is not a fix for the abort and must not be recorded as one.
+    #
+    # 250.0 is the heightfield's half-extent: models/lunar_terrain/model.sdf
+    # declares <size>500 500 ...</size> at <pos>0 0 0</pos>. 10.0 is how far
+    # inside that edge a target must stay; the four terms it is the sum of are
+    # written out in selene_sim/config/world_params.yaml beside
+    # `safety_margin_m`, which must carry the same value.
+    #
+    # These are parameters, not constants, because FR-SIM-7(d) makes the world
+    # file configurable and a different world needs a different box.
+    # selene_sim/test/test_world_extent_agrees.py fails the build if this file,
+    # world_params.yaml, nav_params.yaml and terrain_datum.json ever stop
+    # describing the same square.
+    terrain_half_extent_m: 250.0
+    terrain_margin_m: 10.0
     # ---- FR-MAP-3: adaptive survey planning (SC-3) -------------------------
     # Rate at which PENDING survey waypoints are re-scored against the fused
     # map. 0.0 disables adaptation and leaves the deterministic hex lattice in

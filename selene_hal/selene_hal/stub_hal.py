@@ -88,12 +88,38 @@ class StubIMUSensor(IMUSensor):
 
 
 class StubFillLevelSensor(FillLevelSensor):
+    """Fill-level stub that obeys the SAME arithmetic as the Gazebo backend.
+
+    ``set_level(fraction)`` is the injection point tests use to drive a skill:
+    the fraction is stored, and ``read()`` derives ``mass_kg`` from it with the
+    RCDL ``capacity_kg`` exactly as ``GazeboFillLevelSensor._cb`` does. Doing
+    the conversion here rather than letting a test set ``level`` and
+    ``mass_kg`` independently is deliberate -- a hand-rolled mock can express a
+    reading that no real sensor could produce (0.5 full, 19 kg), and a green
+    test built on one proves nothing about the Gazebo path.
+    """
+
     def __init__(self, config: SensorConfig):
         self._config = config
         self._active = True
+        self._level = 0.0
+        # Same source and same "loud zero" fallback as the Gazebo backend:
+        # a stub built from an RCDL that declares no capacity reports 0.0 kg,
+        # so a missing declaration fails a test here instead of surfacing as a
+        # structurally-zero mission progress bar in the field.
+        self._capacity_kg = float(config.extra.get('capacity_kg') or 0.0)
+
+    def set_level(self, fraction: float) -> None:
+        """Set the fill fraction (clamped to 0.0-1.0, the wire's own range)."""
+        self._level = max(0.0, min(1.0, float(fraction)))
 
     def read(self) -> FillLevelReading:
-        return FillLevelReading(sensor_name=self._config.name, is_valid=self._active)
+        return FillLevelReading(
+            sensor_name=self._config.name,
+            is_valid=self._active,
+            level=self._level,
+            mass_kg=self._level * self._capacity_kg,
+        )
 
     def get_config(self) -> SensorConfig:
         return self._config
@@ -201,9 +227,20 @@ class StubTransferActuator(TransferActuator):
         self._config = config
         self._active = True
         self._complete = True
+        # Last authorised load bound, so a test can assert the number the
+        # orchestrator's ledger produced actually reached the actuator rather
+        # than being dropped somewhere in the skill. -1.0 = never called, or
+        # called unbounded; the two are told apart by _load_call_count.
+        self.last_max_kg = -1.0
+        self.load_call_count = 0
 
-    def trigger_load(self) -> None:
+    def trigger_load(self, max_kg: float = -1.0) -> None:
+        # _complete stays True unconditionally, unlike the Gazebo backend --
+        # see GazeboTransferActuator's docstring. That difference is why a
+        # skill must not gate on is_transfer_complete().
         self._complete = True
+        self.last_max_kg = float(max_kg)
+        self.load_call_count += 1
 
     def trigger_unload(self) -> None:
         self._complete = True
@@ -298,6 +335,15 @@ class StubHal(HalInterface):
                 sensor_type=SensorType(sd.type.value),
                 topic=f"/{robot_id}/{sd.topic}",
                 power_draw=sd.power_draw,
+                # Both optional RCDL fields are forwarded here for the same
+                # reason GazeboHal forwards them: the stub must be configured
+                # from the identical descriptor or a test that passes against
+                # it says nothing about the Gazebo path. capacity_kg is read
+                # today by StubFillLevelSensor; noise_stddev is carried for
+                # parity and is not yet read by StubScalarFieldSensor, which
+                # still reports the ScalarFieldReading default of 0.0.
+                noise_stddev=sd.noise_stddev,
+                capacity_kg=sd.capacity_kg,
             )
             stub_cls = _STUB_SENSOR_MAP.get(SensorType(sd.type.value))
             if stub_cls:

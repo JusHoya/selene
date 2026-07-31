@@ -20,9 +20,24 @@ export const TOPICS = {
   BATTERY_STATE: (id) => `/${id}/battery_state`,
   PLANNED_PATH: (id) => `/${id}/planned_path`,
   NEUTRON_SPEC: (id) => `/${id}/sensors/neutron_spec`,
+  // Raw per-reading updates from each scout. Still consumed by ResourceGraph
+  // (the concentration-vs-time trace), which needs individual samples; the map
+  // heatmap no longer builds from these — see RESOURCE_MAP below.
   MAP_UPDATE: '/orchestrator/map_update',
+  // D-02: the orchestrator's FUSED POSTERIOR grid, published since D-09 at
+  // resource_map_publish_rate (0.5 Hz). This is what the map heatmap renders,
+  // so the dashboard and the RViz2 overlay show the same estimate rather than
+  // two different reductions of the same readings.
+  RESOURCE_MAP: '/orchestrator/resource_map',
   FLEET_ALERT: '/orchestrator/alerts',
   MISSION_PROGRESS: '/orchestrator/mission_progress',
+  // D-03: the authoritative task-table snapshot (2 Hz). Replaces the
+  // client-side lifecycle inference that used to be reconstructed from
+  // TASK_ANNOUNCEMENT / TASK_ASSIGNMENT / RobotState.current_task_id.
+  TASK_QUEUE: '/orchestrator/task_queue',
+  // D-03: kept as constants because both topics are still published, but the
+  // dashboard no longer subscribes to either. Everything they were used to
+  // infer now arrives on TASK_QUEUE as orchestrator-side truth.
   TASK_ANNOUNCEMENT: '/orchestrator/task_announcement',
   TASK_ASSIGNMENT: '/orchestrator/task_assignment',
 };
@@ -32,6 +47,11 @@ export const MSG_TYPES = {
   ROBOT_STATE: 'selene_msgs/RobotState',
   BATTERY_STATE: 'sensor_msgs/BatteryState',
   RESOURCE_MAP_UPDATE: 'selene_msgs/ResourceMapUpdate',
+  // Short two-part form, matching every other entry here. Topic SUBSCRIPTION
+  // resolves either spelling; only the rosapi introspection request below is
+  // strict about the three-part form (see the note at ROBOT_STATE_TYPE_CANDIDATES).
+  RESOURCE_MAP: 'selene_msgs/ResourceMap',
+  TASK_QUEUE: 'selene_msgs/TaskQueueState',
   FLEET_ALERT: 'selene_msgs/FleetAlert',
   MISSION_PROGRESS: 'selene_msgs/MissionProgress',
   FLOAT32: 'std_msgs/Float32',

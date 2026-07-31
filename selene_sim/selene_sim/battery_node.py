@@ -7,6 +7,19 @@ Energy model:
   power_draw = P_idle + P_locomotion * speed * slope_factor + P_actuators
   slope_factor = 1.0 + 2.0 * sin(slope_angle)  (clamped min 0.3)
   battery_delta_wh = power_draw * dt / 3600
+
+SHADOW IS A PROPERTY OF THE WORLD, NOT OF A ROBOT'S ODOMETER. ``_is_in_psr()``
+tests the robot's position against the PSR disc in ``world_params.yaml``, which
+is placed in world metres. This node used to subscribe to ``/{robot_id}/odom``,
+which Gazebo dead-reckons from each robot's spawn pose, so the shadow test was
+evaluated at a coordinate the robot was not at -- a different wrong coordinate
+per robot, since each carries its own spawn offset (register D-08). It now reads
+``/{robot_id}/odom_world``.
+
+Expect this to CHANGE observed energy behaviour, correctly: a robot working at
+the survey waypoints is now genuinely inside the 60 m PSR disc and gets no solar
+recharge there, which is the physics the mission was designed around and the
+reason ``spawn_positions.yaml`` places the fleet outside the disc.
 """
 
 import math
@@ -18,6 +31,8 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool
 import yaml
 import os
+
+from selene_sim.world_frame import WORLD_ODOM_TOPIC
 
 
 class BatteryNode(Node):
@@ -87,7 +102,7 @@ class BatteryNode(Node):
         self.cmd_vel_sub = self.create_subscription(
             Twist, f'{prefix}/cmd_vel', self._cmd_vel_callback, 10)
         self.odom_sub = self.create_subscription(
-            Odometry, f'{prefix}/odom', self._odom_callback, 10)
+            Odometry, f'{prefix}/{WORLD_ODOM_TOPIC}', self._odom_callback, 10)
         self.drill_sub = self.create_subscription(
             Bool, f'{prefix}/actuators/drill_cmd', self._drill_callback, 10)
 
@@ -194,7 +209,18 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # GUARDED, because a launch-level shutdown gets there first. When the
+        # simulator dies, simulation.launch.py brings the whole system down and
+        # every node is SIGINT-ed; rclpy has already shut the context down by
+        # the time this runs, and calling it again raises
+        #   RCLError: failed to shutdown: rcl_shutdown already called
+        # out of `finally`, so the process exits 1 and the launch reports
+        # "process has died [exit code 1]". Eight of those buried the actual
+        # diagnosis in the 2026-07-31 smoke test. A clean teardown must not
+        # look like eight crashes, least of all on the one code path whose
+        # whole purpose is to be legible after a crash.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

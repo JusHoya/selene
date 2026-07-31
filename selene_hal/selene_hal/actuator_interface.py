@@ -79,7 +79,23 @@ class TransferActuator(ActuatorInterface):
     """Hopper/bin load/unload mechanism."""
 
     @abstractmethod
-    def trigger_load(self) -> None:
+    def trigger_load(self, max_kg: float = -1.0) -> None:
+        """Begin loading; stop once ``max_kg`` kilograms are aboard.
+
+        ``max_kg`` negative means unbounded -- fill to the container's own RCDL
+        ``capacity_kg``, which is what every caller did before this parameter
+        existed, so the default is exactly backward-compatible.
+
+        WHY THE BOUND IS PART OF THE INTERFACE. The mass a hauler is authorised
+        to pick up is decided far upstream: the orchestrator's material ledger
+        says how much a site actually holds and puts it in
+        ``TaskAssignment.quantity_kg``. Without a typed home on this ABC that
+        number has nowhere to go, and the simulated bin loads to its full
+        capacity on any bare "load" command -- 50 kg of material no excavator
+        ever extracted, which breaks the conservation identity FR-ISRU-2 is
+        accepted on. Backends translate it into whatever their transport needs;
+        the Gazebo backend appends it to the command string as ``load:<kg>``.
+        """
         ...
 
     @abstractmethod

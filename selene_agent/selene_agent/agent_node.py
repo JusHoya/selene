@@ -4,6 +4,13 @@ Wires together the FSM, HAL, Navigator, EnergyManager, and Skills
 into an autonomous agent that prospects waypoints, monitors battery,
 and returns to recharge when energy is critical.
 
+RECHARGE POLICY (deviation D-19, 2026-07-31). This node used to end every
+task with an unconditional ``_start_recharge()``, so a robot drove home and
+charged after every single waypoint at whatever battery it happened to hold.
+The decision now lives in ``_recharge_reason()`` -> ``_settle_after_task()``
+and is made from ``EnergyManager.recharge_reason()``: critical, below the
+configured ``recharge_threshold`` floor, or out of margin to get home.
+
 Supports two operating modes:
   - standalone (orchestrated=False, default): self-directed waypoint list
   - orchestrated (orchestrated=True): auction-based task assignment from
@@ -18,9 +25,13 @@ import yaml
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (
+    DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy,
+)
 
 from selene_msgs.msg import RobotState, ResourceMapUpdate
 from selene_msgs.msg import TaskAnnouncement, TaskAssignment, BidResponse
+from selene_msgs.msg import MaterialEvent, TaskResult
 from geometry_msgs.msg import Pose2D, Twist, Point
 from nav_msgs.msg import Path
 
@@ -51,6 +62,49 @@ from selene_agent.operator_command import (
     _OperatorCommandContext,
     operator_command_logic,
 )
+from selene_agent.recharge_policy import (
+    UNAFFORDABLE_PASSES_BEFORE_RECHARGE,
+    _RechargeContext,
+    begin_recharge_cycle_logic,
+    settle_after_task_logic,
+    should_recharge_after_refusals,
+    validated_recharge_threshold,
+)
+from selene_agent.material_events import (
+    MaterialEventIdGenerator,
+    build_material_event_fields,
+)
+
+
+# QoS for the two agent -> orchestrator report topics added closing D-06/D-03.
+#
+# RELIABLE + TRANSIENT_LOCAL, unlike every other publisher on this node. These
+# two topics are the material ledger and the task outcome log: a dropped
+# MaterialEvent is mass that vanishes from mission progress with nothing
+# logged anywhere, and a dropped TaskResult leaves a finished task showing as
+# IN_PROGRESS forever. Transient-local also means an orchestrator that starts
+# (or restarts) after an agent still receives that agent's history;
+# MaterialEvent.event_id makes that replay idempotent on the subscriber side.
+#
+# NOT VERIFIED: no ROS install exists on the machine this was written on, so
+# Fast DDS's actual transient-local replay behaviour was never exercised. The
+# event_id dedupe is designed so that a wrong assumption degrades to LOST
+# HISTORY, never to double-counted mass.
+#
+# Depth 100 is roughly 6x the events a 100 kg mission generates (5 excavate
+# tasks -> 5 'extracted', 5 haul tasks -> 5 'loaded' + 5 'unloaded' = 15).
+MATERIAL_EVENT_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=100,
+)
+TASK_RESULT_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+)
 
 
 class AgentNode(Node):
@@ -69,6 +123,22 @@ class AgentNode(Node):
         self.declare_parameter("recharge_y", -100.0)
         self.declare_parameter("energy_critical_threshold", 0.15)
         self.declare_parameter("energy_recharge_target", 0.90)
+        # D-19. THE RECHARGE FLOOR, AND IT LIVES ON THE AGENT NOW.
+        #
+        # It used to be declared by the ORCHESTRATOR
+        # (selene_orchestrator/orchestrator_node.py, and set in
+        # selene_orchestrator/config/orchestrator_params.yaml) where nothing
+        # read it -- one of the two names on
+        # selene_orchestrator/test/test_no_orphan_parameters.py's allow-list.
+        # The recharge decision is made here, by this node, in
+        # _recharge_reason(); a knob for it on a node that cannot act on it is
+        # the same defect as the bid weights (D-13) and the same fix.
+        #
+        # NAME PRESERVED ACROSS THE MOVE, deliberately, exactly as the three
+        # bid_weight_* names were: `recharge_threshold` is what the register,
+        # the params file and four phases of git history call it, and its
+        # neighbours' `energy_` prefix is not worth breaking that trail for.
+        self.declare_parameter("recharge_threshold", 0.30)
         self.declare_parameter("tick_rate", 10.0)
         self.declare_parameter("orchestrated", False)
         self.declare_parameter("auction_timeout_sec", 7.0)  # slightly > orchestrator's 5s
@@ -89,6 +159,14 @@ class AgentNode(Node):
         )
         self._energy_recharge_target = (
             self.get_parameter("energy_recharge_target").get_parameter_value().double_value
+        )
+        self._recharge_threshold, threshold_complaint = (
+            validated_recharge_threshold(
+                self.get_parameter(
+                    "recharge_threshold").get_parameter_value().double_value,
+                energy_critical,
+                self._energy_recharge_target,
+            )
         )
         self._tick_rate = self.get_parameter("tick_rate").get_parameter_value().double_value
         self._orchestrated = self.get_parameter("orchestrated").get_parameter_value().bool_value
@@ -125,6 +203,7 @@ class AgentNode(Node):
             critical_threshold=energy_critical,
             recharge_target=self._energy_recharge_target,
             recharge_station=recharge_station,
+            recharge_threshold=self._recharge_threshold,
         )
 
         # -- Create FSM ----------------------------------------------------------
@@ -149,10 +228,21 @@ class AgentNode(Node):
         self._pending_task_id: str = ""
         self._assigned_target: tuple[float, float] | None = None
         self._assigned_task_type: str = "prospect"
+        # TaskAssignment.quantity_kg / depot_location for the current
+        # assignment. 0.0 means unconstrained; None means the assignment
+        # carried no usable depot and _handle_assigned must fall back.
+        self._assigned_quantity_kg: float = 0.0
+        self._assigned_depot: tuple[float, float] | None = None
 
         # -- Operator override state ---------------------------------------------
         self._operator_target: tuple[float, float] | None = None
         self._last_operator_seq: int = -1
+
+        # -- D-19: consecutive announcements passed on for want of energy --------
+        # Counts task announcements this robot was CAPABLE of and declined
+        # solely because ``can_afford_task`` said no. See
+        # ``_note_unaffordable_announcement`` for why this exists at all.
+        self._unaffordable_passes: int = 0
 
         # -- Publishers ----------------------------------------------------------
         self._state_pub = self.create_publisher(
@@ -165,6 +255,23 @@ class AgentNode(Node):
         )
         self._bid_pub = self.create_publisher(
             BidResponse, "/orchestrator/bid_response", 10
+        )
+        # Measured mass transfers and terminal task outcomes (D-06 / D-03).
+        # Created in both operating modes: in standalone mode nothing
+        # subscribes, so publishing costs a serialisation and no more, and
+        # keeping the code path identical means the orchestrated path is not
+        # a separate, less-exercised branch.
+        self._material_event_pub = self.create_publisher(
+            MaterialEvent, "/orchestrator/material_event", MATERIAL_EVENT_QOS
+        )
+        self._task_result_pub = self.create_publisher(
+            TaskResult, "/orchestrator/task_result", TASK_RESULT_QOS
+        )
+        # time.time_ns() rather than a ROS clock: this only has to be
+        # different across restarts of this process, and it must be available
+        # before any clock source is guaranteed to have ticked.
+        self._event_ids = MaterialEventIdGenerator(
+            self._robot_id, time.time_ns()
         )
 
         # -- Orchestrated-mode subscribers ---------------------------------------
@@ -201,8 +308,15 @@ class AgentNode(Node):
             f"mode={'orchestrated' if self._orchestrated else 'standalone'} "
             f"backend={hal_backend} tick={self._tick_rate}Hz "
             f"waypoints={len(self._waypoints)} "
-            f"recharge=({self._recharge_x}, {self._recharge_y})"
+            f"recharge=({self._recharge_x}, {self._recharge_y}) "
+            f"recharge_floor={self._recharge_threshold:.0%} "
+            f"critical={energy_critical:.0%} "
+            f"target={self._energy_recharge_target:.0%}"
         )
+        if threshold_complaint:
+            self.get_logger().error(
+                f"[{self._robot_id}] {threshold_complaint}"
+            )
 
     # ===================================================================
     # Main loop (10 Hz)
@@ -268,14 +382,39 @@ class AgentNode(Node):
     # ===================================================================
 
     def _handle_idle(self):
-        """Pick the next waypoint, create a ProspectSkill, and start navigating."""
-        if self._orchestrated:
-            return  # Wait for task announcement from orchestrator
+        """Pick the next waypoint, create a ProspectSkill, and start navigating.
 
-        # Wait for valid odometry before planning any path
-        odom = self._hal.get_sensor("odometry").read()
+        The recharge check runs FIRST and in both operating modes, because
+        IDLE is where a robot that declined to recharge after its last task
+        comes to rest. Without it, the only thing that would ever send an idle
+        robot home is the 15% ENERGY_CRITICAL branch in ``_tick``, which for a
+        scout drawing 10 W idle out of 50 Wh is over an hour away (D-19).
+        """
+        # Wait for valid odometry before planning ANY path, the recharge path
+        # included. Reading it here rather than after the orchestrated
+        # early-return below is a change of order, not of meaning: the
+        # standalone branch always did this, and a recharge cycle started
+        # without a position fails RechargeSkill.start(), which routes the
+        # robot to ERROR through _handle_returning. Turning "odom is not ready
+        # yet" into a faulted robot would be a worse bug than the one D-19
+        # fixes.
+        try:
+            odom = self._hal.get_sensor("odometry").read()
+        except Exception as e:
+            self.get_logger().warn(
+                f"[{self._robot_id}] Odometry read failed while idle: {e}"
+            )
+            return
         if not odom.is_valid:
             return
+
+        reason = self._recharge_reason()
+        if reason:
+            self._begin_recharge_cycle(reason)
+            return
+
+        if self._orchestrated:
+            return  # Wait for task announcement from orchestrator
 
         if self._waypoint_index >= len(self._waypoints):
             self.get_logger().info(
@@ -386,6 +525,10 @@ class AgentNode(Node):
 
         if self._current_skill.is_complete():
             skill_name = self._current_skill.get_name()
+            # Capture the task id before the clean-up below blanks it: every
+            # report published from here is keyed on it, and the orchestrator
+            # resolves the extraction site from it (TaskEntry.site_id).
+            task_id = self._current_task_id
 
             if skill_name == "prospect":
                 result = self._current_skill.get_result()
@@ -410,34 +553,83 @@ class AgentNode(Node):
                         f"extracted={result.extracted_kg:.1f}kg "
                         f"hopper_full={result.hopper_full}"
                     )
+                    # One measured transfer -> one MaterialEvent. This is the
+                    # only place an excavated mass leaves the robot; before
+                    # this it was formatted into the log line above and
+                    # discarded, which is why MaterialInventory had no
+                    # production caller and mission progress was structurally
+                    # zero (register D-06).
+                    self._publish_material_event(
+                        task_id, 'extracted',
+                        result.extracted_kg, result.residual_mass_kg,
+                    )
 
             elif skill_name == "haul":
                 result = self._current_skill.get_result()
                 if result is not None:
                     self.get_logger().info(
                         f"[{self._robot_id}] Haul complete: "
+                        f"loaded={result.loaded_kg:.1f}kg "
                         f"delivered={result.delivered_kg:.1f}kg "
                         f"to depot {result.depot_position}"
                     )
+                    # TWO events, not one. A haul performs two physically
+                    # distinct transfers and the ledger's
+                    # extracted/in_transit/deposited split is exactly the
+                    # difference between them, so a single per-task report
+                    # would lose one. residual_mass_kg belongs to the unload:
+                    # it is what the bin still held after the dump.
+                    self._publish_material_event(
+                        task_id, 'loaded',
+                        result.loaded_kg, result.bin_mass_after_load_kg,
+                    )
+                    self._publish_material_event(
+                        task_id, 'unloaded',
+                        result.delivered_kg, result.residual_mass_kg,
+                    )
 
+            self._publish_task_result(task_id, skill_name, True, "")
             self._current_task_id = ""
             self._current_skill = None
             self._fsm.handle_event(FSMEvent.TASK_COMPLETE)
-            self._start_recharge()
+            self._settle_after_task()
 
         elif self._current_skill.has_failed():
             skill_name = self._current_skill.get_name()
+            task_id = self._current_task_id
+            failure_reason = self._current_skill.get_error()
             self.get_logger().error(
                 f"[{self._robot_id}] {skill_name.capitalize()} failed at "
                 f"waypoint {self._waypoint_index}: "
-                f"{self._current_skill.get_error()}"
+                f"{failure_reason}"
             )
             if skill_name == "prospect":
                 self._waypoint_index += 1
+            # Report the failure BEFORE the FSM event, while the task id is
+            # still held. This is the only way TaskStatus.FAILED becomes
+            # reachable at all: the FSM event below is TASK_COMPLETE on both
+            # branches, so orchestrator_node._on_robot_state sees the same
+            # RETURNING-with-no-task shape either way and marked a failed
+            # excavate COMPLETED in its own queue (register D-03).
+            #
+            # The FSM event is DELIBERATELY left as TASK_COMPLETE. Firing
+            # FAULT instead would route the robot to ERROR and change fleet
+            # recovery behaviour under any transient skill failure; the agent
+            # keeps its recovery semantics and simply says what happened.
+            self._publish_task_result(
+                task_id, skill_name, False, failure_reason,
+            )
             self._current_task_id = ""
             self._current_skill = None
             self._fsm.handle_event(FSMEvent.TASK_COMPLETE)
-            self._start_recharge()
+            # D-19: a FAILED task gets the same energy test as a successful
+            # one. It is tempting to send a robot home after a failure "to be
+            # safe", but the failure this branch actually sees most is a
+            # navigation timeout, and a robot that recharges after every one
+            # of those is the fleet-wide stall D-19 was opened for, with an
+            # extra step. If the robot is short of energy, _recharge_reason
+            # says so on this call exactly as it would after a success.
+            self._settle_after_task()
 
     def _handle_returning(self, dt: float):
         """Drive the RechargeSkill toward the base station."""
@@ -513,8 +705,11 @@ class AgentNode(Node):
 
         task_pos = (msg.target_location.x, msg.target_location.y)
 
-        # Energy check
+        # Energy check. A refusal here used to be a silent `return`, which was
+        # harmless while every completed task ended in a full recharge. It is
+        # not harmless now: see _note_unaffordable_announcement (D-19).
         if not self._energy_manager.can_afford_task(my_pos, task_pos, msg.estimated_energy_cost):
+            self._note_unaffordable_announcement(msg.task_id)
             return
 
         # Compute bid score
@@ -538,7 +733,9 @@ class AgentNode(Node):
         eta = distance / max(speed, 0.1)
         energy_after = max(remaining - energy_cost, 0.0)
 
-        # Transition to BIDDING
+        # Transition to BIDDING. The robot could afford this one, so the run
+        # of refusals that would eventually send it home is over (D-19).
+        self._unaffordable_passes = 0
         self._fsm.handle_event(FSMEvent.TASK_ANNOUNCED)
         self._bidding_since = time.time()
         self._pending_task_id = msg.task_id
@@ -585,6 +782,21 @@ class AgentNode(Node):
         self._current_task_id = msg.task_id
         self._pending_task_id = ""
 
+        # FR-DASH-5 authorised mass, and the haul destination. quantity_kg
+        # 0.0 means unconstrained (fill to this robot's own RCDL capacity),
+        # which is exactly the behaviour every task had before the field
+        # existed, so an orchestrator that never sets it is unaffected.
+        quantity = float(msg.quantity_kg)
+        self._assigned_quantity_kg = quantity if math.isfinite(quantity) else 0.0
+        # A depot of exactly (0,0,0) is the "not set" encoding for every task
+        # type that has no depot; _handle_assigned decides what to do about
+        # it, because only there do we know whether this is a haul.
+        depot = msg.depot_location
+        if depot.x == 0.0 and depot.y == 0.0 and depot.z == 0.0:
+            self._assigned_depot = None
+        else:
+            self._assigned_depot = (depot.x, depot.y)
+
     def _handle_assigned(self):
         """Start navigation for the assigned task.
 
@@ -603,12 +815,35 @@ class AgentNode(Node):
             skill.start(self._hal, self._navigator, target=target)
         elif task_type == "excavate":
             skill = ExcavateSkill()
-            skill.start(self._hal, self._navigator, target=target)
+            skill.start(self._hal, self._navigator, target=target,
+                        quantity_kg=self._assigned_quantity_kg)
         elif task_type == "haul":
             skill = HaulSkill()
-            # Target is pickup location; depot is the recharge/depot position
-            depot = (self._recharge_x, self._recharge_y)
-            skill.start(self._hal, self._navigator, pickup=target, depot=depot)
+            # target_location is the PICKUP; the delivery point is
+            # TaskAssignment.depot_location. The pickup is NOT driven onto:
+            # HaulSkill stops PICKUP_STANDOFF_M short of it, because that
+            # coordinate routinely has a parked excavator on it (D-22). That
+            # is the skill's business, not this node's — an operator-injected
+            # haul (FR-DASH-5) arrives here by the same path and gets the same
+            # standoff.
+            #
+            # This used to be `(self._recharge_x, self._recharge_y)` — the
+            # robot's own charging station — while the HTN planner put the
+            # depot in target_location. A haul therefore drove to the depot,
+            # "loaded" there, drove to its charger and dumped, never visiting
+            # the extraction site at all. Both halves are fixed: the planner
+            # now targets the site (OWNER-ORCH) and the depot arrives here.
+            depot = self._assigned_depot
+            if depot is None:
+                depot = (self._recharge_x, self._recharge_y)
+                self.get_logger().warn(
+                    f"[{self._robot_id}] Haul {self._current_task_id} carried "
+                    f"no depot_location; falling back to the recharge station "
+                    f"{depot}. The material will be dumped at the charger, "
+                    f"not at the ISRU depot."
+                )
+            skill.start(self._hal, self._navigator, pickup=target, depot=depot,
+                        quantity_kg=self._assigned_quantity_kg)
         else:
             self.get_logger().error(f"[{self._robot_id}] Unknown task type: {task_type}")
             # Release the task id before entering ERROR (see _handle_navigating).
@@ -625,11 +860,107 @@ class AgentNode(Node):
         self._fsm.handle_event(FSMEvent.WAYPOINT_ASSIGNED)
 
     # ===================================================================
-    # Recharge helper
+    # Recharge policy and helpers — deviation D-19
     # ===================================================================
+
+    def _recharge_context(self) -> _RechargeContext:
+        """Build the injected-dependency context for ``recharge_policy``."""
+        return _RechargeContext(
+            robot_id=self._robot_id,
+            get_state=lambda: self._fsm.state,
+            fire_event=self._fsm.handle_event,
+            recharge_reason=self._recharge_reason,
+            start_recharge=self._start_recharge,
+            get_charge_fraction=self._energy_manager.get_charge_fraction,
+            recharge_threshold=self._recharge_threshold,
+            log_info=self.get_logger().info,
+            abort_current_skill=self._abort_current_skill,
+        )
+
+    def _abort_current_skill(self):
+        """Abort the running skill, if there is one. Safe in any state."""
+        if self._current_skill is not None and self._current_skill.is_running():
+            self._current_skill.abort()
+
+    def _recharge_reason(self) -> str:
+        """Why this robot should go and charge now, or '' if it should not.
+
+        Thin wrapper over ``EnergyManager.recharge_reason``: it supplies the
+        position and the startup gate, both of which are ROS-side facts.
+
+        THE STARTUP GATE IS NOT OPTIONAL. ``_tick`` already skips
+        ENERGY_CRITICAL for the first 5 s so DDS can deliver a real battery
+        reading, because before that the HAL reports a phantom 0%. Without the
+        same gate here, every robot in the fleet would read 0%, decide it is
+        below the floor and drive to the charging station in the first second
+        of the mission.
+
+        A position that cannot be read leaves the return-margin tier out
+        rather than forcing a recharge: the flat floor still applies, and
+        guessing a distance from an invalid odom reading would produce a
+        number with no relationship to where the robot is.
+        """
+        if self._tick_count <= self._startup_grace_ticks:
+            return ''
+        position = None
+        try:
+            odom = self._hal.get_sensor("odometry").read()
+            if odom.is_valid:
+                position = (odom.x, odom.y)
+        except Exception:
+            position = None
+        return self._energy_manager.recharge_reason(position)
+
+    def _settle_after_task(self):
+        """In RETURNING after a task: go home, or stay in the field.
+
+        Called immediately after ``FSMEvent.TASK_COMPLETE`` on both the
+        success and the failure branch of ``_handle_working``. Before D-19
+        the call here was an unconditional ``_start_recharge()``: the robot
+        drove back to base and charged after EVERY task regardless of
+        battery. Measured live on 2026-07-31, scouts were recharging at
+        88-93% charge after every waypoint, spent the majority of two runs in
+        RECHARGING, and the survey never finished -- so ``SelectSite`` never
+        resolved, no excavate or haul task was ever created, and the D-06
+        material ledger could not be exercised at all.
+        """
+        return settle_after_task_logic(self._recharge_context())
+
+    def _begin_recharge_cycle(self, reason: str) -> bool:
+        """Send a robot home to charge from a state that is not RETURNING."""
+        return begin_recharge_cycle_logic(self._recharge_context(), reason)
+
+    def _note_unaffordable_announcement(self, task_id: str):
+        """Count an announcement declined purely for want of energy.
+
+        The counter lives on the node because it is per-robot mutable state;
+        the decision it feeds is ``recharge_policy.should_recharge_after_refusals``,
+        whose docstring says why a count rather than a single refusal and why
+        this guard has to exist at all once D-19 stops the robot recharging
+        after every task.
+        """
+        self._unaffordable_passes += 1
+        in_grace = self._tick_count <= self._startup_grace_ticks
+        if not should_recharge_after_refusals(
+            self._unaffordable_passes, self._fsm.state, in_grace,
+        ):
+            return
+        charge = self._energy_manager.get_charge_fraction()
+        self.get_logger().info(
+            f"[{self._robot_id}] Declined "
+            f"{UNAFFORDABLE_PASSES_BEFORE_RECHARGE} consecutive "
+            f"capability-matched announcements it could not afford (latest "
+            f"{task_id}) at {charge:.1%} battery; returning to recharge "
+            f"rather than idling above the "
+            f"{self._recharge_threshold:.0%} floor"
+        )
+        # _start_recharge resets the counter, and it is reached on every
+        # successful branch of begin_recharge_cycle_logic.
+        self._begin_recharge_cycle('cannot_afford_offered_work')
 
     def _start_recharge(self):
         """Create and start a RechargeSkill heading for the base station."""
+        self._unaffordable_passes = 0
         self._current_skill = RechargeSkill(
             recharge_position=(self._recharge_x, self._recharge_y),
             recharge_target=self._energy_recharge_target,
@@ -744,10 +1075,100 @@ class AgentNode(Node):
         msg.capabilities = self._hal.get_capabilities()
         msg.stamp = self.get_clock().now().to_msg()
 
+        # Report this robot's own battery capacity so FleetMonitor can turn
+        # battery_level deltas into watt-hours per robot instead of assuming
+        # a single 50 Wh cell for the whole fleet (fleet_monitor.py:9,16,65) —
+        # which is the scout's figure and understates an excavator (80 Wh) by
+        # 37.5% and a hauler (65 Wh) by 23%. Reported by the robot, from its
+        # own RCDL, so the RCDL stays the single source of truth and
+        # selene_orchestrator needs no dependency on selene_hal or pydantic.
+        # On failure the field stays 0.0 and FleetMonitor falls back to its
+        # documented default.
+        try:
+            msg.battery_capacity_wh = float(
+                self._hal.get_battery().get_capacity_wh()
+            )
+        except Exception:
+            pass
+
         self._state_pub.publish(msg)
 
         # Also publish path for RViz2 visualization
         self._navigator.publish_path()
+
+    # ===================================================================
+    # Material ledger / task outcome publishers
+    # ===================================================================
+
+    def _publish_material_event(self, task_id: str, event_type: str,
+                                mass_kg: float, residual_mass_kg: float):
+        """Publish one measured mass transfer, or nothing at all.
+
+        The skills return NaN for any mass whose fill sensor could not be
+        read (``ExcavateSkill._read_fill`` / ``HaulSkill._read_fill``), and
+        that sentinel is honoured here: **a missing measurement produces no
+        message**. Publishing 0.0 instead would put a number that was never
+        measured into the ledger, and FR-ISRU-2's acceptance — "no material
+        is lost or duplicated" — is precisely a claim about numbers that were
+        measured. A warning is logged so the gap is visible rather than
+        silent.
+        """
+        mass = float(mass_kg)
+        residual = float(residual_mass_kg)
+        if not math.isfinite(mass) or not math.isfinite(residual):
+            self.get_logger().warn(
+                f"[{self._robot_id}] Not publishing a '{event_type}' "
+                f"MaterialEvent for task {task_id}: the fill sensor was never "
+                f"read (mass={mass!r}, residual={residual!r}). Mission "
+                f"progress will under-report by this transfer."
+            )
+            return
+
+        try:
+            fields = build_material_event_fields(
+                event_id=self._event_ids.next(),
+                robot_id=self._robot_id,
+                task_id=task_id,
+                event_type=event_type,
+                mass_kg=mass,
+                residual_mass_kg=residual,
+            )
+        except ValueError as e:
+            self.get_logger().error(
+                f"[{self._robot_id}] Refusing to publish MaterialEvent: {e}"
+            )
+            return
+
+        msg = MaterialEvent()
+        msg.event_id = fields['event_id']
+        msg.robot_id = fields['robot_id']
+        msg.task_id = fields['task_id']
+        msg.event_type = fields['event_type']
+        msg.mass_kg = fields['mass_kg']
+        msg.residual_mass_kg = fields['residual_mass_kg']
+        msg.stamp = self.get_clock().now().to_msg()
+        self._material_event_pub.publish(msg)
+
+    def _publish_task_result(self, task_id: str, task_type: str,
+                             success: bool, failure_reason: str):
+        """Publish the terminal outcome of one task.
+
+        Skipped for an empty ``task_id`` — a task the orchestrator never
+        issued (the standalone-mode waypoint walk, or a skill that ended
+        after an operator cancel cleared the id) has no queue entry to
+        terminate, and an outcome keyed on '' would be dropped downstream
+        anyway.
+        """
+        if not task_id:
+            return
+        msg = TaskResult()
+        msg.task_id = task_id
+        msg.robot_id = self._robot_id
+        msg.task_type = task_type
+        msg.success = bool(success)
+        msg.failure_reason = failure_reason or ""
+        msg.stamp = self.get_clock().now().to_msg()
+        self._task_result_pub.publish(msg)
 
     # ===================================================================
     # Map update publisher

@@ -101,6 +101,43 @@
   grid-column: span 2;
 }
 
+/* --- D-06: mass-conservation chip (FR-ISRU-2's acceptance, rendered) --- */
+.mission-progress__conservation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 230, 118, 0.08);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+  font-size: 10px;
+}
+
+.mission-progress__conservation-label {
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--accent-green);
+}
+
+.mission-progress__conservation-value {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+/* Amber, not red: a discrepancy is an instrument disagreement to investigate,
+   not a fleet fault. Red is reserved for CRITICAL alerts elsewhere in the UI. */
+.mission-progress__conservation--broken {
+  background: rgba(255, 193, 7, 0.10);
+  border-color: rgba(255, 193, 7, 0.4);
+}
+
+.mission-progress__conservation--broken .mission-progress__conservation-label {
+  color: var(--accent-amber);
+}
+
 /* --- Stat accent colors --- */
 .mission-progress__stat-value--cyan {
   color: var(--accent-cyan);

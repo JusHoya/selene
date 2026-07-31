@@ -44,6 +44,7 @@ setup(
             'hopper_node = selene_sim.hopper_node:main',
             'bin_load_node = selene_sim.bin_load_node:main',
             'extraction_node = selene_sim.extraction_node:main',
+            'world_odometry_node = selene_sim.world_odometry_node:main',
         ],
     },
 )

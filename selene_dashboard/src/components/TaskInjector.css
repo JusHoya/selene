@@ -52,6 +52,23 @@
   border-color: var(--accent-cyan, #00d4ff);
 }
 
+/* D-04: per-field rejection reason (negative / non-numeric target mass). */
+.task-injector__field-error {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--accent-red, #ff4757);
+}
+
+/* D-04: explains that a chosen robot is a PREFERENCE, not an assignment. */
+.task-injector__hint {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted, #6b7280);
+}
+
 .task-injector__target {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
@@ -152,6 +169,14 @@
   font-size: 11px;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   animation: fade-in 0.2s ease forwards;
+}
+
+/* The orchestrator's task id, beside the verbatim response message. */
+.task-injector__feedback-id {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-muted, #6b7280);
 }
 
 .task-injector__feedback--success {

@@ -24,7 +24,7 @@
 # whether it is rolling, free-spinning or buried (measured 4.00000 rad/s in all
 # three). That is why odometry alone can never be the gate.
 #
-# THREE THINGS THIS CHECK ASSERTS, and why each is needed:
+# FOUR THINGS THIS CHECK ASSERTS, and why each is needed:
 #   1. world displacement is within tolerance of the COMMAND (v * t). This is the
 #      load-bearing assertion. Odometry is a cross-check, not the reference.
 #   2. the robot SETTLED DOWNWARD from its spawn z. A robot created inside the
@@ -34,6 +34,20 @@
 #   3. commanding angular.z changes heading in the WORLD. Note this one is weak on
 #      its own: the buried robot above still rotated +2.12 rad, because burial pins
 #      translation, not yaw. A turn-only test would have passed the whole time.
+#   4. WHICH FRAME /odom IS IN — added 2026-07-31, and it is the one assertion here
+#      that nothing else in the repository can make. This script already read both
+#      Gazebo's authoritative model pose and DiffDrive's odometry and then threw
+#      the DIRECTIONS away, comparing only distances. It now compares bearings:
+#      driving straight from a spawn at yaw psi, the world displacement points
+#      along psi while the odom displacement points along 0, so their difference
+#      IS psi if the odom frame is rotated into the spawn heading and 0 if it is
+#      merely translated. selene_sim/selene_sim/world_frame.py assumes the former
+#      (gz::math::DiffDriveOdometry integrates wheel encoders from a pose of
+#      (0,0,0) and cannot see the model's world orientation), and every pose in
+#      SELENE now passes through that assumption. It was read off the plugin's
+#      API, not measured; this makes it measured. The two hypotheses are 2.33 rad
+#      apart on the shipped spawns, so the check reports the number always and
+#      fails only when the evidence positively favours the other one.
 #
 # USAGE
 #   bash scripts/check_drive.sh                       # scout_01, from spawn_positions.yaml
@@ -325,7 +339,7 @@ stop_gz
 # NOTE the third and fifth arguments are the MEASURED sim durations, not the
 # requested DRIVE_SECONDS / TURN_SECONDS. See drive().
 python3 - "$SZ" "$DRIVE_SPEED" "$DRIVE_SIM_SECS" "$TURN_RATE" "$TURN_SIM_SECS" \
-         "$MIN_FRACTION" "$MAX_FRACTION" "$MAX_SLIP_PCT" "$MIN_TURN_RAD" \
+         "$MIN_FRACTION" "$MAX_FRACTION" "$MAX_SLIP_PCT" "$MIN_TURN_RAD" "$SYAW" \
          "$P0" "$P1" "$P2" "$O0" "$O1" <<'PY'
 import math
 import sys
@@ -335,7 +349,8 @@ spawn_z, speed, secs, turn_rate, turn_secs = (float(a[0]), float(a[1]),
                                               float(a[2]), float(a[3]), float(a[4]))
 min_frac, max_frac, max_slip, min_turn = (float(a[5]), float(a[6]),
                                           float(a[7]), float(a[8]))
-nums = [float(v) for v in ' '.join(a[9:]).split()]
+spawn_yaw = float(a[9])
+nums = [float(v) for v in ' '.join(a[10:]).split()]
 if len(nums) != 22:                       # 3 poses x 6 + 2 odom x 2
     print(f"FAIL: expected 22 numbers from Gazebo, got {len(nums)}: {nums}")
     raise SystemExit(1)
@@ -349,6 +364,64 @@ slip = 100.0 * (1.0 - world / odo) if odo > 1e-6 else float('nan')
 turn = p2[5] - p1[5]
 # unwrap to (-pi, pi]
 turn = (turn + math.pi) % (2 * math.pi) - math.pi
+
+
+def wrap(angle):
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+# ---------------------------------------------------------------------------
+# WHICH FRAME IS /odom IN? The whole system now depends on the answer.
+#
+# selene_sim/selene_sim/world_frame.py converts odom to world as a full SE(2)
+# composition -- rotate the odom vector by the SPAWN YAW, then translate by the
+# spawn position -- because gz::math::DiffDriveOdometry integrates wheel
+# encoders from a pose of (0, 0, 0) and therefore has no way to know the model's
+# world orientation. That is read off the plugin's API, not measured, and if it
+# is wrong every pose in SELENE is wrong by up to twice the odom range.
+#
+# This script already collects both halves of the discriminator and used to
+# throw the directions away, comparing only distances. It does not any more.
+#
+# Drive straight from a spawn at yaw psi:
+#     SE(2)             world displacement points along psi, odom along 0
+#     translation-only   both point the same way
+# so  delta = bearing(world) - bearing(odom)  is  psi  under one hypothesis and
+# 0 under the other. On the shipped spawns psi is -2.33 rad, i.e. the two
+# predictions are 133 degrees apart and no amount of wheel slip confuses them.
+#
+# REPORTED ALWAYS, FAILS ONLY ON POSITIVE EVIDENCE FOR THE OTHER HYPOTHESIS.
+# Not a tolerance band around psi: a band would turn terrain drift into a red
+# gate, and this measurement is worth having as a number even on a run that
+# limps. It fails only when the measured delta is CLOSER to 0 than to psi, which
+# cannot happen by accident at this separation.
+frame_note = None
+frame_failure = None
+if world > 0.5 and odo > 0.5:
+    delta = wrap(math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+                 - math.atan2(o1[1] - o0[1], o1[0] - o0[0]))
+    err_se2 = abs(wrap(delta - spawn_yaw))
+    err_translation = abs(wrap(delta))
+    frame_note = (
+        f"  odom frame             bearing(world) - bearing(odom) = "
+        f"{delta:+.4f} rad; spawn yaw {spawn_yaw:+.4f}\n"
+        f"                         SE(2) hypothesis off by {err_se2:.4f} rad, "
+        f"translation-only off by {err_translation:.4f} rad")
+    if err_translation < err_se2:
+        frame_failure = (
+            f"ODOM FRAME CONVENTION: measured bearing offset {delta:+.4f} rad is "
+            f"closer to 0 than to the spawn yaw {spawn_yaw:+.4f} rad, i.e. "
+            f"/odom appears to be WORLD-ALIGNED and merely translated, not "
+            f"rotated into the robot's spawn heading. "
+            f"selene_sim/selene_sim/world_frame.odom_to_world applies the "
+            f"rotation and would then be introducing an error of up to twice "
+            f"the odom range. Do not adjust this threshold: re-derive the "
+            f"transform, and fix its tests, before trusting any pose in the "
+            f"system.")
+else:
+    frame_note = (
+        f"  odom frame             NOT EVALUATED: world {world:.4f} m / odom "
+        f"{odo:.4f} m, under the 0.5 m each this needs to give a bearing")
 
 print(f"{'':14}{'x':>12} {'y':>12} {'z':>10} {'yaw':>10}")
 print(f"{'settled':14}{p0[0]:>12.6f} {p0[1]:>12.6f} {p0[2]:>10.6f} {p0[5]:>10.6f}")
@@ -365,9 +438,12 @@ print(f"  ODOM   displacement   {odo:.4f} m")
 print(f"  slip                  {slip:.2f} %")
 print(f"  height gained         {p1[2] - p0[2]:+.4f} m")
 print(f"  yaw change on turn    {turn:+.4f} rad  (commanded {turn_rate * turn_secs:.2f})")
+print(frame_note)
 print()
 
 failures = []
+if frame_failure:
+    failures.append(frame_failure)
 if p0[2] > spawn_z:
     failures.append(
         f"BURIED: settled z {p0[2]:.6f} is ABOVE spawn z {spawn_z:.6f}. A robot on "
@@ -398,7 +474,8 @@ if failures:
         print(f"  - {f}")
     raise SystemExit(1)
 print("RESULT: PASS — the robot translates in the world consistently with the "
-      "command, settled onto the surface rather than inside it, and turns.")
+      "command, settled onto the surface rather than inside it, turns, and its "
+      "/odom frame is rotated into its spawn heading as world_frame.py assumes.")
 PY
 RC=$?
 

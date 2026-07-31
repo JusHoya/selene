@@ -1,5 +1,7 @@
 """Probabilistic resource map with Bayesian sensor fusion."""
 
+import math
+
 import numpy as np
 
 
@@ -47,7 +49,7 @@ class ResourceMap:
         return 0 <= gx < self._width and 0 <= gy < self._height
 
     def update(self, x: float, y: float, reading: float,
-               sensor_uncertainty: float) -> None:
+               sensor_uncertainty: float) -> bool:
         """Apply Bayesian update at (x,y) and neighbors within footprint.
 
         For each cell within footprint_radius:
@@ -61,7 +63,51 @@ class ResourceMap:
             x, y: World coordinates of measurement
             reading: Ice concentration value (wt%)
             sensor_uncertainty: Standard deviation of sensor noise
+
+        Returns:
+            True if the reading was fused into the grid, False if it was
+            rejected as unusable. See the guard below — the return value exists
+            so a caller can SAY that it dropped something; the rejection itself
+            is unconditional.
         """
+        # ---------------------------------------------------------------- #
+        #  D-18 — THE GRID IS POISONED PERMANENTLY BY ONE BAD READING.      #
+        # ---------------------------------------------------------------- #
+        # The conjugate update below is multiplicative in the precisions and
+        # the posterior is written straight back into the grid, so a single
+        # non-finite `reading` propagates a NaN mean into all ~81 cells of its
+        # footprint and NOTHING clears it: every later reading at those cells
+        # computes `prior_precision * NaN` and stays NaN for the life of the
+        # process. A NaN `sensor_uncertainty` does the same through
+        # `obs_precision`, and a non-finite x or y raises straight out of
+        # `world_to_grid`'s `int()`.
+        #
+        # This mirrors the guard the agent already applies one hop upstream —
+        # selene_agent/selene_agent/agent_node.py:997-1005 drops any reading
+        # whose sigma is non-finite or <= 0 before publishing — and it belongs
+        # here as well as there for two reasons. The agent only guards SIGMA,
+        # not `ice_concentration`, and the agent is not the only caller: the
+        # orchestrator's subscription, the HTN planner's tests and the adaptive
+        # survey all reach this method directly. A boundary that trusts its
+        # callers is not a boundary.
+        #
+        # sensor_uncertainty <= 0.0 is rejected rather than floored: `sensor_var
+        # = max(sigma**2, 1e-6)` would turn a claimed-noise-free reading into a
+        # near-certain one and collapse the posterior variance to ~1e-6, which
+        # renders at full ALPHA_MAX confidence off a sensor that told us
+        # nothing. That is the same "fabricated confidence" the agent's comment
+        # names. Rejecting it also makes a property the two renderers rely on
+        # true BY CONSTRUCTION rather than by configuration: every emitted cell
+        # has had at least one strictly-positive-precision update, so certainty
+        # is strictly > 0 for every drawn cell, so pure LOW_CONFIDENCE_GRAY at
+        # ALPHA_MIN unambiguously means "this cell's posterior is not a number"
+        # (resource_map_viz.certainty_to_rgb, colors.js certaintyRGB).
+        if not (math.isfinite(x) and math.isfinite(y)
+                and math.isfinite(reading)
+                and math.isfinite(sensor_uncertainty)
+                and sensor_uncertainty > 0.0):
+            return False
+
         center_gx, center_gy = self.world_to_grid(x, y)
         radius_cells = int(self._footprint_radius / self._resolution) + 1
         sensor_var = max(sensor_uncertainty ** 2, 1e-6)
@@ -96,6 +142,8 @@ class ResourceMap:
                 self._mean[gy, gx] = posterior_mean
                 self._variance[gy, gx] = posterior_variance
                 self._count[gy, gx] += 1
+
+        return True
 
     def get_mean(self, x: float, y: float) -> float:
         gx, gy = self.world_to_grid(x, y)

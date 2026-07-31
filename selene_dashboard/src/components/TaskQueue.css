@@ -117,6 +117,14 @@
   background: var(--accent-purple);
 }
 
+/* D-03: AUCTIONING is a real published status now, not an inferred one. Amber
+   family like INTERRUPTED (both mean "in the auction queue, not yet owned by a
+   robot"), but distinct from it. */
+.task-queue__badge--auctioning {
+  background: var(--accent-purple);
+  opacity: 0.65;
+}
+
 .task-queue__badge--pending {
   background: var(--text-muted);
 }
@@ -135,11 +143,30 @@
   background: var(--accent-red);
 }
 
-/* --- Task id --- */
+/* --- Task id (+ D-03 status reason under it) --- */
+.task-queue__id-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
 .task-queue__id {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* D-03: why the status last changed — 'operator_cancel_task', 'skill_failed',
+   'heartbeat_timeout'. Amber rather than dim: it is the line that tells a
+   cancelled task from a completed one, which is the defect D-03 names. */
+.task-queue__reason {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent-amber);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -174,6 +201,13 @@
 
 .task-queue__robot-unassigned {
   color: var(--text-dim);
+}
+
+/* D-04: an operator PREFERENCE, not an assignment. Italic and dim so it cannot
+   be mistaken for the solid "this robot owns the task" rendering above. */
+.task-queue__robot-preferred {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* --- Priority --- */
@@ -252,4 +286,139 @@
   flex-direction: column;
   gap: 2px;
   padding: 4px 0;
+}
+
+/* === D-05: TASK HISTORY (status transitions + operator commands) === */
+.task-queue__history {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.task-queue__history-summary {
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  list-style: none;
+  user-select: none;
+}
+
+.task-queue__history-summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-queue__history-summary:hover {
+  color: var(--text-secondary);
+}
+
+.task-queue__history-summary::before {
+  content: '\25B6';
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 8px;
+  transition: transform var(--transition-fast);
+}
+
+.task-queue__history[open] .task-queue__history-summary::before {
+  transform: rotate(90deg);
+}
+
+/* Shown only when the orchestrator's own ring evicted events. The list must not
+   present itself as exhaustive when TaskQueueState.events_dropped is non-zero. */
+.task-queue__history-truncated {
+  margin: 2px 6px 6px;
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--accent-amber);
+}
+
+.task-queue__history-list {
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 0;
+}
+
+.task-queue__event {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+}
+
+.task-queue__event:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.task-queue__event-time {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+.task-queue__event-kind {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--border);
+  color: var(--text-secondary);
+}
+
+.task-queue__event-kind--operator {
+  background: var(--accent-cyan);
+  color: #0a0e1a;
+}
+
+.task-queue__event-action {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-primary);
+}
+
+/* TaskEvent.target, for 'send_to_location' and 'inject_task'. */
+.task-queue__event-target {
+  color: var(--text-muted);
+}
+
+.task-queue__event-subject {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-queue__event-outcome {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.task-queue__event-outcome--ok {
+  color: var(--accent-green);
+}
+
+.task-queue__event-outcome--rejected {
+  color: var(--accent-red);
+}
+
+.task-queue__event-detail {
+  flex-basis: 100%;
+  font-size: 9px;
+  line-height: 1.35;
+  color: var(--text-muted);
 }

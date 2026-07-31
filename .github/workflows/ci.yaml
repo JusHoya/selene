@@ -127,6 +127,183 @@ jobs:
       - name: Check the terrain datum
         run: python -m pytest selene_sim/test/test_heightmap_datum.py -v
 
+  # The Phase 5 exit gate's own coverage claim, checked in pure Python.
+  #
+  # Deviation D-10 is that scripts/validate_phase5.sh ran eight checks, passed
+  # 8/8, and printed a report implying the Phase 5 exit gate had been met — while
+  # three of the PRD's seven exit-gate rows had no check at all and the footer
+  # asserting otherwise was a hand-written paragraph that had already gone
+  # factually false about FR-MAP-4. Nothing connected the report to the checks.
+  #
+  # test_phase5_gate_coverage.py is that connection: it parses the exit-gate
+  # table out of docs/PRD.md, the PRD_ROWS / ROW_CHECKS / CHECK_CATALOG mapping
+  # out of scripts/validate_phase5.sh, and CHECK_TITLES out of
+  # scripts/phase5_probe.py, and fails when they disagree. It is to D-10 what
+  # test_no_orphan_parameters.py is to D-09.
+  #
+  # It is a job of its own rather than a line in `colcon test` for two reasons.
+  # It needs NO dependencies at all — no ROS, no numpy, no pytest plugins, and it
+  # imports nothing from selene_orchestrator — so it costs a few seconds. And
+  # `colcon test` runs inside build-and-test, which declares
+  # `needs: e2e-integration`; that job was red on main for three months, during
+  # which every test it gates was silently skipped. A guard against a gate that
+  # does not run must not itself be behind a gate that does not run.
+  #
+  # It does NOT run scripts/validate_phase5.sh. That needs Gazebo, rosbridge, npm
+  # and a built Jazzy workspace, and sim-gates.yaml's own promotion criteria
+  # stand at 1 of 10 green runs; a heavier job here would manufacture exactly the
+  # false-green risk that file's header argues against.
+  gate-coverage:
+    name: Phase 5 gate coverage (no ROS)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      - name: Check the exit gate's coverage mapping
+        run: python -m pytest selene_orchestrator/test/test_phase5_gate_coverage.py -v
+
+  # Every pure-Python package in ONE pytest process — deviation D-14.
+  #
+  # Nothing in this file used to do that, and the gap was not academic: for two
+  # days the repository shipped a conftest whose ROS stubs were process-global,
+  # and any single pytest run naming both selene_orchestrator/test and
+  # selene_hal/test died at collection with
+  #     ImportError: cannot import name 'ReliabilityPolicy' from 'rclpy.qos'
+  # having run zero tests. CI stayed green throughout, because e2e-integration
+  # runs one file, gate-coverage runs one file, terrain-datum runs one file, and
+  # `colcon test` gives every package its own process. The defect was found by
+  # hand, by running the command README.md documents.
+  #
+  # WHY THE MATRIX. Measured on the pre-fix conftest, on the same checkout:
+  #   pytest 9.1.1 -> "Interrupted: 1 error during collection", 0 tests run
+  #   pytest 7.4.4 -> test_gazebo_fill_level.py SKIPS and the run goes green
+  # because pytest 8.2 added `importorskip(exc_type=...)` and 9.1 changed the
+  # default from ImportError to ModuleNotFoundError. A single-version job would
+  # have caught this defect on a developer's box and not in the container, or
+  # the reverse. Both ends of the range this repo actually runs on are pinned
+  # here for that reason.
+  #
+  # The `pytest<8` pin in build-and-test below is load-bearing for a different
+  # reason (ros-humble-launch-testing's stale pytest_pycollect_makemodule hook
+  # signature) and is NOT relaxed by this job: there is no launch_testing plugin
+  # in a bare setup-python container, so the unpinned leg here cannot reach it.
+  #
+  # numpy is required for the same reason as in e2e-integration — resource_map,
+  # htn_planner and adaptive_survey all `import numpy as np`. pyyaml is for the
+  # RCDL descriptors selene_hal/selene_agent tests load, pydantic for the schema
+  # that validates them, and pillow for selene_sim's heightmap test.
+  #
+  # Both orders are run because order-independence is a stated design guarantee
+  # in README.md and the previous violation of it (an unrestored
+  # `selene_isru.inventory.MaterialInventory` monkeypatch) was also invisible to
+  # every per-package lane.
+  cross-package-tests:
+    name: Cross-package pytest (no ROS)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        pytest_spec: ['pytest<8', 'pytest']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install "${{ matrix.pytest_spec }}" numpy pyyaml pydantic pillow
+
+      - name: Report the pytest version under test
+        run: python -m pytest --version
+
+      - name: Run every package in one process, both orders
+        env:
+          PYTHONPATH: >-
+            ${{ github.workspace }}/selene_orchestrator:${{ github.workspace }}/selene_isru:${{ github.workspace }}/selene_hal:${{ github.workspace }}/selene_agent:${{ github.workspace }}/selene_sim
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest selene_orchestrator/test selene_isru/test \
+            selene_hal/test selene_agent/test selene_sim/test -q
+          python -m pytest selene_sim/test selene_agent/test selene_hal/test \
+            selene_isru/test selene_orchestrator/test -q
+
+  # The dashboard, which NOTHING in this file used to read.
+  #
+  # That was a real hole, not an empty directory: selene_dashboard/ is ~4 kLOC
+  # of JSX and is half of two Phase 5 deviations (D-15 the raster cache key,
+  # D-16 the fleet-map label planner). The 39 jest tests added on 2026-07-31
+  # under src/__tests__/ would have run nowhere.
+  #
+  # NO NEW DEPENDENCY IS INTRODUCED BY THIS JOB. jest 27 and jsdom ship inside
+  # react-scripts@5.0.1, which is already a production dependency in
+  # package.json, and `"test": "react-scripts test"` was already declared there.
+  # The register's standing objection to a JavaScript test runner was that it
+  # would put Node in front of the ORCHESTRATOR's Python lane; a job of its own,
+  # with no `needs:`, does not — this can be red while every Python lane is
+  # green, and vice versa.
+  #
+  # `--ext .js,.jsx` IS LOAD-BEARING AND IS NOT DECORATION. ESLint 8 lints only
+  # `.js` by default, so `npx eslint src` — the command quoted as the dashboard
+  # lint lane throughout the Phase 5 workstream — has never read a single file
+  # in src/components/. Measured on 2026-07-31: with an unused import sitting in
+  # ResourceLegend.jsx, `npx eslint src` reported clean and
+  # `CI=true npx react-scripts build` failed on it.
+  #
+  # The build step is kept as well as the lint step, and is not redundant: CRA's
+  # eslint-webpack-plugin runs `eslint-config-react-app` (not the repo's own
+  # `extends: react-app`), which enables rules the bare CLI does not — react
+  # hooks' exhaustive-deps and no-loop-func among them — and CI=true promotes
+  # every warning to an error. It is also the only check that the bundle an
+  # operator loads actually compiles.
+  dashboard-tests:
+    name: Dashboard lint, test and build (no ROS)
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: selene_dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: selene_dashboard/package-lock.json
+
+      # `npm ci` (not `npm install`): it installs exactly package-lock.json and
+      # fails if the lockfile and package.json disagree, so this job cannot
+      # silently drift onto a different react-scripts than a developer has.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (including .jsx - see the note above)
+        run: npx eslint --ext .js,.jsx src
+
+      - name: Unit tests
+        env:
+          CI: 'true'
+        run: npx react-scripts test --watchAll=false
+
+      - name: Production build
+        env:
+          CI: 'true'
+        run: npx react-scripts build
+
   # Shell and workflow linting. Cheap, and this repo needs it more than most:
   # the two acceptance gates that decide whether a robot is buried are 700 lines
   # of bash, and the defects found in them have been shell defects — an unchecked
@@ -251,10 +428,20 @@ jobs:
       # suppressed; it is the *default* ignore list that --select discards.
       # `--extend-exclude` (not `--exclude`) is used so the .flake8 exclude
       # list is extended rather than replaced.
+      #
+      # `scripts/` is in the target list as of 2026-07-30. It was not before,
+      # and that was a real gap rather than an oversight about an empty
+      # directory: scripts/phase5_probe.py — the measuring half of the Phase 5
+      # exit gate (deviation D-10) — lives there, and it would otherwise be the
+      # only unlinted Python in the repository. The shell half of that directory
+      # is already covered by the shellcheck lane above, which globs
+      # `scripts/*.sh`; between the two, nothing in scripts/ is now unread by a
+      # machine.
       - name: Lint Python
         run: |
           python3 -m flake8 --version
           python3 -m flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ \
+            scripts/ \
             --extend-exclude='*.egg-info' \
             --show-source \
             --statistics \

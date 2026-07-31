@@ -99,6 +99,10 @@ def _launch_setup(context, *args, **kwargs):
             'world': LaunchConfiguration('world').perform(context),
             'ice_config': LaunchConfiguration('ice_config').perform(context),
             'spawn_config': LaunchConfiguration('spawn_config').perform(context),
+            # Which position estimate the whole system runs on. See
+            # simulation.launch.py's declaration and
+            # selene_sim/selene_sim/world_odometry_node.py's docstring.
+            'pose_source': LaunchConfiguration('pose_source').perform(context),
         }.items(),
     )
 
@@ -193,6 +197,13 @@ def generate_launch_description():
             'rviz', default_value='false',
             description='Start RViz2 with the FR-MAP-4 resource-map overlay '
                         '(selene_sim/rviz/selene_sim.rviz).'),
+        DeclareLaunchArgument(
+            'pose_source', default_value='localisation',
+            description='Which estimate /<robot>/odom_world carries: '
+                        '"localisation" (the simulator standing in for a '
+                        'localisation stack) or "dead_reckoning" (spawn SE(2) '
+                        'on wheel odometry, error unbounded). The divergence '
+                        'is measured and alerted on either way.'),
         DeclareLaunchArgument(
             'prebuilt', default_value='false',
             description='Serve the prebuilt dashboard bundle (fast) instead of '

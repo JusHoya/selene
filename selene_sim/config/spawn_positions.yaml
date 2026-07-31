@@ -84,7 +84,29 @@
 # heightmap, re-run scripts/check_terrain.sh and copy the surface_z column here.
 #
 # yaw -2.33 rad points each robot at the PSR centre, so the first navigation leg
-# is roughly straight ahead.
+# is roughly straight ahead. atan2(-150 - -92, -100 - -45) = -2.3300 exactly.
+#
+# ---------------------------------------------------------------------------
+# EVERY FIELD BELOW IS NOW ALSO A COORDINATE TRANSFORM, INCLUDING yaw.
+#
+# Gazebo's DiffDrive dead-reckons /{robot_id}/odom from wheel encoders starting
+# at a pose of (0, 0, 0), so odom (0,0) is this spawn point and the odom x-axis
+# points along this yaw. simulation.launch.py hands each pose below BOTH to
+# `ros_gz_sim create` and to a world_odometry_node, which composes it onto the
+# odometry to produce /{robot_id}/odom_world -- the only pose anything in SELENE
+# reads. Same dict, same loop, so the transform cannot describe a placement
+# Gazebo did not perform.
+#
+# Consequence for anyone editing this file: changing x, y or yaw moves the robot
+# AND redefines its odom->world transform, together, which is correct. What is
+# NOT safe is changing a value here while a simulation is running, or spawning a
+# robot by any route that does not also start its world_odometry_node with the
+# matching numbers (scripts/start.sh and scripts/run_demo.sh spawn with yaw 0
+# and pass 0; see the comments there). A transform that disagrees with the
+# placement puts every reading in the resource map at a coordinate the robot was
+# never at -- which is the defect this whole mechanism exists to remove, back
+# again and harder to see. scripts/check_drive.sh measures the agreement.
+# ---------------------------------------------------------------------------
 # FLEET SIZE. The first two scouts, first excavator and first hauler are the
 # default 2/1/1 fleet. The rest exist so the fleet can actually be staged up to
 # the ten robots NFR-1.1 and NFR-1.4 specify ("up to 10 robots"):

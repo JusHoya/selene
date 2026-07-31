@@ -60,13 +60,30 @@ echo "[3/5] Starting ROS-Gazebo bridge..."
 ros2 run ros_gz_bridge parameter_bridge \
     /model/scout_01/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist \
     /model/scout_01/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry \
+    /model/scout_01/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V \
     --ros-args \
     -r /model/scout_01/cmd_vel:=/scout_01/cmd_vel \
-    -r /model/scout_01/odometry:=/scout_01/odom &
+    -r /model/scout_01/odometry:=/scout_01/odom \
+    -r /model/scout_01/pose:=/scout_01/pose_truth &
 sleep 2
 
 # 4. Simulation nodes
 echo "[4/5] Starting simulation nodes..."
+# /scout_01/pose_truth (bridged above) is the model's TRUE world pose from the
+# PosePublisher block in models/scout/model.sdf. world_odometry_node publishes
+# that as /scout_01/odom_world when pose_source is `localisation` (the default)
+# and compares it against the dead-reckoned estimate either way. Without it the
+# node runs degraded and says so once a minute.
+#
+# The frame conversion: /scout_01/odom is dead-reckoned from the spawn pose, and
+# every RCDL now declares the odometry sensor on /scout_01/odom_world, which
+# only this node publishes. Without it the agent waits in IDLE for odometry that
+# never arrives. spawn_yaw is 0 because the create call above sets position
+# only — the transform must describe the placement that actually happened.
+ros2 run selene_sim world_odometry_node --ros-args \
+    -p robot_id:=scout_01 \
+    -p spawn_x:=55.0 -p spawn_y:=45.0 -p spawn_z:=3.0 -p spawn_yaw:=0.0 &
+
 ros2 run selene_sim battery_node --ros-args \
     -p robot_id:=scout_01 -p robot_type:=scout \
     -p world_params_file:=$P/selene_sim/config/world_params.yaml &

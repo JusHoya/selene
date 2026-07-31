@@ -1,6 +1,11 @@
 """Tests for FleetMonitor."""
 
-from selene_orchestrator.fleet_monitor import FleetMonitor
+import pytest
+
+from selene_orchestrator.fleet_monitor import (
+    DEFAULT_BATTERY_CAPACITY_WH,
+    FleetMonitor,
+)
 
 
 class TestFleetMonitor:
@@ -97,3 +102,79 @@ class TestFleetMonitor:
         timed_out = fm.check_heartbeats(current_time=106.0)
         assert 's1' in timed_out
         assert 's2' not in timed_out
+
+
+class TestPerRobotBatteryCapacity:
+    """D-06, FR-DASH-7's energy clause.
+
+    A single hardcoded 50 Wh was applied to every robot until 2026-07-30 --
+    the scout's RCDL capacity, which understates an excavator (80 Wh) by 37.5%
+    and a hauler (65 Wh) by 23%. The capacity is now reported by the robot in
+    RobotState.battery_capacity_wh, sourced from its own RCDL.
+    """
+
+    def test_a_drop_is_costed_at_the_robots_own_capacity(self):
+        fm = FleetMonitor()
+        fm.update_robot('excavator_01', 'excavator', 'IDLE', 0, 0, 0,
+                        1.0, '', timestamp=0.0, battery_capacity_wh=80.0)
+        fm.update_robot('excavator_01', 'excavator', 'WORKING', 0, 0, 0,
+                        0.5, '', timestamp=1.0, battery_capacity_wh=80.0)
+        # 0.5 of an 80 Wh battery is 40 Wh, not the 25 Wh a fixed 50 would give.
+        assert fm.get_robot_energy_consumed('excavator_01') == pytest.approx(40.0)
+        assert fm.get_total_energy_consumed() == pytest.approx(40.0)
+
+    def test_robots_are_costed_independently(self):
+        fm = FleetMonitor()
+        for rid, rtype, cap in (('scout_01', 'scout', 50.0),
+                                ('hauler_01', 'hauler', 65.0)):
+            fm.update_robot(rid, rtype, 'IDLE', 0, 0, 0, 1.0, '',
+                            timestamp=0.0, battery_capacity_wh=cap)
+            fm.update_robot(rid, rtype, 'NAVIGATING', 0, 0, 0, 0.8, '',
+                            timestamp=1.0, battery_capacity_wh=cap)
+        assert fm.get_robot_energy_consumed('scout_01') == pytest.approx(10.0)
+        assert fm.get_robot_energy_consumed('hauler_01') == pytest.approx(13.0)
+        assert fm.get_total_energy_consumed() == pytest.approx(23.0)
+
+    def test_zero_capacity_falls_back_rather_than_reporting_no_energy(self):
+        """An agent built before the field exists, or one whose HAL raised
+        while reading it, must still report plausible energy."""
+        fm = FleetMonitor()
+        fm.update_robot('s1', 'scout', 'IDLE', 0, 0, 0, 1.0, '', timestamp=0.0)
+        fm.update_robot('s1', 'scout', 'IDLE', 0, 0, 0, 0.5, '', timestamp=1.0)
+        assert fm.get_robot_energy_consumed('s1') == pytest.approx(
+            0.5 * DEFAULT_BATTERY_CAPACITY_WH)
+        assert fm.get_robot_capacity_wh('s1') == DEFAULT_BATTERY_CAPACITY_WH
+
+    def test_a_non_finite_capacity_is_ignored(self):
+        fm = FleetMonitor()
+        fm.update_robot('h1', 'hauler', 'IDLE', 0, 0, 0, 1.0, '',
+                        timestamp=0.0, battery_capacity_wh=float('nan'))
+        fm.update_robot('h1', 'hauler', 'IDLE', 0, 0, 0, 0.5, '',
+                        timestamp=1.0, battery_capacity_wh=float('inf'))
+        assert fm.get_robot_energy_consumed('h1') == pytest.approx(
+            0.5 * DEFAULT_BATTERY_CAPACITY_WH)
+
+    def test_a_reported_capacity_is_latched_against_a_single_bad_sample(self):
+        """One malformed message must not swing the integration between two
+        capacities mid-mission."""
+        fm = FleetMonitor()
+        fm.update_robot('e1', 'excavator', 'IDLE', 0, 0, 0, 1.0, '',
+                        timestamp=0.0, battery_capacity_wh=80.0)
+        fm.update_robot('e1', 'excavator', 'WORKING', 0, 0, 0, 0.5, '',
+                        timestamp=1.0, battery_capacity_wh=0.0)
+        assert fm.get_robot_capacity_wh('e1') == 80.0
+        assert fm.get_robot_energy_consumed('e1') == pytest.approx(40.0)
+
+    def test_charging_is_still_ignored(self):
+        fm = FleetMonitor()
+        fm.update_robot('e1', 'excavator', 'RECHARGING', 0, 0, 0, 0.2, '',
+                        timestamp=0.0, battery_capacity_wh=80.0)
+        fm.update_robot('e1', 'excavator', 'IDLE', 0, 0, 0, 0.9, '',
+                        timestamp=1.0, battery_capacity_wh=80.0)
+        assert fm.get_total_energy_consumed() == pytest.approx(0.0)
+
+    def test_capacity_is_exposed_on_the_robot_record(self):
+        fm = FleetMonitor()
+        fm.update_robot('h1', 'hauler', 'IDLE', 0, 0, 0, 1.0, '',
+                        timestamp=0.0, battery_capacity_wh=65.0)
+        assert fm.get_robot('h1')['battery_capacity_wh'] == 65.0

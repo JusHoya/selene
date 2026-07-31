@@ -13,8 +13,27 @@ export const PSR_ZONES = [
   { name: 'psr_alpha', center: [-100, -150], radius: 60 },
 ];
 
-// Depot and recharge station
-export const DEPOT = { x: -30, y: -100, radius: 10 };
+// Depot and recharge station.
+//
+// THE DEPOT MOVED ON 2026-07-31, and this copy has to move with it. It is a
+// COPY: the authority is depot_x / depot_y in
+// selene_orchestrator/config/orchestrator_params.yaml, which is what a hauler
+// actually receives on TaskAssignment.depot_location, and the `depot` marker in
+// selene_sim/worlds/lunar_psr.sdf, which is what physically exists there.
+// selene_sim/test/test_mission_traversability.py asserts those two agree; this
+// file is a third place and nothing machine-checks it, so it is the one that
+// goes stale. If a delivery ever renders somewhere other than the diamond,
+// suspect this line first.
+//
+// WHY IT MOVED: every ice deposit is inside the PSR crater and the crater rim
+// is 34-39 degrees of uphill on all 24 azimuths sampled at 15 deg spacing, so
+// nothing that drives down to the ice can climb back out. A depot outside the
+// crater made every haul impossible; one on the crater floor makes the ISRU
+// cycle physically completable. The RECHARGE STATION is deliberately still
+// outside, because solar recharge needs sunlight and a permanently shadowed
+// region has none — which means it is behind that same wall. That is an open
+// problem, recorded in docs/phase5_deviation_register.md, not a solved one.
+export const DEPOT = { x: -100, y: -150, radius: 10 };
 export const RECHARGE_STATION = { x: -30, y: -100, radius: 5 };
 
 // Ice deposits (ground truth for reference overlay)

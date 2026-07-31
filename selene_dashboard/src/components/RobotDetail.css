@@ -108,6 +108,13 @@
   color: var(--text-primary);
 }
 
+/* D-06: RCDL battery capacity, Wh (RobotState.battery_capacity_wh). */
+.robot-detail__battery-capacity {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
 .robot-detail__battery-charging {
   display: flex;
   align-items: center;
@@ -408,6 +415,26 @@
 
 .robot-detail__recent-action-result--fail {
   color: var(--accent-red, #ff4757);
+}
+
+/* D-05: in flight — the service call has been sent and neither its response nor
+   the orchestrator's TaskEvent has come back yet. */
+.robot-detail__recent-action-result--sending {
+  color: var(--text-muted);
+}
+
+/* D-05: this row came from THIS browser, not from the orchestrator's event
+   ring. It disappears when the matching TaskEvent arrives; one that stays is a
+   command the orchestrator never acknowledged. */
+.robot-detail__recent-action-local {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--border-light, #2a3550);
+  border-radius: 3px;
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 
 /* === A-stale: no-telemetry banner === */

@@ -40,6 +40,19 @@ class FSMEvent(str, Enum):
     AT_BASE_CHARGED = "AT_BASE_CHARGED"
     CHARGE_COMPLETE = "CHARGE_COMPLETE"
     ENERGY_CRITICAL = "ENERGY_CRITICAL"
+    # ---- The recharge DECISION, added 2026-07-31 closing D-19. ----
+    #
+    # Before these two the agent had no decision to make: every task ended
+    # with TASK_COMPLETE followed by an unconditional _start_recharge(), so
+    # RETURNING always meant "going home to charge" and there was no event
+    # that could mean anything else.
+    #
+    # RECHARGE_NEEDED is deliberately NOT ENERGY_CRITICAL. Reusing that name
+    # for "below the 30% floor" would make the transition log say a robot at
+    # 29% hit an emergency it did not hit, and ENERGY_CRITICAL is the one
+    # event whose meaning is pinned to EnergyManager.is_critical().
+    RECHARGE_NEEDED = "RECHARGE_NEEDED"
+    RECHARGE_NOT_NEEDED = "RECHARGE_NOT_NEEDED"
     FAULT = "FAULT"
     RECOVERY = "RECOVERY"
     SHUTDOWN = "SHUTDOWN"
@@ -67,6 +80,18 @@ _EXPLICIT_TRANSITIONS: dict[tuple[AgentState, FSMEvent], AgentState] = {
     (AgentState.WORKING, FSMEvent.HOPPER_FULL): AgentState.RETURNING,
     (AgentState.RETURNING, FSMEvent.AT_BASE_NEED_CHARGE): AgentState.RECHARGING,
     (AgentState.RETURNING, FSMEvent.AT_BASE_CHARGED): AgentState.IDLE,
+    # D-19. The robot finished a task, does NOT need to charge, and stays in
+    # the field. Fired in the same tick as the TASK_COMPLETE above it, so
+    # RETURNING is never observed by the 2 Hz state publisher and the
+    # orchestrator never sees a robot that is not actually returning.
+    #
+    # RETURNING -> IDLE rather than a second WORKING -> IDLE event: the
+    # WORKING/TASK_COMPLETE cell is already taken, and a parallel event out of
+    # WORKING would give one concept two names. AT_BASE_CHARGED above is the
+    # nearest existing transition and was NOT reused -- it has no production
+    # caller at all (grep: fsm.py and one test), and it asserts the robot is
+    # at base, which is precisely what this event denies.
+    (AgentState.RETURNING, FSMEvent.RECHARGE_NOT_NEEDED): AgentState.IDLE,
     (AgentState.RECHARGING, FSMEvent.CHARGE_COMPLETE): AgentState.IDLE,
     (AgentState.ERROR, FSMEvent.RECOVERY): AgentState.IDLE,
 }
@@ -80,6 +105,17 @@ def _build_full_table() -> dict[tuple[AgentState, FSMEvent], AgentState]:
     for state in AgentState:
         if state not in (AgentState.OFFLINE, AgentState.RECHARGING):
             table[(state, FSMEvent.ENERGY_CRITICAL)] = AgentState.RETURNING
+
+    # RECHARGE_NEEDED from any state that is not already going or gone.
+    #
+    # Excludes RETURNING (already on its way), RECHARGING (already there),
+    # OFFLINE, and ERROR -- the last for the same reason OPERATOR_RECHARGE
+    # excludes it: a faulted robot must not be given a navigation goal, and
+    # FSMEvent.RECOVERY is the only way out of ERROR.
+    for state in AgentState:
+        if state not in (AgentState.OFFLINE, AgentState.RECHARGING,
+                         AgentState.RETURNING, AgentState.ERROR):
+            table[(state, FSMEvent.RECHARGE_NEEDED)] = AgentState.RETURNING
 
     # FAULT from any state except OFFLINE
     for state in AgentState:

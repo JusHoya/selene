@@ -179,27 +179,42 @@ function App() {
     });
     listeners.push(missionTopic);
 
-    // Task announcements
-    const announceTopic = new ROSLIB.Topic({
+    // D-03: the authoritative task table + operator/status event ring.
+    //
+    // NO throttle_rate, deliberately. The publisher is already the rate limiter
+    // (task_queue_publish_rate, 2 Hz) and every message is a COMPLETE snapshot,
+    // so throttling here could only delay a message that is self-sufficient on
+    // arrival — it cannot reduce the work needed to stay correct.
+    //
+    // This topic REPLACES the /orchestrator/task_announcement and
+    // /orchestrator/task_assignment subscriptions that used to be here. They
+    // existed only to feed the client-side lifecycle inference the reducer no
+    // longer performs, so keeping them would make rosbridge serialise two
+    // event-driven topics into dispatches that hit the reducer's default case.
+    // Both topics are still published; nothing in the dashboard reads them.
+    const taskQueueTopic = new ROSLIB.Topic({
       ros,
-      name: TOPICS.TASK_ANNOUNCEMENT,
-      messageType: MSG_TYPES.TASK_ANNOUNCEMENT,
+      name: TOPICS.TASK_QUEUE,
+      messageType: MSG_TYPES.TASK_QUEUE,
     });
-    announceTopic.subscribe((msg) => {
-      dispatch({ type: 'ADD_TASK_ANNOUNCEMENT', payload: msg });
+    taskQueueTopic.subscribe((msg) => {
+      dispatch({ type: 'UPDATE_TASK_QUEUE', payload: msg });
     });
-    listeners.push(announceTopic);
+    listeners.push(taskQueueTopic);
 
-    // Task assignments
-    const assignTopic = new ROSLIB.Topic({
+    // D-02: the orchestrator's fused posterior grid. Also a complete snapshot,
+    // also unthrottled, for the same reason — and here throttling would be
+    // actively harmful, since dropping one 0.5 Hz snapshot means up to two
+    // seconds of a visibly stale heatmap.
+    const resourceMapTopic = new ROSLIB.Topic({
       ros,
-      name: TOPICS.TASK_ASSIGNMENT,
-      messageType: MSG_TYPES.TASK_ASSIGNMENT,
+      name: TOPICS.RESOURCE_MAP,
+      messageType: MSG_TYPES.RESOURCE_MAP,
     });
-    assignTopic.subscribe((msg) => {
-      dispatch({ type: 'ADD_TASK_ASSIGNMENT', payload: msg });
+    resourceMapTopic.subscribe((msg) => {
+      dispatch({ type: 'UPDATE_RESOURCE_MAP', payload: msg });
     });
-    listeners.push(assignTopic);
+    listeners.push(resourceMapTopic);
 
     return () => {
       listeners.forEach((l) => l.unsubscribe());
@@ -212,7 +227,9 @@ function App() {
     <div className="app">
       <Header
         connected={connected}
-        simTime={state.missionProgress?.elapsed_sim_time}
+        /* D-06: renamed from simTime — this is orchestrator wall clock, not
+           simulation time. See the comment in Header.jsx. */
+        elapsedSec={state.missionProgress?.elapsed_sim_time}
         showResourceGraph={showResourceGraph}
         onToggleResourceGraph={toggleResourceGraph}
       />
@@ -226,7 +243,23 @@ function App() {
         ) : (
           <FleetMap
             robots={state.robots}
-            resourceReadings={state.resourceReadings}
+            /* `resourceReadings` is deliberately NOT passed any more. FleetMap
+               stopped consuming it when the heatmap moved from splatting raw
+               per-reading ResourceMapUpdate blobs to rasterising the fused
+               posterior below (D-02), and a prop that is passed but never
+               destructured reads, wrongly, as though the map still builds from
+               raw readings. ResourceGraph still receives it above — a time
+               series is what per-reading data is actually right for. */
+            /* D-02: the fused posterior the heatmap now rasterises, already
+               validated and converted to typed arrays by the reducer, plus the
+               status the legend needs to distinguish "not connected" from
+               "connected, nothing published yet" from "snapshots rejected". */
+            resourceMap={state.resourceMap}
+            resourceMapStatus={{
+              connected,
+              received: !!state.resourceMap,
+              dropped: state.resourceMapDropped,
+            }}
             selectedRobotId={state.selectedRobotId}
             onSelectRobot={selectRobot}
             heatmapVisible={state.heatmapVisible}
@@ -245,9 +278,13 @@ function App() {
 
       <div className="app__sidebar">
         {/* Wave2-A4: pass state/dispatch/callService for override buttons + time-to-empty */}
-        {/* A8: key by robot_id so per-robot local state (recent actions,
-            battery rolling window, pending confirmation) does not bleed
-            across robot selections. */}
+        {/* A8: key by robot_id so per-robot local state (battery rolling
+            window, pending confirmation, and the optimistic in-flight override
+            row) does not bleed across robot selections.
+            D-05: the override HISTORY is deliberately no longer in that list —
+            it moved into the reducer (state.taskEvents) precisely because this
+            key was destroying it on every robot selection. The key stays; what
+            it destroys no longer includes anything the operator needs. */}
         <RobotDetail
           key={selectedRobot?.robot_id || 'no-robot'}
           robot={selectedRobot}

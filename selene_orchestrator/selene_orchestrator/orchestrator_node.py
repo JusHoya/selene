@@ -4,24 +4,37 @@ Manages task auction, fleet health monitoring, and resource map.
 Generates prospect survey waypoints and distributes them via auction.
 """
 
+import math
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 
 from selene_msgs.msg import (
     BidResponse as BidResponseMsg,
     FleetAlert,
+    MaterialEvent,
     MissionProgress,
     ResourceMap as ResourceMapMsg,
     ResourceMapUpdate,
     RobotState,
     TaskAnnouncement,
     TaskAssignment,
+    TaskEvent as TaskEventMsg,
+    TaskQueueState,
+    TaskResult,
+    TaskStatus as TaskStatusMsg,
 )
 from selene_msgs.srv import InjectTask, OverrideRobot
 
@@ -46,7 +59,7 @@ except ImportError:  # pragma: no cover - tested via stub injection
 
     SetRobotCommand = _SetRobotCommandStub  # type: ignore[assignment,misc]
 
-from builtin_interfaces.msg import Duration
+from builtin_interfaces.msg import Duration, Time
 from geometry_msgs.msg import Point
 from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
@@ -56,12 +69,34 @@ from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 from selene_orchestrator.task_auction import TaskAuction, Bid
 from selene_orchestrator.resource_map import ResourceMap
 from selene_orchestrator import resource_map_viz as rmviz
+from selene_orchestrator.task_feed import (
+    AUCTION_ABANDONED,
+    AUCTION_FLEET_CHANGED,
+    AUCTION_NO_BIDS,
+    KIND_OPERATOR,
+    KIND_STATUS,
+    OUTCOME_ASSIGN,
+    OUTCOME_PREFERENCE_DROPPED,
+    OUTCOME_REQUEUE,
+    REQUEUE_STATUS_BY_REASON,
+    TaskEventLog,
+    auction_backoff_sec,
+    auction_failure_reason,
+    resolve_auction_winner,
+    task_rows,
+)
 from selene_orchestrator.htn_planner import HTNPlanner
 from selene_orchestrator.adaptive_survey import (
     AdaptiveSurveyPlanner,
     replan_pending_survey_targets,
     should_replan,
     zone_peak_mean,
+)
+from selene_orchestrator.terrain_guard import (
+    DEFAULT_TERRAIN_GUARD,
+    DEFAULT_TERRAIN_HALF_EXTENT_M,
+    DEFAULT_TERRAIN_MARGIN_M,
+    TerrainGuard,
 )
 from selene_isru.inventory import MaterialInventory
 
@@ -91,10 +126,29 @@ MANUAL_TASK_CAPABILITIES: dict[str, list[str]] = {
     'haul': ['haul'],
 }
 
+# Manual task types that move mass and therefore need a ledger site. A
+# MaterialEvent whose task carries no site_id is dropped by
+# material_event_logic step 4, so injecting one of these without a site
+# produces a robot that really works, a task that really completes, a WARNING
+# that reads like a fault, and a mission-progress numerator that never moves.
+MATERIAL_TASK_TYPES: frozenset[str] = frozenset({'excavate', 'haul'})
+
 # FSM states from which a robot cannot accept a freshly injected task.
 INJECT_BLOCKED_STATES: frozenset[str] = frozenset({
     'ERROR', 'OFFLINE', 'RECHARGING',
 })
+
+# FSM states in which a robot is actively EXECUTING its assigned task rather
+# than merely holding it. selene_agent/fsm.py's AgentState has nine members:
+# IDLE, BIDDING, ASSIGNED, NAVIGATING, WORKING, RETURNING, RECHARGING, ERROR,
+# OFFLINE. Two are deliberately absent here:
+#   ASSIGNED  -- the assignment has landed but _handle_assigned has not started
+#                the skill yet, which is exactly what TaskStatus.ASSIGNED
+#                already says.
+#   RETURNING -- the agent only enters it after firing FSMEvent.TASK_COMPLETE,
+#                and _on_robot_state's completion fallback reads RETURNING as
+#                "finished"; promoting there would fight that.
+WORKING_FSM_STATES: frozenset[str] = frozenset({'NAVIGATING', 'WORKING'})
 
 # FSM states from which a robot cannot accept any operator override.
 OVERRIDE_BLOCKED_STATES: frozenset[str] = frozenset({'ERROR', 'OFFLINE'})
@@ -124,15 +178,185 @@ VALID_OVERRIDE_COMMANDS: frozenset[str] = frozenset({
 # context object and delegate.
 
 
+def _epoch_to_time(seconds: float) -> Time:
+    """Wall-clock epoch seconds -> builtin_interfaces/Time.
+
+    The queue and event log keep times as plain floats so they stay ROS-free
+    and unit-testable; this is the single conversion point.
+
+    WALL CLOCK, not ``time.monotonic()``: a monotonic value has an arbitrary
+    epoch and would serialise into a Time field the dashboard renders as a date
+    in 1970. Not simulation time either -- ``use_sim_time`` has zero code
+    occurrences repo-wide.
+    """
+    value = max(0.0, float(seconds))
+    sec = int(value)
+    # round() at the top of the fractional range can produce exactly 1e9,
+    # which is not a legal nanosec; carry it into the seconds field.
+    nanosec = int(round((value - sec) * 1e9))
+    if nanosec >= 1_000_000_000:
+        sec += 1
+        nanosec -= 1_000_000_000
+    return Time(sec=sec, nanosec=nanosec)
+
+
+def _ledger_qos(depth: int) -> QoSProfile:
+    """RELIABLE + TRANSIENT_LOCAL, KEEP_LAST(depth) — the ledger profile.
+
+    Used by both agent->orchestrator ledger topics. Publisher and subscriber
+    must agree or DDS refuses the match entirely, which presents as a topic
+    with a publisher, a subscriber, and no messages.
+
+    NOT VERIFIED HERE: Fast DDS's transient-local replay behaviour could not be
+    exercised on this box (no ROS install). If the assumption is wrong the
+    design degrades to LOST HISTORY, never to double-counted mass, because
+    MaterialEvent.event_id dedupe makes replay idempotent either way.
+    """
+    return QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        history=QoSHistoryPolicy.KEEP_LAST,
+        depth=depth,
+    )
+
+
+#: Material event types the ledger understands, mapped to what each one means.
+#: Lower-case strings rather than uint8 constants, matching RobotState.fsm_state,
+#: FleetAlert.severity and SetRobotCommand.command.
+MATERIAL_EVENT_TYPES: frozenset[str] = frozenset({
+    'extracted', 'loaded', 'unloaded',
+})
+
+
+# ---- Haul authorisation (D-06) ------------------------------------------- #
+# Why a haul must not be dispatched, or '' when it may be. These strings are
+# also the TaskStatus.status_reason the task is re-queued with, so the
+# dashboard shows the cause instead of a bare PENDING (D-03).
+HAUL_BLOCK_NO_SITE: str = 'haul_no_site'
+HAUL_BLOCK_NO_MATERIAL: str = 'haul_no_material'
+
+
+def authorise_task_quantity(task, site_available: Callable[[str], float],
+                            ) -> tuple[float, str]:
+    """Mass a TaskAssignment may authorise, kg, and why it may not be sent.
+
+    Returns ``(quantity_kg, block_reason)``. ``block_reason`` is '' when the
+    assignment may go out; any other value means the caller must NOT publish
+    it and is suitable as a ``TaskStatus.status_reason``.
+
+    ZERO IS NOT AVAILABLE AS "AUTHORISE NOTHING", and that is the whole reason
+    this function returns two values instead of one. ``TaskAssignment.msg``
+    documents ``quantity_kg`` 0.0 as *unconstrained -- fill to the robot's own
+    RCDL capacity*, and the agent implements exactly that:
+    ``HaulSkill._clamp_quantity`` maps any non-positive request to 0.0, and
+    ``_update_loading`` then calls ``trigger_load(max_kg=-1.0)``, which
+    ``GazeboTransferActuator`` sends as a bare ``"load"`` and the sim's fill
+    model services by filling to ``capacity_kg``. So a haul published with 0.0
+    does the OPPOSITE of authorising nothing: it authorises the hauler's whole
+    50 kg bin (``selene_hal/config/hauler.yaml:29``) of material no excavator
+    ever extracted. ``MaterialInventory.record_load`` then banks the excess as
+    unaccounted mass and the next event raises a 'material conservation
+    breach' alert -- blaming the instruments for the orchestrator's own
+    fabrication. Returning 0.0 here as "nothing is authorised", which is what
+    this used to do, was therefore the exact defect it was written to prevent.
+
+    ONLY A HAUL IS GATED. An excavate at 0.0 genuinely means "fill the
+    hopper", which is what every HTN-generated excavate wants and what
+    ``ExcavateSkill`` does with it.
+
+    AN OPERATOR-NAMED MASS IS HONOURED AS-IS, unclamped, even when the ledger
+    says the site is empty (FR-DASH-5 / D-04: the operator asked for that
+    number). It is not a fabrication by the orchestrator, and it is not
+    silent either: ``record_load`` clamps the accepted mass to what the site
+    actually holds and banks the difference in ``get_unaccounted_kg()``, which
+    ``material_event_logic`` step 6 reports as a named overdraw and
+    ``MissionProgress.unaccounted_quantity`` publishes.
+
+    Args:
+        task: a ``TaskEntry``-shaped object, or None.
+        site_available: ``MaterialInventory.get_site_available`` -- kg waiting
+            at a site, raising ``KeyError`` for a site nobody registered.
+    """
+    if task is None:
+        return 0.0, ''
+    explicit = float(getattr(task, 'quantity_kg', 0.0) or 0.0)
+    if getattr(task, 'task_type', '') != 'haul':
+        return (explicit if explicit > 0.0 else 0.0), ''
+    if explicit > 0.0:
+        return explicit, ''
+    site_id = getattr(task, 'site_id', '') or ''
+    if not site_id:
+        return 0.0, HAUL_BLOCK_NO_SITE
+    try:
+        available = float(site_available(site_id))
+    except KeyError:
+        return 0.0, HAUL_BLOCK_NO_SITE
+    if available <= 0.0:
+        return 0.0, HAUL_BLOCK_NO_MATERIAL
+    return available, ''
+
+
+def apply_robot_progress(task_queue, msg) -> str:
+    """Mirror one RobotState onto its queue entry. Returns the task_id touched.
+
+    Two things, both of which need the queue's view of who holds what:
+
+    1. ``TaskStatus.progress`` -- the ONLY source of it. A task no robot is
+       currently running keeps its last reported value.
+    2. ASSIGNED -> IN_PROGRESS, the transition D-03 left with no production
+       writer at all. Every call site in this repository wrote AUCTIONING,
+       ASSIGNED, COMPLETED, FAILED, INTERRUPTED or PENDING; IN_PROGRESS was
+       written only by ``test_e2e_integration``'s own fixture. The dashboard
+       draws the progress bar solely for ``status === 'IN_PROGRESS'``
+       (``TaskQueue.jsx:120,173-182``), so ``TaskStatus.progress`` reached the
+       browser and was discarded, and the 'RUN' badge and ``--in-progress``
+       style were dead code.
+
+    The promotion is gated on the robot naming THIS task
+    (``current_task_id``): an agent free-running its own survey lattice sets
+    ``current_task_id`` to ``prospect_<n>`` and an operator goto sets
+    ``override_goto_<n>``, neither of which is an orchestrator task id, and
+    neither should promote whatever the robot last won an auction for.
+
+    Routed through ``set_status`` rather than assigning ``task.status`` so the
+    transition also reaches ``TaskEventLog`` via the queue's status listener.
+    ``set_status`` no-ops on an unchanged status, so this fires exactly once
+    per task however often the robot reports.
+    """
+    robot_id = getattr(msg, 'robot_id', '') or ''
+    active_task_id = task_queue.get_task_for_robot(robot_id)
+    if not active_task_id:
+        return ''
+    task_queue.set_progress(
+        active_task_id, float(getattr(msg, 'task_progress', 0.0)))
+    if (getattr(msg, 'current_task_id', '') == active_task_id
+            and getattr(msg, 'fsm_state', '') in WORKING_FSM_STATES):
+        task_queue.set_status(
+            active_task_id, TaskStatus.IN_PROGRESS, 'robot_started')
+    return active_task_id
+
+
 @dataclass
 class _InjectTaskContext:
-    """Injected dependencies for ``inject_task_logic``."""
+    """Injected dependencies for ``inject_task_logic``.
+
+    ``publish_assignment`` is gone as of 2026-07-30: the force-assign path it
+    served was deleted (D-04). A targeted injection is now a constrained
+    auction, so nothing in this handler publishes a TaskAssignment.
+    """
     task_queue: Any
     fleet_monitor: Any
     next_task_id: Callable[[], str]
     now_stamp: Any
-    publish_assignment: Callable[[str, str, str, Any], None]
     publish_alert: Callable[[str, str], None]
+    #: The mission's ledger site (``HTNPlanner.get_site_id()``), or '' before
+    #: SelectSite has resolved. Stamped onto injected excavate/haul tasks so
+    #: their MaterialEvents can be credited; see ``inject_task_logic`` step 3.
+    site_id: str = ''
+    #: The terrain box an injected target must lie inside. Defaulted to the
+    #: shipped world rather than to ``None``: a guard that switches itself off
+    #: when a caller forgets to supply one reads as protection and is not.
+    terrain: TerrainGuard = DEFAULT_TERRAIN_GUARD
 
 
 @dataclass
@@ -145,25 +369,70 @@ class _OverrideRobotContext:
     spin_until_complete: Callable[[Any], None]
     publish_alert: Callable[[str, str], None]
     set_command_factory: Callable[[], Any]
+    #: The terrain box a ``send_to_location`` target must lie inside. Same
+    #: default, for the same reason, as ``_InjectTaskContext.terrain``.
+    terrain: TerrainGuard = DEFAULT_TERRAIN_GUARD
 
 
 def inject_task_logic(ctx: _InjectTaskContext, request, response):
     """Pure decision tree for InjectTask. Mutates ctx state, returns response.
 
+    FR-DASH-5, rewritten 2026-07-30 to close D-04. Two things changed.
+
+    (1) ``request.quantity`` IS NOW READ. It was carried in the .srv, collected
+    by the dashboard's TaskInjector, and never looked at: the control was dead
+    end to end. It is kilograms, validated ``>= 0`` and finite, stored on the
+    queue entry, announced, assigned and honoured by the excavate skill. 0.0
+    means unconstrained -- fill to the robot's own RCDL capacity, which is what
+    every task did before, so 0.0 is exactly backward-compatible. It is NOT
+    clamped here: the orchestrator has no HAL and no RCDL, so the capacity
+    limit belongs to the agent, against selene_hal/config/<type>.yaml.
+    For 'prospect' it is ignored (a survey has no mass) and the response says so.
+
+    (2) A TARGETED INJECTION NO LONGER FORCE-ASSIGNS. ``assigned_robot_id``
+    becomes ``TaskEntry.preferred_robot`` and the task enters the auction like
+    any other -- which is what docs/PRD.md:533 (FR-DASH-5(b)) asks for, and
+    which the old code did only when no robot was named. The removed path was
+    already broken for the case it existed to serve: it pre-empted the target
+    robot's running task and then published a TaskAssignment that
+    ``agent_node._on_task_assigned`` discards for any robot not in BIDDING or
+    ASSIGNED -- i.e. exactly the busy robot it was meant to serve. The operator
+    lost the running task and gained nothing. To take a robot off its work,
+    use OverrideRobot 'cancel_task' first; that path is logged, appears in the
+    task history, and works.
+
+    (3) AN EXCAVATE OR HAUL IS STAMPED WITH THE MISSION'S LEDGER SITE, and
+    refused when there is not one yet. Manual injections used to be created
+    with no ``site_id`` at all, so ``material_event_logic``'s step-4 guard
+    dropped every MaterialEvent they produced: the operator got a robot that
+    really drilled the mass it asked for, a task that completed, a WARNING
+    alert that reads like a fault, and a mission-progress bar that did not
+    move. Refusing up front says the same thing at the moment the operator can
+    still act on it.
+
+    (4) THE TARGET IS BOUNDED BY THE TERRAIN. It was not bounded by anything:
+    the operator's coordinates went straight onto the queue. With the frame
+    defect fixed those coordinates are now genuinely world metres, and a world
+    metre outside the 500 m heightfield is a place with no ground under it -- a
+    robot sent there falls, and the falling body's collision AABB aborts the
+    whole simulator (see ``terrain_guard``). Refused, not clamped, because the
+    operator is present and can retype it.
+
     Decision order:
         1. Reject unknown task_type.
-        2. Allocate a fresh manual task_id and add the task to the queue at
-           priority 10.0 (above HTN baseline) with capability requirements.
-        3. If no assigned_robot_id is provided, leave the task PENDING for
-           the next auction tick to pick up.
-        4. Otherwise validate the target robot:
-              - exists in the fleet monitor
-              - not in ERROR/OFFLINE/RECHARGING
-              - has every required capability
-        5. If the robot is busy, interrupt + re-PENDING its current task and
-           publish a WARNING alert before forcing the new assignment.
-        6. Force-assign + publish TaskAssignment immediately so the agent
-           and dashboard see the change without waiting for an auction.
+        2. Reject a negative or non-finite quantity.
+        3. Reject a target outside the terrain safe area.
+        4. Reject an excavate/haul when no extraction site has been selected.
+        5. Allocate a fresh manual task_id; add the task at priority 10.0
+           (above HTN baseline) with capability requirements, the quantity,
+           the preferred robot and the ledger site.
+        6. If a robot was named, run three ADVISORY pre-checks -- it exists,
+           it is not in ERROR/OFFLINE/RECHARGING, it has the capability. They
+           are advisory because the auction itself now enforces capability and
+           availability; they survive because they give the operator an
+           immediate, specific reason instead of a task that quietly never
+           gets picked up. A failed pre-check still rejects the injection and
+           marks the phantom row FAILED.
 
     Failure paths set the freshly-created manual task to FAILED so the
     queue does not retain a phantom row, then return success=False with a
@@ -175,86 +444,118 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
         response.message = f"invalid task_type '{request.task_type}'"
         return response
 
+    quantity = float(getattr(request, 'quantity', 0.0) or 0.0)
+    if not math.isfinite(quantity) or quantity < 0.0:
+        response.success = False
+        response.task_id = ''
+        response.message = (
+            f'invalid quantity {getattr(request, "quantity", None)!r}: '
+            f'must be finite and >= 0 kg (0 = fill to capacity)'
+        )
+        return response
+
+    # THE TERRAIN BOX. Checked BEFORE add_task, like the quantity rejection
+    # above and for the same reason: a rejected injection must leave no phantom
+    # row behind. Every task type is checked, prospect included -- a survey
+    # waypoint off the map drives a scout off the map just as surely as an
+    # excavation does.
+    terrain = getattr(ctx, 'terrain', DEFAULT_TERRAIN_GUARD)
+    target_x = float(request.target_location.x)
+    target_y = float(request.target_location.y)
+    if not terrain.contains(target_x, target_y):
+        response.success = False
+        response.task_id = ''
+        response.message = terrain.rejection(
+            target_x, target_y, request.task_type)
+        return response
+
+    # A survey has no mass. Accept the request rather than rejecting it -- the
+    # operator has not asked for anything impossible -- but say plainly that
+    # the number was discarded, so it does not look honoured in the UI.
+    quantity_ignored = request.task_type == 'prospect' and quantity > 0.0
+    stored_quantity = 0.0 if request.task_type == 'prospect' else quantity
+
+    # The mission has exactly ONE ledger site: HTNPlanner allocates it when the
+    # SelectSite virtual task resolves, and the orchestrator registers it with
+    # MaterialInventory in the same tick (_htn_advance). An operator excavation
+    # is therefore credited to THAT site whatever coordinates the operator
+    # picked -- the ledger is keyed by site_id and never by position. Poses are
+    # world-referenced since 2026-07-31 (register D-08's open item is fixed;
+    # see selene_sim/selene_sim/world_odometry_node.py) but they are still
+    # dead-reckoned, so two robots at one physical place agree only up to their
+    # accumulated wheel slip. Naming the credited site in the response is what
+    # keeps the operator's coordinates and the ledger's key visibly separate.
+    # Rejected BEFORE add_task so no phantom row is left behind, matching the
+    # quantity rejection above.
+    site_id = (getattr(ctx, 'site_id', '') or '').strip()
+    if request.task_type in MATERIAL_TASK_TYPES and not site_id:
+        response.success = False
+        response.task_id = ''
+        response.message = (
+            f"no extraction site has been selected yet, so a "
+            f"'{request.task_type}' task cannot be credited to the material "
+            f'ledger; wait for the survey to resolve SelectSite, or inject a '
+            f'prospect task to help it along'
+        )
+        return response
+    stored_site_id = site_id if request.task_type in MATERIAL_TASK_TYPES else ''
+
     cap_required = list(MANUAL_TASK_CAPABILITIES[request.task_type])
     task_id = ctx.next_task_id()
+    assigned_robot_id = (request.assigned_robot_id or '').strip()
 
     ctx.task_queue.add_task(
         task_id=task_id,
         task_type=request.task_type,
-        target_x=float(request.target_location.x),
-        target_y=float(request.target_location.y),
+        target_x=target_x,
+        target_y=target_y,
         priority=10.0,
         required_capabilities=cap_required,
+        site_id=stored_site_id,
+        quantity_kg=stored_quantity,
+        preferred_robot=assigned_robot_id,
     )
 
-    assigned_robot_id = (request.assigned_robot_id or '').strip()
-    if not assigned_robot_id:
-        ctx.publish_alert(
-            'INFO', f'operator queued {task_id} for auction',
-        )
-        response.success = True
-        response.task_id = task_id
-        response.message = 'queued'
-        return response
-
-    robot = ctx.fleet_monitor.get_robot(assigned_robot_id)
-    if robot is None:
-        ctx.task_queue.set_status(task_id, TaskStatus.FAILED)
+    def _reject(message: str):
+        ctx.task_queue.set_status(task_id, TaskStatus.FAILED,
+                                  'inject_rejected')
         response.success = False
         response.task_id = task_id
-        response.message = f"unknown robot '{assigned_robot_id}'"
+        response.message = message
         return response
 
-    fsm_state = robot.get('fsm_state', '') if isinstance(robot, dict) \
-        else getattr(robot, 'fsm_state', '')
-    capabilities = robot.get('capabilities', []) if isinstance(robot, dict) \
-        else getattr(robot, 'capabilities', [])
-    current_task_id = robot.get('current_task_id', '') if isinstance(robot, dict) \
-        else getattr(robot, 'current_task_id', '')
+    if assigned_robot_id:
+        robot = ctx.fleet_monitor.get_robot(assigned_robot_id)
+        if robot is None:
+            return _reject(f"unknown robot '{assigned_robot_id}'")
 
-    if fsm_state in INJECT_BLOCKED_STATES:
-        ctx.task_queue.set_status(task_id, TaskStatus.FAILED)
-        response.success = False
-        response.task_id = task_id
-        response.message = (
-            f"robot in {fsm_state}, cannot accept task"
-        )
-        return response
+        fsm_state = robot.get('fsm_state', '') if isinstance(robot, dict) \
+            else getattr(robot, 'fsm_state', '')
+        capabilities = robot.get('capabilities', []) if isinstance(robot, dict) \
+            else getattr(robot, 'capabilities', [])
 
-    missing = [c for c in cap_required if c not in (capabilities or [])]
-    if missing:
-        ctx.task_queue.set_status(task_id, TaskStatus.FAILED)
-        response.success = False
-        response.task_id = task_id
-        response.message = f"robot lacks capabilities {missing}"
-        return response
+        if fsm_state in INJECT_BLOCKED_STATES:
+            return _reject(f"robot in {fsm_state}, cannot accept task")
 
-    # Pre-empt any active task on the target robot before forcing the new one.
-    if current_task_id:
-        ctx.task_queue.interrupt_task(
-            current_task_id, {'reason': 'operator_reassign'},
-        )
-        ctx.task_queue.set_status(current_task_id, TaskStatus.PENDING)
-        ctx.publish_alert(
-            'WARNING',
-            f'task {current_task_id} preempted by operator reassign',
-        )
+        missing = [c for c in cap_required if c not in (capabilities or [])]
+        if missing:
+            return _reject(f"robot lacks capabilities {missing}")
 
-    ctx.task_queue.assign_to_robot(task_id, assigned_robot_id)
-    ctx.publish_assignment(
-        task_id,
-        assigned_robot_id,
-        request.task_type,
-        request.target_location,
-    )
-    ctx.publish_alert(
-        'INFO',
-        f'operator force-assigned {task_id} to {assigned_robot_id}',
-    )
+    suffix = f' (preferred {assigned_robot_id})' if assigned_robot_id else ''
+    message = f'queued{suffix}'
+    if quantity_ignored:
+        message += f'; quantity {quantity:.1f} kg ignored for prospect'
+    elif stored_quantity > 0.0:
+        message += f'; target {stored_quantity:.1f} kg'
+    if stored_site_id:
+        # Said out loud because it may not be where the operator clicked: the
+        # ledger has one site per mission and it is keyed by id, not position.
+        message += f'; credited to {stored_site_id}'
 
+    ctx.publish_alert('INFO', f'operator queued {task_id} for auction{suffix}')
     response.success = True
     response.task_id = task_id
-    response.message = 'force-assigned'
+    response.message = message
     return response
 
 
@@ -263,13 +564,25 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
 
     Validation order:
         1. Reject unknown ``request.command``.
+        1b. For ``send_to_location``, reject a target off the terrain. FIRST
+           among the checks that touch state, and before the robot lookup, so
+           the refusal costs nothing and cannot half-apply: a coordinate outside
+           the 500 m heightfield is a place with no ground under it, and a robot
+           driven there falls until its collision AABB aborts Gazebo (see
+           ``terrain_guard``). ``cancel_task`` and ``force_recharge`` ignore
+           ``request.target`` entirely, so they are not checked -- rejecting
+           them on a field they do not read would be a lie about why.
         2. Reject unknown robot.
         3. Reject robots in OFFLINE (any command) and robots in ERROR for
            every command except ``cancel_task`` — cancel is the operator's
            only way out of ERROR, so it is always allowed through.
         4. For ``cancel_task`` and ``force_recharge``, interrupt the current
-           task (if any) and re-PEND it so a future auction can re-dispatch
-           the work to a healthy robot.
+           task (if any). It RESTS in INTERRUPTED and a future auction
+           re-dispatches it from there: ``get_next_ready`` considers
+           REQUEUEABLE_STATUSES, which is PENDING *and* INTERRUPTED. The
+           immediate ``set_status(..., PENDING)`` that used to follow was
+           deleted on 2026-07-30 -- it made a cancelled task indistinguishable
+           from a fresh queue entry, which is D-03's headline defect.
         5. Look up the per-agent SetRobotCommand client; abort early if it
            does not exist or never becomes available.
         6. Build a SetRobotCommand request with a monotonic sequence and
@@ -283,6 +596,21 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
         response.success = False
         response.message = f"invalid command '{request.command}'"
         return response
+
+    if request.command == 'send_to_location':
+        terrain = getattr(ctx, 'terrain', DEFAULT_TERRAIN_GUARD)
+        target_x = float(request.target.x)
+        target_y = float(request.target.y)
+        if not terrain.contains(target_x, target_y):
+            response.success = False
+            response.message = terrain.rejection(
+                target_x, target_y, 'send_to_location')
+            ctx.publish_alert(
+                'WARNING',
+                f'operator override: {request.robot_id} {request.command} -> '
+                f'{response.message}',
+            )
+            return response
 
     robot = ctx.fleet_monitor.get_robot(request.robot_id)
     if robot is None:
@@ -317,12 +645,13 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
         )
         return response
 
-    # Requeue any in-flight task before yanking the robot off it.
+    # Requeue any in-flight task before yanking the robot off it. It lands in
+    # INTERRUPTED and stays there until an auction picks it up again.
     if request.command in ('cancel_task', 'force_recharge') and current_task_id:
         ctx.task_queue.interrupt_task(
             current_task_id, {'reason': f'operator_{request.command}'},
+            reason=f'operator_{request.command}',
         )
-        ctx.task_queue.set_status(current_task_id, TaskStatus.PENDING)
 
     client = ctx.set_command_clients.get(request.robot_id)
     if client is None:
@@ -378,6 +707,225 @@ def override_robot_logic(ctx: _OverrideRobotContext, request, response):
     return response
 
 
+# ---- The material ledger (D-06 / FR-ISRU-2) ------------------------------ #
+
+
+@dataclass
+class _MaterialEventContext:
+    """Long-lived state for ``material_event_logic``.
+
+    Built ONCE by the node and reused for every event, because three of its
+    fields are accumulators that must survive between calls: the dedupe window,
+    the applied counter, and the conservation latch.
+    """
+    task_queue: Any
+    inventory: Any
+    #: severity, source_robot_id, message
+    publish_alert: Callable[[str, str, str], None]
+    residual_tolerance_kg: float = 0.5
+    #: Overdraw this small is float32 conversion noise between the
+    #: excavator's hopper sensor and the hauler's load cell, not a
+    #: disagreement. See MaterialInventory.record_load and
+    #: `material_overdraw_tolerance_kg` in orchestrator_params.yaml.
+    overdraw_tolerance_kg: float = 0.0
+    dedupe_size: int = 4096
+    seen_ids: set = field(default_factory=set)
+    #: FIFO of the ids in ``seen_ids``, so eviction is O(1) and bounded.
+    seen_order: Any = None
+    events_applied: int = 0
+    #: One alert per conservation BREACH, not per event. A persistent
+    #: discrepancy would otherwise emit an alert at every material event and
+    #: bury everything else in AlertLog.jsx.
+    conservation_ok: bool = True
+
+    def __post_init__(self):
+        if self.seen_order is None:
+            self.seen_order = deque(maxlen=max(1, int(self.dedupe_size)))
+
+
+def material_event_logic(ctx: _MaterialEventContext, msg) -> bool:
+    """Apply one MaterialEvent to the ledger. Returns True if it was applied.
+
+    This is the writer ``MaterialInventory`` never had. Until 2026-07-30
+    ``register_site`` / ``record_extraction`` / ``record_load`` /
+    ``record_unload`` had zero production callers, so every mass in
+    MissionProgress was structurally 0.0 and ``check_conservation()`` passed
+    trivially as 0 == 0 + 0 (register entry D-06).
+
+    Decision order, and every branch of it is a way the ledger could be
+    corrupted rather than merely unfilled:
+
+    1. Duplicate ``event_id`` -> return, no side effect, no alert. The
+       publisher uses TRANSIENT_LOCAL, so an orchestrator that restarts
+       receives each agent's history again; without this, replay would DOUBLE
+       the mission's mass. An event with an EMPTY event_id is still applied,
+       but it cannot be deduped and a replay would double-count it; nothing in
+       this repository publishes one (``MaterialEventIdGenerator`` always
+       produces an id), so this is a note about a message from elsewhere, not
+       about the agent.
+    2. Malformed mass (non-finite, or negative) -> drop with a WARNING. A
+       clamp would turn a broken sensor into a plausible number.
+    3. Unknown event_type -> drop with a WARNING.
+    4. Task unknown to the queue, or its ``site_id`` is empty -> drop with a
+       WARNING. NEVER register a site on the fly: an invented site accepts mass
+       into a bucket nothing else knows about, and the conservation identity
+       then holds trivially again -- exactly the failure this whole change
+       exists to remove.
+    5. Dispatch to the ledger.
+    6. A load the site could not cover -> WARNING naming site, requested and
+       accepted mass. That difference is two instruments disagreeing about the
+       same material, which is what FR-ISRU-2 says cannot happen.
+    7. ``residual_mass_kg`` beyond tolerance after 'unloaded' or 'extracted'
+       -> WARNING. Both should leave the container empty; a hauler reporting
+       19 kg delivered while its load cell still reads 7 kg is a fault only
+       this field can show.
+    8. ``check_conservation()`` false -> one WARNING per breach.
+    """
+    event_id = getattr(msg, 'event_id', '') or ''
+    robot_id = getattr(msg, 'robot_id', '') or ''
+    task_id = getattr(msg, 'task_id', '') or ''
+    event_type = getattr(msg, 'event_type', '') or ''
+
+    # 1. Idempotence.
+    if event_id and event_id in ctx.seen_ids:
+        return False
+
+    # 2. A mass that is not a mass.
+    try:
+        mass_kg = float(getattr(msg, 'mass_kg', 0.0))
+        residual_kg = float(getattr(msg, 'residual_mass_kg', 0.0))
+    except (TypeError, ValueError):
+        mass_kg, residual_kg = float('nan'), 0.0
+    if not math.isfinite(mass_kg) or mass_kg < 0.0:
+        ctx.publish_alert(
+            'WARNING', robot_id,
+            f'material event {event_id or "<no id>"} dropped: mass_kg '
+            f'{getattr(msg, "mass_kg", None)!r} is not a valid mass')
+        return False
+
+    # 3. An event type the ledger has no stage for.
+    if event_type not in MATERIAL_EVENT_TYPES:
+        ctx.publish_alert(
+            'WARNING', robot_id,
+            f'material event {event_id or "<no id>"} dropped: unknown '
+            f"event_type '{event_type}'")
+        return False
+
+    # 4. Resolve the site from the TASK, never from a position. Poses are
+    #    world-referenced since 2026-07-31 (register D-08's open item;
+    #    selene_sim/selene_sim/world_odometry_node.py) but they are still
+    #    dead-reckoned, so two robots at one physical place agree only up to
+    #    accumulated wheel slip and a position key would split one deposit into
+    #    several the moment that slip exceeded its tolerance. An id has no
+    #    tolerance to get wrong.
+    task = ctx.task_queue.get_task(task_id)
+    site_id = getattr(task, 'site_id', '') if task is not None else ''
+    if task is None or not site_id:
+        ctx.publish_alert(
+            'WARNING', robot_id,
+            f"material event {event_id or '<no id>'} ({event_type}, "
+            f'{mass_kg:.2f} kg) dropped: task '
+            f"'{task_id}' is "
+            + ('unknown to the queue' if task is None
+               else 'not associated with any extraction site'))
+        return False
+
+    # 5. Apply.
+    try:
+        if event_type == 'extracted':
+            ctx.inventory.record_extraction(site_id, robot_id, mass_kg)
+        elif event_type == 'loaded':
+            accepted = ctx.inventory.record_load(
+                robot_id, site_id, mass_kg, ctx.overdraw_tolerance_kg)
+            # 6. The cross-instrument check. The tolerance is not decoration:
+            # every mass here has been through float32 on the wire, and the
+            # 1e-6 kg this used to compare against is finer than one ulp at
+            # 19 kg (1.9e-6 kg), so the alert fired on healthy hauls. See
+            # `material_overdraw_tolerance_kg` in orchestrator_params.yaml.
+            if accepted + ctx.overdraw_tolerance_kg < mass_kg:
+                ctx.publish_alert(
+                    'WARNING', robot_id,
+                    f'load overdraw at {site_id}: {robot_id} reported '
+                    f'{mass_kg:.2f} kg but only {accepted:.2f} kg had been '
+                    f'extracted there; {mass_kg - accepted:.2f} kg is '
+                    f'unaccounted')
+        else:                                            # 'unloaded'
+            ctx.inventory.record_unload(robot_id, mass_kg)
+    except KeyError:
+        ctx.publish_alert(
+            'WARNING', robot_id,
+            f"material event {event_id or '<no id>'} dropped: site "
+            f"'{site_id}' is not registered in the ledger")
+        return False
+
+    # 7. Does the instrument agree with the transfer it just reported?
+    if event_type in ('unloaded', 'extracted'):
+        if abs(residual_kg) > ctx.residual_tolerance_kg:
+            ctx.publish_alert(
+                'WARNING', robot_id,
+                f'{robot_id} reported {mass_kg:.2f} kg {event_type} but its '
+                f'fill sensor still reads {residual_kg:.2f} kg (tolerance '
+                f'{ctx.residual_tolerance_kg:.2f} kg)')
+
+    if event_id:
+        if len(ctx.seen_order) == ctx.seen_order.maxlen:
+            ctx.seen_ids.discard(ctx.seen_order[0])
+        ctx.seen_order.append(event_id)
+        ctx.seen_ids.add(event_id)
+    ctx.events_applied += 1
+
+    # 8. Latched conservation alert.
+    ok = ctx.inventory.check_conservation()
+    if ok:
+        ctx.conservation_ok = True
+    elif ctx.conservation_ok:
+        ctx.conservation_ok = False
+        progress = ctx.inventory.get_mission_progress()
+        ctx.publish_alert(
+            'WARNING', robot_id,
+            'material conservation breach: extracted '
+            f'{progress.get("extracted", 0.0):.2f} kg vs at_site '
+            f'{progress.get("at_site", 0.0):.2f} + in_transit '
+            f'{progress.get("in_transit", 0.0):.2f} + deposited '
+            f'{progress.get("deposited", 0.0):.2f}; unaccounted '
+            f'{progress.get("unaccounted", 0.0):.2f} kg')
+    return True
+
+
+def build_mission_progress(msg, *, objective_description: str,
+                           target_kg: float, ledger: dict,
+                           fleet_distance_m: float, fleet_energy_wh: float,
+                           elapsed_sec: float, fleet_uptime_sec: float,
+                           material_events_applied: int):
+    """Fill a MissionProgress message. FR-DASH-7.
+
+    Factored out of the node so the ROS-free lane can assert the field/unit
+    mapping; the node passes a real message, a test passes any object with the
+    same attributes.
+
+    UNITS, every one of them, because this message has already carried a task
+    count into a kg formatter once:
+      target/extracted/at_site/in_transit/deposited/unaccounted  kg
+      fleet_distance_total                                       METRES
+      fleet_energy_total                                         WATT-HOURS
+      elapsed_sim_time                                           seconds
+      fleet_uptime_sec                                           seconds
+    """
+    msg.objective_description = objective_description
+    msg.target_quantity = float(target_kg)
+    msg.extracted_quantity = float(ledger.get('extracted', 0.0))
+    msg.in_transit_quantity = float(ledger.get('in_transit', 0.0))
+    msg.deposited_quantity = float(ledger.get('deposited', 0.0))
+    msg.fleet_distance_total = float(fleet_distance_m)
+    msg.fleet_energy_total = float(fleet_energy_wh)
+    msg.elapsed_sim_time = float(elapsed_sec)
+    msg.fleet_uptime_sec = float(fleet_uptime_sec)
+    msg.material_events_applied = int(material_events_applied)
+    msg.at_site_quantity = float(ledger.get('at_site', 0.0))
+    msg.unaccounted_quantity = float(ledger.get('unaccounted', 0.0))
+    return msg
+
+
 class OrchestratorNode(Node):
     """Central fleet orchestrator with auction-based task allocation.
 
@@ -386,12 +934,19 @@ class OrchestratorNode(Node):
     1. On startup, declares ROS parameters, instantiates pure-Python core
        modules (FleetMonitor, TaskQueue, TaskAuction, ResourceMap), and
        generates PSR survey waypoints as prospect tasks.
-    2. Subscribes to per-robot ``/<robot_id>/state`` topics and the shared
-       ``/orchestrator/bid_response`` and ``/orchestrator/map_update`` topics.
-    3. Runs three periodic timers:
+    2. Subscribes to per-robot ``/<robot_id>/state`` topics, the shared
+       ``/orchestrator/bid_response`` and ``/orchestrator/map_update`` topics,
+       and the two agent->orchestrator ledger topics
+       ``/orchestrator/material_event`` and ``/orchestrator/task_result``.
+    3. Runs periodic timers:
        - heartbeat_check (1 Hz): detects timed-out robots, re-queues tasks.
        - auction_tick (2 Hz): starts / resolves auctions for pending tasks.
        - publish_mission_progress (1 Hz): broadcasts aggregate progress.
+       - htn_advance (1 Hz): resolves virtual tasks, registers the ISRU site.
+       - publish_task_queue (task_queue_publish_rate, default 2 Hz).
+       - publish_resource_map (resource_map_publish_rate, default 0.5 Hz).
+       - adaptive_survey_tick (adaptive_survey_replan_rate, default 0.2 Hz).
+       The last three are disabled by a non-positive rate rather than crashing.
     """
 
     def __init__(self):
@@ -400,7 +955,14 @@ class OrchestratorNode(Node):
         # ---- Parameters ----
         self.declare_parameter('auction_timeout_sec', 5.0)
         self.declare_parameter('heartbeat_timeout_sec', 10.0)
-        self.declare_parameter('recharge_threshold', 0.30)
+        # `recharge_threshold` USED TO BE DECLARED HERE AND READ BY NOBODY —
+        # deviation D-19. It was one of the two names on
+        # test_no_orphan_parameters.py's allow-list, and the allow-list was
+        # right: the orchestrator has no way to act on a battery threshold.
+        # The robot decides its own recharges, so the parameter now lives on
+        # the agent (selene_agent/agent_node.py, passed by
+        # selene_agent/launch/agent.launch.py) where agent_node._recharge_reason
+        # reads it. Same move, same reason, as the three bid weights (D-13).
         self.declare_parameter('fleet_state_publish_rate', 1.0)
         self.declare_parameter('resource_map_publish_rate', 0.5)
         # The frame the overlay is stamped with. MEASURED: nothing in this repo
@@ -452,6 +1014,100 @@ class OrchestratorNode(Node):
         self.declare_parameter('map_resolution', 1.0)
         self.declare_parameter('map_width', 500)
         self.declare_parameter('map_height', 500)
+        # ---- FR-DASH-3 / FR-DASH-6: the authoritative task-queue snapshot ----
+        # 2.0 Hz against docs/PRD.md:1506 ("task queue reflects orchestrator
+        # state within 1 second"), leaving a worst-case 500 ms publish latency
+        # before transport. <= 0 disables the topic with a warning rather than
+        # dividing by zero, the same convention as resource_map_publish_rate.
+        self.declare_parameter('task_queue_publish_rate', 2.0)
+        # Depth of the bounded event ring replayed in every snapshot. Every
+        # message carries the whole ring, so this is a per-message cost as well
+        # as a history depth; the dashboard dedupes on TaskEvent.seq.
+        self.declare_parameter('task_queue_event_history', 32)
+        # ---- FR-DASH-5: the constrained auction ----
+        # Auctions a preferred robot may sit out before its preference is
+        # dropped and the auction opens up. 3 rounds at auction_timeout_sec 5.0
+        # is ~15 s of waiting for a robot the operator picked.
+        self.declare_parameter('inject_preferred_robot_max_rounds', 3)
+        # ---- D-20: the auction backoff ----
+        # MEASURED live 2026-07-31: one prospect task reached auction round
+        # 261, re-announcing every ~5.5 s forever at INFO, because
+        # resolve_auction_winner's 'auction_no_bids' re-queued straight to
+        # PENDING and get_next_ready returned the same task immediately. One
+        # auction runs at a time, so that task held the slot and every other
+        # PENDING task in the queue was starved for as long as no robot could
+        # bid.
+        #
+        # Delay after the Nth consecutive no-bid auction is
+        # base * 2**(N-1), capped: 5, 10, 20, 40, 80, 120, 120...
+        # NOT derived from auction_timeout_sec, though 5.0 is the same number
+        # today: how long an auction stays open and how long to wait before
+        # opening another are different questions, and coupling them would
+        # make a slower auction silently a slower retry.
+        self.declare_parameter('auction_backoff_base_sec', 5.0)
+        self.declare_parameter('auction_backoff_max_sec', 120.0)
+        # Consecutive failed auctions before the task stops being announced at
+        # all and rests visibly blocked with status_reason 'auction_abandoned'.
+        # 5 rounds at the delays above is ~2.5 minutes of trying before giving
+        # up. It is NOT permanent: any robot arriving in IDLE wakes every
+        # abandoned task (FleetMonitor.idle_arrivals), because the alternative
+        # is a mission that deadlocks, which is worse than the flood. <= 0
+        # disables giving up and leaves only the backoff.
+        self.declare_parameter('auction_max_failed_rounds', 5)
+        # ---- D-22: noticing that the simulator has died ----
+        # OBSERVED live 2026-07-31 at 10 robots (4/3/3): Gazebo hit an ODE
+        # assertion in collide() and the gz process exited 134 about five
+        # minutes in. `ros2 launch` SURVIVED. Every agent kept ticking and kept
+        # publishing RobotState at 2 Hz, so heartbeat_timeout_sec saw a
+        # perfectly healthy fleet; what stopped was the world. Navigation
+        # failed fleet-wide with "Path blocked, no alternate route" as odom
+        # froze, three scouts went to ERROR, and the orchestrator carried on
+        # auctioning into a dead simulation with NO alert anywhere.
+        #
+        # Seconds a robot's pose may be unchanged before it counts as stalled.
+        # Fires only when EVERY non-OFFLINE robot is stalled and at least one
+        # of them is in a state that implies motion, so a fleet parked at the
+        # charger does not trip it -- see _check_simulation_stall.
+        #
+        # 20 s: the navigator replans and creeps, so a robot working around an
+        # obstacle can be under POSE_MOTION_EPSILON_M for several seconds at a
+        # time, and the whole fleet doing that simultaneously is what this must
+        # not call a dead simulator. <= 0 disables the check.
+        self.declare_parameter('sim_stall_timeout_sec', 20.0)
+        # ---- FR-DASH-7 / FR-ISRU-2: the material ledger ----
+        # The ISRU processing depot every haul delivers to. NOT the recharge
+        # station: see orchestrator_params.yaml for the three-way position
+        # inconsistency this deliberately does not fix.
+        self.declare_parameter('depot_x', 50.0)
+        self.declare_parameter('depot_y', 50.0)
+        # MaterialEvent ids retained for duplicate suppression. The topic is
+        # TRANSIENT_LOCAL, so a restarting orchestrator is replayed each
+        # agent's history and a repeat must be a no-op rather than doubled mass.
+        self.declare_parameter('material_event_dedupe_size', 4096)
+        # How much mass may remain in a hopper or bin after it reported
+        # emptying before that counts as an instrument disagreement. 0.5 kg is
+        # 2.5% of the excavator hopper's 20 kg and 1% of the hauler bin's 50 kg.
+        self.declare_parameter('material_residual_tolerance_kg', 0.5)
+        # How far a hauler's load cell may exceed the excavator's hopper
+        # sensor before it is a real disagreement. Below one gram it is
+        # float32 conversion noise: one ulp at 19 kg is 1.9e-6 kg and
+        # the hard-coded 1e-6 this replaces was finer than that, so the
+        # alert fired on every successful haul.
+        self.declare_parameter('material_overdraw_tolerance_kg', 0.001)
+        # ---- The terrain box every operator-supplied target must lie in ----
+        # The heightfield is 500 m square centred on the origin
+        # (selene_sim/models/lunar_terrain/model.sdf), so its half-extent is
+        # 250 m; the margin is what a target must additionally keep clear of
+        # that edge. Both numbers are derived and justified in
+        # selene_sim/config/world_params.yaml (world.bounds, safety_margin_m),
+        # and selene_sim/test/test_world_extent_agrees.py fails the build if
+        # this file, that file, nav_params.yaml and terrain_datum.json stop
+        # describing the same square. They are parameters rather than constants
+        # so a different world (FR-SIM-7(d) makes the world file configurable)
+        # can be given its own bound without a code change.
+        self.declare_parameter('terrain_half_extent_m',
+                               DEFAULT_TERRAIN_HALF_EXTENT_M)
+        self.declare_parameter('terrain_margin_m', DEFAULT_TERRAIN_MARGIN_M)
         self.declare_parameter(
             'fleet_robot_ids',
             ['scout_01', 'scout_02', 'excavator_01', 'hauler_01'],
@@ -476,6 +1132,32 @@ class OrchestratorNode(Node):
             self.get_parameter('adaptive_survey_seed_waypoints').value)
         self._adaptive_min_signal_wt = float(
             self.get_parameter('adaptive_survey_min_signal_wt').value)
+        queue_rate = self.get_parameter('task_queue_publish_rate').value
+        event_history = int(
+            self.get_parameter('task_queue_event_history').value)
+        self._preferred_robot_max_rounds = int(
+            self.get_parameter('inject_preferred_robot_max_rounds').value)
+        self._auction_backoff_base = float(
+            self.get_parameter('auction_backoff_base_sec').value)
+        self._auction_backoff_max = float(
+            self.get_parameter('auction_backoff_max_sec').value)
+        self._auction_max_failed_rounds = int(
+            self.get_parameter('auction_max_failed_rounds').value)
+        self._sim_stall_timeout = float(
+            self.get_parameter('sim_stall_timeout_sec').value)
+        self._depot = (float(self.get_parameter('depot_x').value),
+                       float(self.get_parameter('depot_y').value))
+        dedupe_size = int(
+            self.get_parameter('material_event_dedupe_size').value)
+        residual_tolerance = float(
+            self.get_parameter('material_residual_tolerance_kg').value)
+        overdraw_tolerance = float(
+            self.get_parameter('material_overdraw_tolerance_kg').value)
+        self._terrain = TerrainGuard(
+            half_extent=float(
+                self.get_parameter('terrain_half_extent_m').value),
+            margin=float(self.get_parameter('terrain_margin_m').value),
+        )
 
         # ---- Core modules ----
         self._fleet = FleetMonitor(heartbeat_timeout=heartbeat_timeout)
@@ -490,7 +1172,15 @@ class OrchestratorNode(Node):
         )
 
         # ---- Phase 4 modules ----
-        self._htn_planner = HTNPlanner(self._task_queue, self._resource_map)
+        # deposited_source wires the HTN planner's deposited_kg to the MEASURED
+        # ledger. Without it the planner reports completed_hauls x nominal
+        # hopper capacity -- a task count times an assumption -- and that number
+        # would reach the dashboard as a mass.
+        self._inventory = MaterialInventory()
+        self._htn_planner = HTNPlanner(
+            self._task_queue, self._resource_map,
+            deposited_source=self._inventory.get_total_deposited,
+        )
         # FR-MAP-3. The zone comes from the module constants so it cannot
         # drift from the HTN decomposition. signal_probe_radius is deliberately
         # NOT a ROS parameter: it defaults to min_spacing inside the planner,
@@ -514,11 +1204,54 @@ class OrchestratorNode(Node):
         )
         # Reading count at the last replan; the "new evidence" half of the gate.
         self._adaptive_last_readings = 0
-        self._inventory = MaterialInventory()
+
+        # ---- D-03 / D-05: the task feed ----
+        self._events = TaskEventLog(capacity=event_history)
+        # One hook rather than an append at each of the eleven transition
+        # sites, so a twelfth cannot be added without being logged.
+        self._task_queue.set_status_listener(self._on_task_status_change)
+        # ---- D-06: the material ledger ----
+        self._material_ctx = _MaterialEventContext(
+            task_queue=self._task_queue,
+            inventory=self._inventory,
+            publish_alert=self._publish_alert,
+            residual_tolerance_kg=residual_tolerance,
+            overdraw_tolerance_kg=overdraw_tolerance,
+            dedupe_size=dedupe_size,
+        )
+        #: site_ids already handed to MaterialInventory.register_site.
+        self._registered_sites: set[str] = set()
+        #: task_id -> the haul block reason last alerted on, so a permanently
+        #: undispatchable haul produces one alert rather than one per tick.
+        self._haul_block_alerted: dict[str, str] = {}
+        # ---- D-20: the auction backoff ----
+        #: task_id -> the no-bid reason last LOGGED for it. The whole point of
+        #: D-20's logging half: 261 rounds produced 261 identical INFO lines
+        #: because nothing remembered what the last one said.
+        self._auction_failure_logged: dict[str, str] = {}
+        #: ``FleetMonitor.idle_arrivals`` as of the last auction tick. A change
+        #: means a robot arrived in IDLE, which is the only new information
+        #: that can make an abandoned task biddable.
+        self._last_idle_arrivals = 0
+        #: D-22: True while the fleet-wide odometry freeze is being reported,
+        #: so the CRITICAL alert is raised once on entry and once on recovery
+        #: rather than at 1 Hz for the rest of the mission.
+        self._sim_stalled = False
 
         # ---- Tracking ----
         self._start_time = self.get_clock().now()
         self._alert_counter = 0
+        #: D-18: ResourceMapUpdate messages ResourceMap.update() refused. A
+        #: reading dropped silently is indistinguishable from a scout that
+        #: never sampled, so _on_map_update logs off this counter.
+        self._map_updates_rejected = 0
+        #: D-18: consecutive _publish_resource_map failures. The map publisher
+        #: is the one timer whose payload is derived arithmetic over ~250k
+        #: cells, and an exception in an rclpy timer callback propagates out of
+        #: the executor: it does not merely skip a frame, it takes the
+        #: orchestrator down. Counted so the catch cannot hide a permanent
+        #: fault behind an occasional log line.
+        self._map_publish_failures = 0
 
         # ---- Subscribers ----
         # Per-robot state subscriptions
@@ -546,6 +1279,25 @@ class OrchestratorNode(Node):
             10,
         )
 
+        # Measured mass transfers and terminal task outcomes from agents.
+        # RELIABLE + TRANSIENT_LOCAL on both ends: this is the ledger, and a
+        # dropped sample is mass that vanishes from mission progress with
+        # nothing logged anywhere. Transient-local also means an orchestrator
+        # that starts after an agent still receives that agent's history, which
+        # MaterialEvent.event_id dedupe makes idempotent.
+        self.create_subscription(
+            MaterialEvent,
+            '/orchestrator/material_event',
+            self._on_material_event,
+            _ledger_qos(100),
+        )
+        self.create_subscription(
+            TaskResult,
+            '/orchestrator/task_result',
+            self._on_task_result,
+            _ledger_qos(50),
+        )
+
         # ---- Publishers ----
         self._announce_pub = self.create_publisher(
             TaskAnnouncement, '/orchestrator/task_announcement', 10,
@@ -566,6 +1318,15 @@ class OrchestratorNode(Node):
         # FR-MAP-4: the same posterior as a colour-coded RViz2 overlay.
         self._resource_map_marker_pub = self.create_publisher(
             MarkerArray, '/orchestrator/resource_map_markers', 10,
+        )
+        # FR-DASH-3: the authoritative task table plus the operator event ring.
+        # DEFAULT (volatile) QoS, deliberately: a complete 2 Hz snapshot needs
+        # no durability negotiation, and transient_local latching is the part of
+        # ROS QoS rosbridge handles least predictably -- the bridge subscribes
+        # with its own profile and a durability mismatch drops the sample with
+        # nothing surfaced client-side.
+        self._task_queue_pub = self.create_publisher(
+            TaskQueueState, '/orchestrator/task_queue', 10,
         )
 
         # ---- Operator services (FR-DASH-5 / FR-DASH-6) ----
@@ -626,6 +1387,17 @@ class OrchestratorNode(Node):
                 'resource_map_publish_rate is %r; the fused resource map and '
                 'the RViz2 overlay will NOT be published.' % (map_rate,))
 
+        # FR-DASH-3. Same convention again: a non-positive rate turns the topic
+        # off with a warning instead of dividing by zero.
+        if queue_rate and queue_rate > 0.0:
+            self.create_timer(1.0 / queue_rate, self._publish_task_queue,
+                              callback_group=self._timer_cb_group)
+        else:
+            self.get_logger().warn(
+                'task_queue_publish_rate is %r; /orchestrator/task_queue will '
+                'NOT be published and the dashboard task panel will stay '
+                'empty.' % (queue_rate,))
+
         # FR-MAP-3. Same disable-on-non-positive-rate convention as the map
         # publisher above: a rate of 0 is the documented way to fall back to the
         # deterministic lattice, not a crash.
@@ -640,6 +1412,7 @@ class OrchestratorNode(Node):
 
         # ---- Generate survey tasks ----
         self._generate_survey_tasks()
+        self._audit_mission_geometry()
 
         self.get_logger().info(
             f'Orchestrator started | fleet={fleet_ids} '
@@ -664,20 +1437,41 @@ class OrchestratorNode(Node):
             current_task_id=msg.current_task_id,
             capabilities=list(msg.capabilities),
             timestamp=time.monotonic(),
+            # FR-DASH-7 energy clause: the robot's own RCDL capacity, so the
+            # fleet energy total stops assuming every robot is a 50 Wh scout.
+            battery_capacity_wh=float(getattr(msg, 'battery_capacity_wh', 0.0)),
         )
 
-        # Detect task completion: robot finished task and returned to idle
+        # FR-DASH-3: mirror the running skill's progress onto the queue entry
+        # and promote ASSIGNED -> IN_PROGRESS once the robot is actually
+        # working it. Both live in apply_robot_progress so the ROS-free lane
+        # can drive the transition from a RobotState-shaped input rather than
+        # by calling set_status directly -- which is how IN_PROGRESS came to
+        # exist only inside a test fixture in the first place.
+        apply_robot_progress(self._task_queue, msg)
+
+        # Detect task completion: robot finished task and returned to idle.
+        #
+        # THIS IS NOW A FALLBACK. TaskResult (_on_task_result) is authoritative
+        # and terminates tasks with an outcome; this positional heuristic
+        # cannot tell success from failure at all -- the agent fires
+        # FSMEvent.TASK_COMPLETE on skill failure as well as success, so a
+        # failed excavate arrived here as RETURNING/IDLE with no task id and
+        # was recorded COMPLETED. It survives only for an agent that never
+        # sends a TaskResult, and skips anything already terminated.
         if msg.fsm_state in ('RETURNING', 'IDLE') and msg.current_task_id == '':
             task_id = self._task_queue.get_task_for_robot(msg.robot_id)
             if task_id:
                 task = self._task_queue.get_task(task_id)
-                if task and task.status in (
+                if task and not task.terminal_reported and task.status in (
                     TaskStatus.ASSIGNED,
                     TaskStatus.IN_PROGRESS,
                 ):
-                    self._task_queue.mark_complete(task_id)
+                    self._task_queue.mark_complete(
+                        task_id, 'inferred_from_robot_state')
                     self.get_logger().info(
-                        f'Task {task_id} completed by {msg.robot_id}'
+                        f'Task {task_id} completed by {msg.robot_id} '
+                        f'(inferred; no TaskResult received)'
                     )
 
         # Detect robot error — interrupt its task and re-queue
@@ -689,17 +1483,64 @@ class OrchestratorNode(Node):
                     TaskStatus.ASSIGNED,
                     TaskStatus.IN_PROGRESS,
                 ):
+                    # Rests in INTERRUPTED; get_next_ready re-auctions from
+                    # there. The set_status(..., PENDING) that used to follow
+                    # is gone (D-03).
                     self._task_queue.interrupt_task(task_id, {
                         'reason': 'robot_error',
                         'robot_id': msg.robot_id,
-                    })
-                    # Re-queue the interrupted task as PENDING for re-auction
-                    self._task_queue.set_status(task_id, TaskStatus.PENDING)
+                    }, reason='robot_error')
                     self._publish_alert(
                         'WARNING', msg.robot_id,
                         f'Task {task_id} interrupted due to robot error, '
                         f're-queued',
                     )
+
+    def _on_material_event(self, msg: MaterialEvent) -> None:
+        """Apply one measured mass transfer to the ISRU ledger — D-06."""
+        applied = material_event_logic(self._material_ctx, msg)
+        if applied:
+            self.get_logger().debug(
+                'material event %s: %s %.2f kg by %s (task %s)'
+                % (msg.event_id, msg.event_type, msg.mass_kg, msg.robot_id,
+                   msg.task_id))
+
+    def _on_task_result(self, msg: TaskResult) -> None:
+        """Terminate a task on the agent's own report — D-03.
+
+        This is the ONLY way TaskStatus.FAILED becomes reachable. Before it
+        existed the orchestrator inferred completion from an idle robot with an
+        empty current_task_id, which is true of a failed task as well as a
+        successful one, so the queue recorded failures as completions.
+        """
+        task = self._task_queue.get_task(msg.task_id)
+        if task is None:
+            self.get_logger().warn(
+                f'TaskResult for unknown task {msg.task_id} from '
+                f'{msg.robot_id}; ignored')
+            return
+        task.terminal_reported = True
+        if msg.success:
+            self._task_queue.mark_complete(msg.task_id, 'skill_complete')
+        else:
+            reason = msg.failure_reason or 'skill_failed'
+            self._task_queue.mark_failed(msg.task_id, reason)
+            self._publish_alert(
+                'WARNING', msg.robot_id,
+                f'Task {msg.task_id} ({msg.task_type}) FAILED: {reason}')
+
+    def _on_task_status_change(self, task, previous) -> None:
+        """TaskQueue status listener — one TaskEvent per real transition."""
+        self._events.append(
+            kind=KIND_STATUS,
+            action=getattr(task.status, 'name', str(task.status)),
+            task_id=task.task_id,
+            robot_id=task.assigned_robot,
+            actor=task.assigned_robot or 'orchestrator',
+            detail=task.status_reason,
+            target=(task.target_x, task.target_y),
+            stamp=task.status_changed,
+        )
 
     def _on_bid_response(self, msg: BidResponseMsg) -> None:
         """Collect bid during an active auction window."""
@@ -713,6 +1554,43 @@ class OrchestratorNode(Node):
             ))
 
     def _publish_resource_map(self) -> None:
+        """Timer entry point for the fused posterior and the RViz2 overlay.
+
+        D-18 — WHY THERE IS A CATCH HERE AND NOWHERE ELSE IN THIS FILE. An
+        exception raised in an rclpy timer callback is not confined to the
+        frame: it propagates out of `executor.spin()` and ends the process. The
+        defect this catch exists for did exactly that — a non-finite cell mean
+        raised `ValueError: cannot convert float NaN to integer` from
+        `resource_map_viz._js_round` -> `math.floor`, reached through
+        `marker_colours` below, while the dashboard drew a plausible dark-blue
+        patch from the same posterior.
+
+        Both of the specific paths are now closed upstream — ResourceMap.update
+        refuses a non-finite reading, and resource_map_viz is total for every
+        float — so this is the third layer and should never fire. It is here
+        because of what this callback IS: the only timer whose payload is
+        derived arithmetic over a ~250 000-cell grid, and the only one that
+        publishes two coupled messages. Losing one frame of a 0.5 Hz overlay is
+        a cosmetic fault; losing the orchestrator is a mission one, and the
+        exit gate would report it as "the fleet stopped bidding".
+
+        Deliberately NOT silent: every failure is counted and the first is
+        logged with its traceback, because an overlay that quietly stops
+        updating looks exactly like a fleet that has stopped surveying.
+        """
+        try:
+            self._publish_resource_map_once()
+        except Exception as exc:                     # noqa: BLE001 - see above
+            self._map_publish_failures += 1
+            if (self._map_publish_failures == 1
+                    or self._map_publish_failures % 50 == 0):
+                self.get_logger().error(
+                    f'_publish_resource_map failed '
+                    f'({self._map_publish_failures} time(s)): {exc!r}. '
+                    f'/orchestrator/resource_map and the RViz2 overlay are '
+                    f'STALE; the orchestrator is otherwise unaffected.')
+
+    def _publish_resource_map_once(self) -> None:
         """Publish the fused posterior and its RViz2 overlay.
 
         FR-MAP-1(e)(f) and FR-MAP-4. Both messages describe the SAME snapshot,
@@ -803,13 +1681,39 @@ class OrchestratorNode(Node):
         self._resource_map_marker_pub.publish(MarkerArray(markers=[marker]))
 
     def _on_map_update(self, msg: ResourceMapUpdate) -> None:
-        """Update resource map with a new scout sensor reading."""
-        self._resource_map.update(
+        """Update resource map with a new scout sensor reading.
+
+        D-18: the rejection lives in ResourceMap.update() — the boundary that
+        owns the grid — and this method exists to make the rejection VISIBLE.
+        A dropped reading is otherwise indistinguishable from a scout that
+        never sampled, which is exactly how the hauler load-cell topic mismatch
+        (D-11) survived two phases.
+
+        Throttled by count rather than by time: a scout whose sensor has gone
+        non-finite publishes at its full prospect rate, and an unthrottled warn
+        would bury every other line in the log. The first one is always
+        printed, because the first one is the one that dates the fault.
+        """
+        applied = self._resource_map.update(
             x=msg.location.x,
             y=msg.location.y,
             reading=msg.ice_concentration,
             sensor_uncertainty=msg.sensor_uncertainty,
         )
+        if applied:
+            return
+
+        self._map_updates_rejected += 1
+        if (self._map_updates_rejected == 1
+                or self._map_updates_rejected % 100 == 0):
+            self.get_logger().warn(
+                f'Rejected map update #{self._map_updates_rejected} from '
+                f'{msg.scout_id}: unusable reading '
+                f'ice_concentration={msg.ice_concentration!r} '
+                f'sensor_uncertainty={msg.sensor_uncertainty!r} at '
+                f'({msg.location.x!r}, {msg.location.y!r}). The fused map is '
+                f'unchanged; check this robot\'s scalar-field sensor and its '
+                f'RCDL noise_stddev.')
 
     # ------------------------------------------------------------------ #
     #  Timer callbacks                                                     #
@@ -830,10 +1734,103 @@ class OrchestratorNode(Node):
             self.get_logger().warn(
                 f'Robot {rid} timed out, recovered tasks: {recovered}'
             )
+        # D-22. Shares this 1 Hz timer deliberately: the two checks answer the
+        # same question -- "is the fleet still alive" -- from opposite sides.
+        # The heartbeat sees a process stop; this sees the WORLD stop while
+        # every process keeps running.
+        self._check_simulation_stall()
+
+    def _check_simulation_stall(self) -> None:
+        """Raise a CRITICAL alert when the whole fleet's odometry freezes.
+
+        WHAT THIS IS FOR (D-22). At 10 robots (4 scouts / 3 excavators / 3
+        haulers -- the fleet `selene_sim/config/spawn_positions.yaml` describes
+        for NFR-1.4) Gazebo hit an ODE assertion in `collide()` and exited 134
+        about five minutes into a run on 2026-07-31. `ros2 launch` survived.
+        Every agent process survived, kept ticking at 10 Hz and kept publishing
+        RobotState at 2 Hz, so `check_heartbeats` saw a completely healthy
+        fleet. Navigation then failed fleet-wide as odom froze, three scouts
+        went to ERROR, and the orchestrator kept auctioning into a dead
+        simulation. NOTHING IN THE SYSTEM NOTICED.
+
+        WHY HERE AND NOT IN THE AGENT. A single agent cannot tell "the
+        simulator died" from "I am parked": it only sees its own odometry, and
+        its own odometry standing still is the normal state of a robot that is
+        idle, charging, drilling or stuck. The orchestrator is the only place
+        that sees every robot at once, and the discriminator is precisely that
+        the freeze is FLEET-WIDE. It also keeps the agent free of any
+        Gazebo-specific dependency: nothing here knows what a simulator is,
+        only that the poses on `/<robot>/state` stopped changing.
+
+        THE TWO CONDITIONS, and both are needed:
+
+        * every non-OFFLINE robot is stalled -- one robot stuck against a rock
+          is a navigation problem, not a simulation one, and it already
+          surfaces as that robot's own ERROR;
+        * at least one of them is in NAVIGATING or RETURNING -- a robot in
+          those states has a path and a velocity command and IS EXPECTED TO BE
+          MOVING. Without this clause a fleet that has finished its survey and
+          is sitting IDLE at the depot would raise a CRITICAL alert every
+          mission.
+
+        WHAT IT CANNOT SEE, stated because the alert must not be read as a
+        guarantee. Once every robot has given up and gone to ERROR or IDLE, no
+        robot is in a motion state and this stops firing -- so the alert dates
+        the failure, it does not track it. That is the right trade: a stale
+        CRITICAL repeating forever is how an alert log becomes wallpaper. It
+        also cannot distinguish a dead simulator from a wedged one, or from the
+        ros_gz odometry bridge dying while Gazebo lives; the message says
+        "odometry", which is what was actually observed, and lists the causes.
+        """
+        if not (self._sim_stall_timeout > 0.0):
+            return
+
+        frozen, live, expected_to_move = self._fleet.is_fleet_frozen(
+            self._sim_stall_timeout)
+
+        if frozen and not self._sim_stalled:
+            self._sim_stalled = True
+            self.get_logger().error(
+                'FLEET-WIDE ODOMETRY FREEZE: none of %d robot(s) has moved in '
+                '%.0fs and %d of them should be driving (%s).'
+                % (len(live), self._sim_stall_timeout, len(expected_to_move),
+                   ', '.join(sorted(expected_to_move))))
+            self._publish_alert(
+                'CRITICAL', '',
+                f'The whole fleet has stopped moving. None of the '
+                f'{len(live)} online robot(s) has reported a pose change in '
+                f'{self._sim_stall_timeout:.0f}s, and '
+                f'{len(expected_to_move)} of them '
+                f'({", ".join(sorted(expected_to_move))}) are in a state that '
+                f'requires motion. Every robot is still publishing state, so '
+                f'this is not a robot fault: the simulator, the physics step '
+                f'or the odometry bridge has stopped. Check whether the '
+                f'gazebo process is still alive -- an ODE assertion in '
+                f'collide() killed it at 10 robots on 2026-07-31 while '
+                f'ros2 launch survived. Nothing the fleet does from here is '
+                f'meaningful until it is restarted.')
+            return
+
+        if self._sim_stalled and not frozen:
+            self._sim_stalled = False
+            self.get_logger().info(
+                'Fleet motion resumed; the odometry freeze has cleared.')
+            self._publish_alert(
+                'INFO', '',
+                'Fleet motion has resumed after a fleet-wide odometry freeze. '
+                'Anything the fleet reported during the freeze -- distances, '
+                'map readings, task outcomes -- was produced against a world '
+                'that was not stepping and should not be trusted.')
 
     def _auction_tick(self) -> None:
         """Run the auction state machine: start or resolve auctions."""
         now = time.monotonic()
+
+        # D-20: before anything else, notice whether the fleet has changed.
+        # Done here rather than in _on_robot_state so the task queue is only
+        # ever mutated from the timer callback group, not from a DDS callback
+        # thread of the MultiThreadedExecutor while a timer walks it.
+        self._wake_on_fleet_change()
 
         # If an auction is active, check for timeout
         if self._auction.is_active():
@@ -846,7 +1843,10 @@ class OrchestratorNode(Node):
         if not idle:
             return
 
-        next_task = self._task_queue.get_next_ready()
+        # D-20: `now` skips any task inside its auction backoff window, which
+        # is what stops one unbiddable task holding the single auction slot
+        # and starving everything behind it.
+        next_task = self._task_queue.get_next_ready(now)
         if next_task is None:
             return
 
@@ -854,30 +1854,67 @@ class OrchestratorNode(Node):
         if next_task.task_type == 'select_site':
             return
 
-        # Start new auction
-        self._task_queue.set_status(next_task.task_id, TaskStatus.AUCTIONING)
+        # D-06: never open an auction for a haul the ledger cannot cover. The
+        # authoritative gate is in _resolve_auction, immediately before the
+        # task is marked ASSIGNED; this one exists so the normal case costs
+        # nothing rather than announcing, collecting bids, timing out and
+        # re-queueing every auction period, which would churn the 32-entry
+        # event ring the dashboard replays and make the operator's own history
+        # unreadable.
+        #
+        # Returning here holds up lower-priority work for one tick, exactly as
+        # the select_site skip above does. In the shipped decomposition nothing
+        # is starved: prospect is priority 5.0 and operator injections 10.0,
+        # both above a haul's 3.0, and the only equal-priority task is the next
+        # excavate, which depends_on this haul and is not ready anyway.
+        blocked = self._authorise_quantity(next_task)[1]
+        self._note_haul_block(next_task, blocked)
+        if blocked:
+            return
+
+        # Start new auction. begin_auction counts the round, which is what
+        # decides when a preferred robot's preference expires.
+        rounds = self._task_queue.begin_auction(next_task.task_id)
         self._auction.start(next_task.task_id, now)
         self._publish_announcement(next_task)
         self.get_logger().info(
             f'Auction started for {next_task.task_id} ({next_task.task_type}) '
-            f'at ({next_task.target_x:.0f}, {next_task.target_y:.0f})'
+            f'at ({next_task.target_x:.0f}, {next_task.target_y:.0f}) '
+            f'round={rounds}'
         )
 
     def _resolve_auction(self) -> None:
-        """Select the auction winner and assign the task (or re-queue)."""
-        winner = self._auction.select_winner()
-        task_id = self._auction.get_task_id()
-        bid_count = self._auction.get_bid_count()
+        """Select the auction winner and assign the task (or re-queue).
 
-        if winner is None:
-            # No bids received -- re-queue the task
-            self._task_queue.set_status(task_id, TaskStatus.PENDING)
-            self.get_logger().info(
-                f'Auction {task_id}: no bids ({bid_count}), re-queued'
-            )
-        else:
-            # Assign to winner
-            self._task_queue.assign_to_robot(task_id, winner.robot_id)
+        D-04: delegates the decision to ``task_feed.resolve_auction_winner``,
+        which implements the constrained auction a targeted injection now
+        produces. A preferred robot wins regardless of score; if it does not
+        bid, the task waits for it up to
+        ``inject_preferred_robot_max_rounds`` auctions and then opens up.
+        """
+        task_id = self._auction.get_task_id()
+        task = self._task_queue.get_task(task_id)
+        bids = self._auction.get_bids()
+        bid_count = len(bids)
+        winner, outcome, reason = resolve_auction_winner(
+            task, bids, self._preferred_robot_max_rounds)
+
+        # D-06, and this is the authoritative gate: re-check the ledger at the
+        # moment of assignment, not just when the auction opened. The material
+        # can be gone by now -- another hauler loaded it during the auction
+        # window, or the excavate's MaterialEvent was dropped after the
+        # announcement went out. Re-queued (PENDING, via
+        # REQUEUE_STATUS_BY_REASON's default) rather than assigned, because an
+        # assignment carrying quantity_kg 0.0 is read by the agent as
+        # "unconstrained" and loads the bin to its RCDL capacity.
+        if outcome == OUTCOME_ASSIGN and winner is not None:
+            blocked = self._authorise_quantity(task)[1]
+            if blocked:
+                self._note_haul_block(task, blocked)
+                winner, outcome, reason = None, OUTCOME_REQUEUE, blocked
+
+        if outcome == OUTCOME_ASSIGN and winner is not None:
+            self._task_queue.assign_to_robot(task_id, winner.robot_id, reason)
             task = self._task_queue.get_task(task_id)
             self._publish_assignment(task_id, winner.robot_id, task)
             self._publish_alert(
@@ -888,57 +1925,276 @@ class OrchestratorNode(Node):
             )
             self.get_logger().info(
                 f'Auction {task_id}: winner={winner.robot_id} '
-                f'score={winner.bid_score:.3f} bids={bid_count}'
+                f'score={winner.bid_score:.3f} bids={bid_count} '
+                f'reason={reason or "highest_bid"}'
             )
+        else:
+            preferred = getattr(task, 'preferred_robot', '') if task else ''
+            if outcome == OUTCOME_PREFERENCE_DROPPED and task is not None:
+                task.preferred_robot = ''
+                self._publish_alert(
+                    'WARNING', preferred,
+                    f'{task_id}: preferred robot {preferred} did not bid in '
+                    f'{self._preferred_robot_max_rounds} auction(s); the '
+                    f'preference is dropped and the task is now open to any '
+                    f'capable robot',
+                )
+            elif reason == 'preferred_robot_absent':
+                self._publish_alert(
+                    'WARNING', preferred,
+                    f'{task_id}: preferred robot {preferred} did not bid '
+                    f'(round {getattr(task, "auction_rounds", 0)} of '
+                    f'{self._preferred_robot_max_rounds}); re-queued',
+                )
+            # D-20. A no-bid auction is the one failure that used to repeat
+            # forever, so it -- and only it -- gets the backoff. The other two
+            # requeue reasons already terminate: 'preferred_robot_absent' is
+            # bounded by inject_preferred_robot_max_rounds and turns into
+            # 'preference_dropped', after which the auction is fully open.
+            if reason == AUCTION_NO_BIDS:
+                reason = self._back_off_auction(task_id)
+            status = REQUEUE_STATUS_BY_REASON.get(reason, TaskStatus.PENDING)
+            self._task_queue.set_status(task_id, status, reason)
+            self._log_auction_failure(task_id, reason, bid_count, status)
 
         self._auction.reset()
 
-    def _publish_mission_progress(self) -> None:
-        """Publish aggregated mission progress metrics.
+    # ------------------------------------------------------------------ #
+    #  D-20: auction backoff                                              #
+    # ------------------------------------------------------------------ #
 
-        Distance and energy totals come from FleetMonitor's per-update
-        deltas; uptime is folded into ``elapsed_sim_time`` so the dashboard
-        can derive both wall-clock and mission-anchored views without an
-        extra topic. (MissionProgress.msg has no dedicated uptime field — a
-        future revision can promote this if needed.)
+    def _back_off_auction(self, task_id: str) -> str:
+        """Record a no-bid auction and return the status_reason it earns.
+
+        The delay and the give-up decision are both derived from the same
+        consecutive-failure count, so a task cannot be held off without also
+        moving toward being abandoned -- which is what would happen if the
+        backoff were a timer and the bound a separate counter.
+
+        The status is NOT set here. The caller sets it once, with this reason,
+        so one round produces exactly one TaskEvent instead of two.
         """
-        msg = MissionProgress()
-        msg.objective_description = 'PSR Ice Prospecting Survey'
+        task = self._task_queue.get_task(task_id)
+        # The delay is for the failure that is about to be recorded, hence
+        # +1: defer_auction increments and returns the count it lands on.
+        next_count = (getattr(task, 'failed_auctions', 0) if task else 0) + 1
+        failures = self._task_queue.defer_auction(
+            task_id,
+            auction_backoff_sec(next_count, self._auction_backoff_base,
+                                self._auction_backoff_max),
+        )
+        reason = auction_failure_reason(
+            failures, self._auction_max_failed_rounds)
+        if reason == AUCTION_ABANDONED:
+            self._task_queue.abandon_auction(task_id)
+        return reason
+
+    def _log_auction_failure(self, task_id: str, reason: str, bid_count: int,
+                             status) -> None:
+        """Log a failed auction ONCE PER STATE, not once per round.
+
+        This is the other half of D-20 and it is not cosmetic. The measured
+        flood was 261 INFO lines for one task, all identical, at roughly one
+        every 5.5 s -- enough to make the orchestrator log useless for
+        diagnosing anything else, which is how the fleet degraded silently in
+        the same session (D-22).
+
+        The abandonment additionally raises a WARNING FleetAlert, because it is
+        the point at which the orchestrator stops trying and an operator has to
+        know. Once: `_auction_failure_logged` is keyed by task and holds the
+        last reason emitted, so a task cycling PENDING -> abandoned -> woken ->
+        abandoned reports each transition and nothing in between.
+        """
+        if self._auction_failure_logged.get(task_id) == reason:
+            self.get_logger().debug(
+                f'Auction {task_id}: {reason} again ({bid_count} bid(s))')
+            return
+        self._auction_failure_logged[task_id] = reason
+
+        task = self._task_queue.get_task(task_id)
+        failures = getattr(task, 'failed_auctions', 0) if task else 0
+        if reason == AUCTION_ABANDONED:
+            self.get_logger().warn(
+                f'Auction {task_id}: no bids in {failures} consecutive '
+                f'auction(s); GIVING UP. It stays {status.name} with '
+                f'status_reason={reason!r} and will not be announced again '
+                f'until a robot arrives in IDLE.')
+            self._publish_alert(
+                'WARNING', '',
+                f'task {task_id} is blocked: no robot bid on it in {failures} '
+                f'consecutive auctions, so the orchestrator has stopped '
+                f'announcing it. Other queued work is unaffected -- the task '
+                f'is no longer holding the auction slot. It re-enters the '
+                f'auction automatically when any robot next becomes IDLE. If '
+                f'that never happens, no robot in this fleet can service it: '
+                f'check its required_capabilities against the fleet, and '
+                f'whether any capable robot has the energy to reach it.')
+            return
+
+        # The backoff clause is only true for the no-bid reasons. The other two
+        # requeue reasons ('preferred_robot_absent', 'preference_dropped')
+        # reach here as well and set no deadline, and printing "next attempt in
+        # 0s" for them would read as a defect in the mechanism rather than as
+        # its absence.
+        delay = getattr(task, 'auction_backoff_until', 0.0) if task else 0.0
+        remaining = max(0.0, delay - time.monotonic())
+        suffix = (f'; next attempt in {remaining:.0f}s '
+                  f'(consecutive failures: {failures})' if delay > 0.0 else '')
+        self.get_logger().info(
+            f'Auction {task_id}: {reason} ({bid_count} bid(s)), re-queued as '
+            f'{status.name}{suffix}')
+
+    def _wake_on_fleet_change(self) -> None:
+        """Re-open every backed-off auction when a robot arrives in IDLE.
+
+        WITHOUT THIS THE MISSION DEADLOCKS, and that is a worse failure than
+        the flood D-20 fixes. A task abandoned because every capable robot was
+        busy would stay abandoned after they all finished, and nothing would
+        ever announce it again.
+
+        The trigger is ``FleetMonitor.idle_arrivals`` -- a count of robots
+        TRANSITIONING into IDLE -- and not the size or contents of
+        ``get_idle_robots()``. That distinction is the whole design: in the
+        measured failure a robot WAS idle and simply did not bid, so anything
+        derived from set membership would have reset the backoff on every tick
+        and the mechanism would have done nothing. See
+        ``FleetMonitor._note_idle_arrival`` for the two transitions that are
+        deliberately not counted.
+
+        Costs an integer comparison per tick in the normal case.
+        """
+        arrivals = self._fleet.idle_arrivals
+        if arrivals == self._last_idle_arrivals:
+            return
+        self._last_idle_arrivals = arrivals
+        woken = self._task_queue.wake_deferred_auctions(AUCTION_FLEET_CHANGED)
+        if not woken:
+            return
+        # `_auction_failure_logged` is deliberately NOT cleared here. A task
+        # that was abandoned, woken, and abandoned again has not changed state
+        # from the operator's point of view -- it is still blocked -- and
+        # re-emitting the WARNING alert once per fleet change would be the
+        # 261-line flood with a longer period. The wake itself is the record,
+        # logged once, with a count.
+        self.get_logger().info(
+            f'A robot became IDLE; {len(woken)} backed-off task(s) are '
+            f'auctionable again: {sorted(woken)}')
+
+    def _publish_mission_progress(self) -> None:
+        """Publish aggregated mission progress metrics — FR-DASH-7.
+
+        Distance and energy totals come from FleetMonitor's per-update deltas.
+        The masses come from MaterialInventory, which as of 2026-07-30 has real
+        production writers: ``_on_material_event`` feeds it from
+        ``/orchestrator/material_event``, and every kilogram in it is a
+        difference of two sensor readings measured by a skill on a robot.
+
+        WHAT WAS HERE BEFORE, and why the note is gone rather than edited: this
+        method carried an "HONESTY NOTE (not yet wired)" recording that
+        ``register_site`` / ``record_extraction`` / ``record_load`` /
+        ``record_unload`` had no callers anywhere, so extracted / in_transit /
+        deposited were structurally 0.0 in every live run. That was true and
+        the note was right to exist. It is now false, and leaving it standing
+        would be worse than never having written it. What replaced it:
+
+          agent skill reads its fill sensor  (mass = level x RCDL capacity_kg)
+            -> MaterialEvent on /orchestrator/material_event
+            -> material_event_logic       (dedupe, resolve site from task_id)
+            -> MaterialInventory          (extract / load / unload)
+            -> here.
+
+        Two honesty caveats remain and are NOT fixed by this change:
+        - ``elapsed_sim_time`` is orchestrator WALL CLOCK since node start, not
+          Gazebo simulation time. ``use_sim_time`` has zero code occurrences
+          repo-wide and /clock is not bridged. The field keeps its name because
+          renaming a published field breaks the dashboard and PRD MSG-7;
+          ``fleet_uptime_sec`` beside it is the honestly-labelled companion,
+          measured from the FIRST ROBOT HEARTBEAT rather than from node start.
+        - ``deposited`` is a measured mass only because the HTN planner is
+          constructed with ``deposited_source``; ``get_mission_status()``
+          exposes ``deposited_is_measured`` for anyone who needs to check.
+        """
         # MissionProgress.target_quantity is documented in kg at
-        # docs/PRD.md:685 (MSG-7). The .msg file itself carries no unit
-        # comments, which is how the mix-up below survived review. It
-        # previously carried TaskQueue.get_total_count() — a task count —
-        # which the dashboard then rendered through a kg formatter. Source
-        # the real mass objective from the HTN planner instead; its
-        # _target_kg is set from decompose_collect_ice(quantity_kg=...),
-        # which _generate_survey_tasks() calls with 100.0 kg.
+        # docs/PRD.md:685 (MSG-7). It previously carried
+        # TaskQueue.get_total_count() — a task count — which the dashboard then
+        # rendered through a kg formatter. It is sourced from the HTN planner's
+        # _target_kg, set by decompose_collect_ice(quantity_kg=100.0).
         mission_status = self._htn_planner.get_mission_status()
-        msg.target_quantity = float(mission_status.get('target_kg', 0.0))
-        # HONESTY NOTE (not yet wired): extracted / in_transit / deposited
-        # are read from MaterialInventory, which currently has NO production
-        # writers anywhere in the repo — register_site(), record_extraction(),
-        # record_load() and record_unload() are only ever called from tests.
-        # These three fields are therefore always 0.0 in a live run. They are
-        # deliberately left reading the (empty) real ledger rather than being
-        # back-filled with a plausible-looking estimate: HTNPlanner does
-        # expose a deposited_kg, but it is completed-haul-task-count x nominal
-        # hopper capacity, i.e. an assumption, not a measured mass. Publishing
-        # it here would fabricate a mass measurement the fleet never made.
-        # The corresponding dashboard tiles should stay hidden until the ISRU
-        # ledger is actually fed from excavate/haul skill results.
-        progress = self._inventory.get_mission_progress()
-        msg.extracted_quantity = float(progress.get('extracted', 0.0))
-        msg.in_transit_quantity = float(progress.get('in_transit', 0.0))
-        msg.deposited_quantity = float(progress.get('deposited', 0.0))
-        msg.fleet_distance_total = float(self._fleet.get_total_distance())
-        msg.fleet_energy_total = float(self._fleet.get_total_energy_consumed())
-        # elapsed_sim_time mirrors orchestrator wall-clock since startup;
-        # FleetMonitor.get_uptime_sec() reflects time since the first robot
-        # heartbeat, which can lag startup by several seconds. We prefer the
-        # node-relative time so the dashboard sees a tick from t=0.
         elapsed = (self.get_clock().now() - self._start_time).nanoseconds / 1e9
-        msg.elapsed_sim_time = elapsed
+        msg = build_mission_progress(
+            MissionProgress(),
+            objective_description='PSR Ice Prospecting Survey',
+            target_kg=float(mission_status.get('target_kg', 0.0)),
+            ledger=self._inventory.get_mission_progress(),
+            fleet_distance_m=self._fleet.get_total_distance(),
+            fleet_energy_wh=self._fleet.get_total_energy_consumed(),
+            elapsed_sec=elapsed,
+            fleet_uptime_sec=self._fleet.get_uptime_sec(),
+            material_events_applied=self._material_ctx.events_applied,
+        )
         self._progress_pub.publish(msg)
+
+    def _publish_task_queue(self) -> None:
+        """Publish the complete task table plus the event ring — FR-DASH-3.
+
+        A COMPLETE SNAPSHOT, never a delta, for the same reason ResourceMap is:
+        a subscriber that joins late or drops a message is fully correct from
+        the next one, with no durability negotiation. A browser loaded
+        mid-mission is right within 500 ms.
+
+        Replaces ~75 lines of client-side lifecycle inference in
+        ``useFleetState.js``, which reconstructed the panel from
+        ``RobotState.current_task_id`` edges and could therefore only ever
+        produce PENDING / ASSIGNED / IN_PROGRESS / COMPLETED -- making FAILED
+        and INTERRUPTED unreachable, and rendering a cancelled task as done.
+        """
+        msg = TaskQueueState()
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = ''
+        msg.header = header
+
+        rows = []
+        for row in task_rows(self._task_queue):
+            entry = TaskStatusMsg()
+            entry.task_id = row['task_id']
+            entry.task_type = row['task_type']
+            entry.status = row['status']
+            entry.assigned_robot = row['assigned_robot']
+            entry.preferred_robot = row['preferred_robot']
+            entry.priority = row['priority']
+            entry.progress = row['progress']
+            entry.quantity_kg = row['quantity_kg']
+            entry.target_location = Point(x=row['target_location'][0],
+                                          y=row['target_location'][1], z=0.0)
+            entry.parent_task_id = row['parent_task_id']
+            entry.depends_on = row['depends_on']
+            entry.required_capabilities = row['required_capabilities']
+            entry.status_reason = row['status_reason']
+            entry.status_changed = _epoch_to_time(row['status_changed'])
+            entry.auction_rounds = row['auction_rounds']
+            rows.append(entry)
+        msg.tasks = rows
+
+        events = []
+        for record in self._events.snapshot():
+            event = TaskEventMsg()
+            event.seq = record['seq']
+            event.stamp = _epoch_to_time(record['stamp'])
+            event.kind = record['kind']
+            event.task_id = record['task_id']
+            event.robot_id = record['robot_id']
+            event.actor = record['actor']
+            event.action = record['action']
+            event.detail = record['detail']
+            event.accepted = record['accepted']
+            event.target = Point(x=record['target'][0],
+                                 y=record['target'][1], z=0.0)
+            events.append(event)
+        msg.events = events
+        msg.event_seq_next = self._events.seq_next
+        msg.events_dropped = self._events.dropped
+        self._task_queue_pub.publish(msg)
 
     def _adaptive_survey_tick(self) -> None:
         """FR-MAP-3: re-target PENDING survey waypoints from the fused map.
@@ -1012,9 +2268,14 @@ class OrchestratorNode(Node):
 
         Falls back to the zone centre before any scout has reported.
 
-        FRAME: these are dead-reckoned odom poses (see D-08), the same frame
-        ResourceMapUpdate.location is in, so the scoring is self-consistent even
-        though neither is world-true.
+        FRAME: world metres, the same frame ``ResourceMapUpdate.location`` is
+        in. This said "dead-reckoned odom poses (see D-08) ... self-consistent
+        even though neither is world-true" until 2026-07-31; both are now
+        world-referenced, converted once by
+        ``selene_sim/selene_sim/world_odometry_node.py``. The self-consistency
+        argument still holds and is no longer all that holds: the centroid this
+        returns and the map cells it is scored against are now the same places
+        the robots physically occupy.
         """
         positions = [
             self._fleet.get_robot_position(rid)
@@ -1027,8 +2288,37 @@ class OrchestratorNode(Node):
                 sum(p[1] for p in positions) / len(positions))
 
     def _htn_advance(self) -> None:
-        """Advance the HTN planner — resolve virtual tasks, spawn downstream."""
+        """Advance the HTN planner, and open a ledger site when one resolves.
+
+        Registration happens here, immediately after ``check_and_advance()``,
+        and that ORDERING IS GUARANTEED to precede any excavate event: every
+        excavate task ``depends_on`` the select_site task
+        (htn_planner._generate_cycles), and ``get_next_ready`` will not auction
+        a task whose dependencies are not COMPLETED — select_site is marked
+        COMPLETED in the same call that allocates the site id. So no
+        MaterialEvent can arrive for a site the ledger has not heard of.
+        """
         self._htn_planner.check_and_advance()
+
+        site_id = self._htn_planner.get_site_id()
+        if not site_id or site_id in self._registered_sites:
+            return
+        position = self._htn_planner.get_site_position()
+        if position is None:
+            return
+        status = self._htn_planner.get_mission_status()
+        # estimated_kg is the mission's PLAN figure (decompose_collect_ice's
+        # quantity_kg), not a survey estimate of what is actually in the
+        # ground. Nothing gates on it: get_site_remaining() is the only reader
+        # and no code path consults that. It is registered so the site record
+        # is complete rather than carrying a fabricated zero.
+        self._inventory.register_site(
+            site_id, position, estimated_kg=float(status.get('target_kg', 0.0)))
+        self._registered_sites.add(site_id)
+        self.get_logger().info(
+            'ISRU ledger: registered site %s at (%.1f, %.1f), mission plan '
+            '%.1f kg' % (site_id, position[0], position[1],
+                         float(status.get('target_kg', 0.0))))
 
     # ------------------------------------------------------------------ #
     #  Operator service handlers (FR-DASH-5 / FR-DASH-6)                   #
@@ -1041,15 +2331,38 @@ class OrchestratorNode(Node):
         decision tree can be unit-tested without instantiating the ROS node.
         Side effects (publish, log) happen here, in the Node-bound wrapper.
         """
+        preferred = (request.assigned_robot_id or '').strip()
         ctx = _InjectTaskContext(
             task_queue=self._task_queue,
             fleet_monitor=self._fleet,
             next_task_id=self._next_manual_task_id,
             now_stamp=self.get_clock().now().to_msg(),
-            publish_assignment=self._publish_assignment_msg,
-            publish_alert=lambda sev, msg: self._publish_alert(sev, '', msg),
+            # FleetAlert.source_robot_id used to be '' for every operator
+            # action, so AlertLog.jsx attributed all of them to "system".
+            publish_alert=lambda sev, msg: self._publish_alert(
+                sev, preferred, msg),
+            # The mission's ledger site, so an injected excavate/haul produces
+            # MaterialEvents the ledger can credit instead of dropping. '' until
+            # SelectSite resolves, which inject_task_logic turns into an
+            # explicit rejection rather than a siteless task.
+            site_id=self._htn_planner.get_site_id(),
+            # The terrain box. An operator can click anywhere on the fleet map,
+            # and with the frame defect fixed those coordinates are now real
+            # world metres — one off the heightfield takes Gazebo down.
+            terrain=self._terrain,
         )
-        return inject_task_logic(ctx, request, response)
+        out = inject_task_logic(ctx, request, response)
+        # FR-DASH-6(d): every operator action, accepted or rejected, enters the
+        # event ring so it appears in the dashboard's task history. `detail` is
+        # the exact response.message the operator's own toast shows, so the two
+        # cannot disagree.
+        self._events.append(
+            kind=KIND_OPERATOR, action='inject_task',
+            task_id=out.task_id, robot_id=preferred, actor='operator',
+            detail=out.message, accepted=bool(out.success),
+            target=(request.target_location.x, request.target_location.y),
+        )
+        return out
 
     def _next_manual_task_id(self) -> str:
         """Allocate the next monotonic ``manual_NNNN`` identifier."""
@@ -1066,8 +2379,16 @@ class OrchestratorNode(Node):
         return candidate
 
     def _publish_assignment_msg(self, task_id: str, robot_id: str,
-                                task_type: str, target_location) -> None:
-        """Publish a TaskAssignment for a force-assigned manual task."""
+                                task_type: str, target_location,
+                                quantity_kg: float = 0.0) -> None:
+        """Publish a TaskAssignment built from loose fields, not a TaskEntry.
+
+        NO LONGER ON THE INJECT PATH. It existed to serve the force-assign
+        branch of ``inject_task_logic``, which D-04 deleted: a targeted
+        injection is now a constrained auction and goes out through
+        ``_publish_assignment`` like every other task. Kept as the one place a
+        direct assignment can be published from without a queue entry.
+        """
         msg = TaskAssignment()
         msg.task_id = task_id
         msg.robot_id = robot_id
@@ -1075,6 +2396,8 @@ class OrchestratorNode(Node):
         msg.target_location = target_location
         msg.parameters = []
         msg.assigned_at = self.get_clock().now().to_msg()
+        msg.quantity_kg = float(quantity_kg)
+        msg.depot_location = self._depot_point(task_type)
         self._assign_pub.publish(msg)
 
     def _handle_override_robot(self, request, response):
@@ -1104,10 +2427,28 @@ class OrchestratorNode(Node):
             set_command_clients=self._set_command_clients,
             next_sequence=self._next_operator_sequence,
             spin_until_complete=_poll_future,
-            publish_alert=lambda sev, msg: self._publish_alert(sev, '', msg),
+            # D-05: attribute the alert to the robot the operator acted on.
+            # This was '' for every override, so AlertLog.jsx showed "system".
+            publish_alert=lambda sev, msg: self._publish_alert(
+                sev, request.robot_id, msg),
             set_command_factory=SetRobotCommand.Request,
+            # Bounds `send_to_location`. The agent refuses the same box in
+            # AStarPlanner.plan; this one exists so the operator is told why at
+            # the moment they can retype the coordinate.
+            terrain=self._terrain,
         )
-        return override_robot_logic(ctx, request, response)
+        out = override_robot_logic(ctx, request, response)
+        # FR-DASH-6(d). Logged whether or not it was accepted: "robot in ERROR,
+        # override rejected" is often the more interesting record, and an
+        # override on an idle robot touches no task at all, so a status table
+        # cannot carry it.
+        self._events.append(
+            kind=KIND_OPERATOR, action=request.command,
+            task_id='', robot_id=request.robot_id, actor='operator',
+            detail=out.message, accepted=bool(out.success),
+            target=(request.target.x, request.target.y),
+        )
+        return out
 
     def _next_operator_sequence(self) -> int:
         self._operator_command_seq += 1
@@ -1123,11 +2464,62 @@ class OrchestratorNode(Node):
             zone_center=SURVEY_ZONE_CENTER,
             zone_radius=SURVEY_ZONE_RADIUS,
             quantity_kg=100.0,
-            depot=(50.0, 50.0),
+            depot=self._depot,
         )
         self.get_logger().info(
             f'HTN decomposed mission: {self._task_queue.get_total_count()} tasks'
         )
+
+    def _audit_mission_geometry(self) -> None:
+        """Say out loud, once, whether the mission's own geometry is on the map.
+
+        Runs after ``_generate_survey_tasks`` so it sees the real waypoints
+        rather than the constants they were derived from.
+
+        AN AUDIT, NOT A GATE. It refuses nothing and moves nothing: the survey
+        zone, the depot and the extraction site are the mission definition, and
+        an orchestrator that silently relocated them would be lying about what
+        it is doing. What it removes is the ability for an off-map mission
+        constant to be discovered only when Gazebo dies — which is how the frame
+        defect this guard accompanies was found. If this ever logs an ERROR, fix
+        the constant; do not raise the margin.
+
+        It is cheap to keep correct and it is the only thing in the system that
+        looks at the mission's coordinates as a set. FR-SIM-7(d) makes the world
+        file configurable, so a world smaller than the shipped 500 m square is a
+        supported configuration in which these constants really could fall off
+        the edge.
+        """
+        offenders = [
+            (name, x, y)
+            for name, x, y in (
+                ('survey zone centre', *SURVEY_ZONE_CENTER),
+                ('depot', *self._depot),
+            )
+            if not self._terrain.contains(x, y)
+        ]
+        offenders.extend(
+            (f'survey waypoint {task.task_id}', task.target_x, task.target_y)
+            for task in self._task_queue.get_all_tasks()
+            if task.task_type == SURVEY_TASK_TYPE
+            and not self._terrain.contains(task.target_x, task.target_y)
+        )
+        if not offenders:
+            self.get_logger().info(
+                'mission geometry is on the terrain: %s'
+                % (self._terrain.describe(),))
+            return
+        detail = ', '.join('%s (%.1f, %.1f)' % item for item in offenders)
+        self.get_logger().error(
+            'MISSION GEOMETRY IS OFF THE TERRAIN: %s. %s. A robot sent there '
+            'leaves the heightfield and falls, which aborts Gazebo — the agent '
+            'will refuse the goal, so these tasks will fail rather than crash '
+            'the simulator, but the mission cannot complete as configured.'
+            % (detail, self._terrain.describe()))
+        self._publish_alert(
+            'ERROR', '',
+            'mission geometry is off the terrain: %s (%s)'
+            % (detail, self._terrain.describe()))
 
     def _publish_announcement(self, task) -> None:
         """Publish a TaskAnnouncement to open an auction."""
@@ -1143,14 +2535,76 @@ class OrchestratorNode(Node):
         msg.estimated_duration = task.estimated_duration
         msg.parent_task_id = ''
         msg.deadline = self.get_clock().now().to_msg()
+        # FR-DASH-5. Announced as well as assigned so a bidder can see the size
+        # of the job; no bid weight uses it today (agent_node scores distance,
+        # energy and capability only).
+        msg.quantity_kg = float(getattr(task, 'quantity_kg', 0.0))
         self._announce_pub.publish(msg)
+
+    def _authorise_quantity(self, task) -> tuple[float, str]:
+        """``(kg, block_reason)`` for one task — see authorise_task_quantity.
+
+        NOT clamped against any robot's capacity — the orchestrator has no HAL
+        and no RCDL. The agent clamps against selene_hal/config/<type>.yaml.
+        """
+        return authorise_task_quantity(
+            task, self._inventory.get_site_available)
+
+    def _note_haul_block(self, task, reason: str) -> None:
+        """Alert once per (task, reason) that a haul cannot be dispatched.
+
+        Once, not once per tick: ``_auction_tick`` runs at 2 Hz and a haul
+        whose excavate reported no measured mass stays blocked indefinitely, so
+        an alert per tick would bury everything else in AlertLog.jsx. A reason
+        that CHANGES is re-alerted, which is how "no site" becoming "no
+        material" stays visible, and clearing the block re-arms it so a second
+        stall is reported too.
+        """
+        task_id = getattr(task, 'task_id', '') or ''
+        if not reason:
+            self._haul_block_alerted.pop(task_id, None)
+            return
+        if self._haul_block_alerted.get(task_id) == reason:
+            return
+        self._haul_block_alerted[task_id] = reason
+        detail = ('no extraction site is associated with it'
+                  if reason == HAUL_BLOCK_NO_SITE
+                  else 'the ledger has no extracted mass waiting at its site')
+        self._publish_alert(
+            'WARNING', getattr(task, 'assigned_robot', '') or '',
+            f'haul {task_id} is not being dispatched ({reason}): {detail}. '
+            f'Assigning it would publish quantity_kg 0.0, which the agent '
+            f'reads as "fill to capacity" and would load a bin of material no '
+            f'excavator extracted. It stays queued until an excavate reports '
+            f'measured mass there; an HTN excavate/haul chain cannot advance '
+            f'past it until then.')
+        self.get_logger().warn(
+            'haul %s withheld from auction: %s' % (task_id, reason))
 
     def _publish_assignment(self, task_id: str, robot_id: str, task) -> None:
         """Publish a TaskAssignment to the winning robot."""
+        quantity, blocked = self._authorise_quantity(task)
+        if blocked:
+            # Belt and braces. Both callers of this method gate on the same
+            # predicate before assigning, so reaching here means a third caller
+            # was added without one -- which must not silently publish a 0.0
+            # that the agent reads as "fill the bin to capacity".
+            self.get_logger().error(
+                'refusing to publish assignment for %s to %s: %s'
+                % (task_id, robot_id, blocked))
+            return
         msg = TaskAssignment()
         msg.task_id = task_id
         msg.robot_id = robot_id
         msg.task_type = task.task_type if task else 'prospect'
+        # For a haul this is the PICKUP, not the depot — the depot travels
+        # separately in depot_location below. Since D-22 the pickup is
+        # HAUL_PICKUP_OFFSET_M from the extraction site rather than on it, so
+        # that a plan never sends a hauler onto the coordinate an excavator is
+        # parked on; the agent then stops HaulSkill.PICKUP_STANDOFF_M short of
+        # even that. Neither displacement touches the ledger, which keys on
+        # TaskEntry.site_id and never on a coordinate (material_event_logic
+        # step 4, :747-761).
         msg.target_location = Point(
             x=task.target_x if task else 0.0,
             y=task.target_y if task else 0.0,
@@ -1158,7 +2612,21 @@ class OrchestratorNode(Node):
         )
         msg.parameters = []
         msg.assigned_at = self.get_clock().now().to_msg()
+        msg.quantity_kg = quantity
+        msg.depot_location = self._depot_point(
+            task.task_type if task else '')
         self._assign_pub.publish(msg)
+
+    def _depot_point(self, task_type: str) -> Point:
+        """Depot for a haul, zero for everything else.
+
+        Zero (0, 0, 0) is the agent's signal to fall back to its own recharge
+        station, which is what it did unconditionally before this field
+        existed — and why a haul used to dump its load at a charger.
+        """
+        if task_type == 'haul':
+            return Point(x=self._depot[0], y=self._depot[1], z=0.0)
+        return Point()
 
     def _publish_alert(
         self, severity: str, source_robot_id: str, message: str,

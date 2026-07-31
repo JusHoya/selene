@@ -16,14 +16,37 @@
           <specular>0.3 0.2 0.0 1</specular>
         </material>
       </visual>
-      <collision name="marker_collision">
-        <geometry>
-          <cylinder>
-            <radius>1.0</radius>
-            <length>0.1</length>
-          </cylinder>
-        </geometry>
-      </collision>
+      <!-- NO <collision>. THIS IS A PAINTED PAD, NOT A BOLLARD, and the
+           difference cost a mission.
+
+           MEASURED 2026-07-31, gz-sim 8, 4 scouts / 3 excavators / 3 haulers on
+           lunar_psr.sdf: with a 1.0 m radius collision cylinder on this model,
+           scout_04 drove onto the depot marker at the crater centre and jammed
+           against it at (-99.9, -149.0) -- 1.005 m from the marker origin,
+           against a 1.0 m marker radius and a 0.5847 m robot footprint radius.
+           world_odometry_node reported it 208 s into the run:
+             scout_04: WHEELS TURNING, BODY NOT MOVING. 9.9 m of wheel travel
+             over 20s, 2.58 m covered (74% slip).
+           and it never got free.
+
+           The consequence was out of all proportion to a 0.1 m disc:
+           htn_planner's SelectSite resolves only when EVERY survey task is
+           COMPLETED (htn_planner.py:313-330), so one scout wedged on a marker
+           meant no site was ever selected, no excavate or haul task was ever
+           generated, and the whole ISRU cycle deadlocked with nine healthy
+           robots idle.
+
+           A marker exists to say "the depot is here". Nothing reads it, nothing
+           docks with it, and there is no version of this world in which a 10 cm
+           painted disc should stop a rover -- least of all now that the depot
+           sits in the middle of the ice field every scout surveys and every
+           hauler drives to. Visual only.
+
+           Second benefit, smaller but real: scripts/check_terrain.sh drops a
+           probe at the depot's XY to measure the collision SURFACE there. With
+           a collision cylinder on this model a probe dropped in a world
+           containing it would rest on the marker instead of the ground and
+           report a surface 0.1 m too high. -->
     </link>
   </model>
 </sdf>

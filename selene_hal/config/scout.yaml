@@ -29,9 +29,26 @@ sensors:
     frame: base_link
     update_rate: 100
     power_draw: 1
+  # WORLD-REFERENCED POSE, not Gazebo's raw dead-reckoned /odom.
+  #
+  # `odom` is published by ros_gz_bridge straight out of DiffDrive, which
+  # integrates wheel encoders from a pose of (0,0,0) — so its origin is this
+  # robot's SPAWN POSE and its x-axis is the spawn heading. Reading that as
+  # world coordinates is register D-08: it mis-indexed the resource map, tested
+  # solar shadow at the wrong place, and drove robots off the 500 m heightfield
+  # until ODE aborted the simulator.
+  #
+  # `odom_world` is the same message with the spawn SE(2) applied, published by
+  # selene_sim/selene_sim/world_odometry_node.py — the one conversion point in
+  # the system. On real hardware this is the topic a localisation stack would
+  # publish; the HAL is deliberately unaware of which produced it.
+  #
+  # The name is WORLD_ODOM_TOPIC in selene_sim/selene_sim/world_frame.py, and
+  # selene_sim/test/test_sensor_topic_coverage.py cross-checks these RCDLs
+  # against what selene_sim actually publishes, so the two cannot drift apart.
   - name: odometry
     type: odometry
-    topic: odom
+    topic: odom_world
     frame: base_link
     update_rate: 20
     power_draw: 0

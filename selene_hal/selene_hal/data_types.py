@@ -64,7 +64,37 @@ class IMUReading(SensorReading):
 
 @dataclass(frozen=True)
 class FillLevelReading(SensorReading):
-    """Fill level as fraction 0.0-1.0 (hopper, transport bin)."""
+    """Hopper / transport-bin fill, carrying both units with one conversion.
+
+    ``level``   -- dimensionless fraction 0.0-1.0 of that sensor's RCDL
+                   ``capacity_kg``. This is the quantity that travels on the
+                   wire: the simulation publishes it raw as a
+                   ``std_msgs/Float32`` on ``/{robot_id}/{sensor topic}`` and
+                   the HAL stores it verbatim. It is what
+                   ``ExcavateSkill.FILL_THRESHOLD`` (0.95) and
+                   ``HaulSkill``'s empty threshold are compared against.
+
+    ``mass_kg`` -- kilograms, DERIVED BY THE HAL as ``level * capacity_kg``.
+                   ``capacity_kg`` comes from the sensor's own RCDL entry
+                   (``selene_hal/config/excavator.yaml:29`` hopper_fill 20 kg,
+                   ``hauler.yaml:29`` load_cell 50 kg) and reaches the sensor
+                   through ``SensorConfig.extra['capacity_kg']``. It is never
+                   on the wire and is never recomputed downstream: everything
+                   above the HAL treats it as a measurement.
+
+    A sensor whose RCDL declares no usable ``capacity_kg`` warns loudly at
+    construction and reports ``mass_kg = 0.0`` for the life of the process --
+    the same "loud zero" convention ``_resolve_noise_stddev`` already uses for
+    scalar fields (``gazebo_hal.py``).
+
+    WHY THIS DOCSTRING IS EMPHATIC. Until 2026-07-30 it read only "Fill level
+    as fraction 0.0-1.0", and that single line was the *only* place the
+    contract was written down. Both simulation nodes published KILOGRAMS into
+    ``level`` for two phases -- so an excavator with a 20 kg hopper reported
+    "full" at 0.95 kg, and no HAL populated ``mass_kg`` at all, which is why
+    ``excavate.py`` computed its extracted mass as ``0.0 - 0.0``. See
+    ``docs/phase5_deviation_register.md`` D-06.
+    """
     level: float = 0.0
     mass_kg: float = 0.0
 

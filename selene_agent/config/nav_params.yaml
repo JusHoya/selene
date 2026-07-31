@@ -1,9 +1,23 @@
 navigation:
+  # The grid spans the terrain EXACTLY: 500 x 500 cells at 1.0 m from
+  # (-250, -250) is the same square as <size>500 500 ...</size> on
+  # selene_sim/models/lunar_terrain/model.sdf and world.bounds in
+  # selene_sim/config/world_params.yaml. That is not a coincidence to be
+  # preserved by hand — selene_sim/test/test_world_extent_agrees.py fails the
+  # build if any of those files stops describing the same square.
   grid_resolution: 1.0
   grid_width: 500
   grid_height: 500
   origin_x: -250.0
   origin_y: -250.0
+  # How far inside the terrain edge a navigation goal must stay. AStarPlanner
+  # refuses any goal outside it, which is the last guard before a robot is
+  # commanded off the heightfield — past the edge there is no collision surface,
+  # the body falls, and its AABB eventually leaves the integer range ODE's
+  # broadphase uses, taking Gazebo down mid-mission. The derivation of the 10.0
+  # (half a collision cell + robot half-extent + arrival slop + slack) is in
+  # world_params.yaml beside `safety_margin_m`, which must carry the same value.
+  terrain_margin_m: 10.0
   max_traversable_slope_deg: 15.0
   slope_penalty_weight: 2.0
   hazard_penalty_weight: 10.0

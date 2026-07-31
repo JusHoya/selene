@@ -538,5 +538,39 @@
     <!-- JointStatePublisher plugin -->
     <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher"/>
 
+    <!-- GROUND-TRUTH POSE, for the localisation stack the simulator stands in
+         for. Publishes THE MODEL'S WORLD POSE on /model/<name>/pose as a
+         gz.msgs.Pose_V with one entry; simulation.launch.py bridges it to
+         /<robot_id>/pose_truth and world_odometry_node consumes it.
+
+         WHY THIS EXISTS. DiffDrive above dead-reckons /model/<name>/odometry
+         from wheel joint positions, and wheel odometry cannot detect its own
+         failure: on 2026-07-31 a hauler pinned on the PSR crater wall reported
+         126.7 m of travel at the commanded 0.395 m/s while its body moved
+         6.6 cm, then declared arrival 241.577 m from the depot and unloaded.
+         The only signal that can catch that is a second, independent position
+         estimate. See selene_sim/selene_sim/localisation.py.
+
+         WHY PosePublisher AND NOT OdometryPublisher. MEASURED here on gz-sim 8
+         (2026-07-31): both report the true world pose, but OdometryPublisher's
+         <odom_topic> is a literal with no model-name substitution, so two
+         robots spawned from this same file would publish onto one topic.
+         PosePublisher derives /model/<model name>/pose at runtime, which is
+         what makes one <include>-able model file serve scout_01 and scout_02.
+
+         WHY 20 Hz. The consumer compares path lengths over a 20 s window and
+         decimates to 5 Hz before doing so; 20 Hz leaves margin for the
+         freshness check without putting a 166 Hz pose stream on the DDS bus. -->
+    <plugin filename="gz-sim-pose-publisher-system"
+            name="gz::sim::systems::PosePublisher">
+      <publish_model_pose>true</publish_model_pose>
+      <publish_link_pose>false</publish_link_pose>
+      <publish_collision_pose>false</publish_collision_pose>
+      <publish_visual_pose>false</publish_visual_pose>
+      <publish_sensor_pose>false</publish_sensor_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg>
+      <update_frequency>20</update_frequency>
+    </plugin>
+
   </model>
 </sdf>

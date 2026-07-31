@@ -14,7 +14,32 @@ from selene_hal.data_types import (
 
 
 class SensorConfig:
-    """Configuration for one sensor from RCDL."""
+    """Configuration for one sensor from RCDL.
+
+    ``extra`` is an untyped kwargs bag holding whatever optional RCDL fields a
+    backend chose to forward. Two of its keys are LOAD-BEARING -- a sensor that
+    does not receive them still constructs, and still reads, but reports a
+    value that is silently wrong rather than absent:
+
+    ``noise_stddev``  From ``SensorDescriptor.noise_stddev``
+                      (``selene_hal/config/scout.yaml:16``, 0.5 wt%). Read by
+                      ``GazeboScalarFieldSensor`` and reported as
+                      ``ScalarFieldReading.uncertainty``. Missing means 0.0,
+                      which claims a noise-free instrument and collapses the
+                      orchestrator's Bayesian map update to last-sample-wins.
+
+    ``capacity_kg``   From ``SensorDescriptor.capacity_kg``
+                      (``excavator.yaml:29`` hopper_fill 20,
+                      ``hauler.yaml:29`` load_cell 50). Read by the fill-level
+                      sensors and used for the ONLY fraction -> kilogram
+                      conversion in the system:
+                      ``FillLevelReading.mass_kg = level * capacity_kg``.
+                      Missing means ``mass_kg`` is 0.0 forever, which is how
+                      deviation D-06's "structurally zero numerator" arose.
+
+    Both backends must forward both keys or a green stub-HAL test proves
+    nothing about the Gazebo path.
+    """
 
     def __init__(self, name: str, sensor_type: SensorType, topic: str,
                  power_draw: float = 0.0, **kwargs):

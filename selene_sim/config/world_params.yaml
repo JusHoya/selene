@@ -1,11 +1,55 @@
 world:
   name: lunar_psr
   gravity: [0, 0, -1.62]
+  # THE TERRAIN FOOTPRINT. This is not a preference — it is the heightfield's
+  # own extent, and there is no ground outside it. models/lunar_terrain/model.sdf
+  # declares <size>500 500 ...</size> centred on the origin, and
+  # models/lunar_terrain/heightmaps/terrain_datum.json records
+  # world_size_m: 500.0. selene_sim/test/test_world_extent_agrees.py fails the
+  # build if these four numbers stop describing that same square.
   bounds:
     x_min: -250
     x_max: 250
     y_min: -250
     y_max: 250
+  # How far inside the edge a commanded target must stay. Past the edge a robot
+  # simply falls: there is no collision surface below it.
+  #
+  # WHAT IS MEASURED AND WHAT IS NOT — this comment asserted a root cause it did
+  # not have, which is the exact failure mode CLAUDE.md exists to prevent, so it
+  # is spelled out rather than tidied away. MEASURED: Gazebo aborted three times
+  # mid-mission on 2026-07-30/31 with
+  #   ODE INTERNAL ERROR 1: assertion "aabbBound >= dMinIntExact && aabbBound
+  #   < dMaxIntExact" failed in collide() [collision_space.cpp:460]
+  # NOT MEASURED, and previously stated here as fact: that a robot had left the
+  # terrain and that the fall caused it. It rested on a translation-only model
+  # of the odom frame which the operator's own check_drive.sh run then refuted —
+  # the frame is a full SE(2), and under it none of those targets leaves the
+  # terrain. The instrumented run of 2026-07-31 then found the maximum |x| or
+  # |y| over all 31 entities across 200,027 pose samples to be 174.700 m against
+  # a 248.062 m edge, and the minimum z to be -14.402 m against a -14.782 m
+  # floor. THE CAUSE OF THE ABORT IS UNKNOWN. It did not reproduce under
+  # instrumentation. Keep the margin — driving off a finite heightfield is a bad
+  # idea on its own terms — but do not read it as a fix for the abort.
+  #
+  # The number is a sum, not a round guess:
+  #   1.95 m  half a collision cell. The collision heightmap is 129x129 over
+  #           500 m. gz-sim spreads those 129 samples over the declared 500 m
+  #           extent and the ODE broadphase reports the resulting heightfield
+  #           AABB as +/-248.0620 m, which is 500/129 * 128 / 2 = 248.0620155
+  #           exactly — i.e. the lattice PITCH is 500/129 = 3.87597 m, not the
+  #           500/128 = 3.90625 m stated elsewhere in this repository, and half
+  #           a cell is 1.938 m. 1.95 is that rounded up.
+  #   0.59 m  the largest robot's collision half-extent
+  #           (htn_planner.FOOTPRINT_CLEARANCE_M is 1.1694 m for two bodies).
+  #   3.00 m  arrival slop: PathFollower declares a waypoint reached inside its
+  #           1.0 m tolerance while steering at a 2.0 m lookahead beyond it.
+  #   the rest is slack, because going over the edge is unrecoverable and
+  #   stopping short of an empty edge costs the mission nothing. Every mission
+  #   coordinate — the four ice_deposits.yaml centres, the PSR disc, the depot,
+  #   the recharge station, all ten spawns, all 26 rocks — is at least 45 m
+  #   inside the resulting +/-240 m box.
+  safety_margin_m: 10.0
   psr_zones:
     - name: psr_alpha
       type: circle
@@ -14,9 +58,56 @@ world:
   solar_zone:
     type: complement
     description: "Entire operational area minus PSR zones"
+  # ------------------------------------------------------------------------
+  # TRAVERSABILITY. The number the fleet did not have, and the one that decided
+  # the 2026-07-31 run.
+  #
+  # selene_agent/config/nav_params.yaml has carried
+  # `navigation.max_traversable_slope_deg: 15.0` since Phase 2 and NOTHING HAS
+  # EVER READ IT — grep the repository. So no planner, no guard and no skill in
+  # SELENE knows a slope limit exists, and a hauler was duly routed straight at
+  # the PSR crater wall, pinned at a measured -35 deg body pitch, and spent
+  # 320.7 s turning its wheels at the commanded 0.395 m/s while its body moved
+  # 6.6 cm. It then reported success. (Pitch, duration and displacement from
+  # that run's analyser output; not re-measured here.)
+  #
+  # The limit below is a DECLARED BOUND, not a measurement of what these
+  # vehicles can climb. The only slope on which one has been observed to fail is
+  # ~35 deg; nothing has swept the range in between, so 15 deg is chosen to sit
+  # far under the single failure point rather than near the true limit.
+  # selene_sim/test/test_mission_traversability.py evaluates the shipped height
+  # field against it and fails the build if the mission cycle needs a steeper
+  # route than this.
+  max_traversable_slope_deg: 15.0
+  # ------------------------------------------------------------------------
+  # THE ISRU PROCESSING DEPOT, ON THE CRATER FLOOR. Moved from (-30,-100) on
+  # 2026-07-31. The reason is measured, from the shipped generator (seed 42):
+  # the PSR crater's rim is 34.3-39.2 deg of uphill on all 24 azimuths sampled
+  # at 15 deg spacing, so it is a ONE-WAY TRIP, and every ice deposit is inside
+  # it while both previous depot positions were outside. Every haul therefore
+  # had to climb a wall no vehicle here can climb. See the comment on the depot
+  # <include> in worlds/lunar_psr.sdf and test_mission_traversability.py.
+  #
+  # THIS MUST AGREE WITH THREE OTHER PLACES, and they are listed because they
+  # have disagreed before:
+  #   * the `depot` marker in worlds/lunar_psr.sdf   (the physical referent)
+  #   * depot_x / depot_y in selene_orchestrator/config/orchestrator_params.yaml
+  #     (what actually reaches a hauler, on TaskAssignment.depot_location)
+  #   * selene_sim/test/test_world_frame.py, which reads the orchestrator's
+  #     value and asserts it is on the terrain
   depot:
-    position: [-30, -100, 0]
+    position: [-100, -150, 0]
     radius: 10
+  # THE RECHARGE STATION IS STILL OUTSIDE THE CRATER, and that is an open
+  # problem rather than a decision. Solar recharge needs sunlight and the PSR
+  # has none by definition, so the pad has to be on the plain — but the plain is
+  # behind the same 34-39 deg wall. A robot that descends to the ice can
+  # therefore work until its battery reaches the floor and then cannot get back.
+  # No run has hit it yet (batteries end a 20-minute mission at 73-86%), and
+  # nothing detects it. Recorded in docs/phase5_deviation_register.md.
+  # NOTE the third disagreement, unchanged and deliberate:
+  # selene_agent/config/nav_params.yaml's mission.recharge_position is
+  # (-75, -100), which is neither of these.
   recharge_station:
     position: [-30, -100, 0]
     radius: 5

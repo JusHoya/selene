@@ -1,6 +1,34 @@
+# Operator task injection from the dashboard — FR-DASH-5 (docs/PRD.md:526-534).
+
+# 'prospect' | 'excavate' | 'haul'. Anything else is rejected outright
+# (MANUAL_TASK_CAPABILITIES, orchestrator_node.py:112-116, tested at :414).
 string task_type
+
+# Target in world metres. z is unused.
 geometry_msgs/Point target_location
+
+# KILOGRAMS. Meaning depends on task_type:
+#   excavate -- target extracted mass for this task
+#   haul     -- target delivered mass for this task
+#   prospect -- IGNORED; a survey has no mass. A non-zero value is accepted and
+#               the response message says it was ignored.
+# 0.0 means unconstrained: fill to the robot's own RCDL capacity, which is the
+# behaviour before this field was read at all. Negative or non-finite is
+# rejected. NOT clamped here — the orchestrator has no HAL and no RCDL; the
+# agent clamps against selene_hal/config/<type>.yaml (excavator hopper_fill
+# capacity_kg 20, hauler load_cell capacity_kg 50).
 float32 quantity
+
+# OPTIONAL, and a PREFERENCE — not a force-assignment.
+# The task enters the auction like any other (docs/PRD.md:533, FR-DASH-5(b)).
+# If this robot bids it wins regardless of score; if it does not bid within
+# inject_preferred_robot_max_rounds auctions the preference is dropped with a
+# WARNING alert and the auction opens up.
+# It is NOT a way to pre-empt a busy robot. Use OverrideRobot 'cancel_task'
+# first — that path is logged and appears in the task history, and it works: the
+# old force-assign path published a TaskAssignment that agent_node.py:682-688
+# discards for any robot not in BIDDING or ASSIGNED, i.e. exactly the busy robot
+# it was meant to serve, after having already re-PENDed that robot's task.
 string assigned_robot_id
 ---
 bool success

@@ -27,7 +27,7 @@
 **SELENE** commands, coordinates, and optimises a heterogeneous fleet of autonomous lunar surface robots across the In-Situ Resource Utilization value chain — prospecting, extraction, and transport. An HTN planner decomposes a mission objective into robot-level primitives, a market-based auction allocates them, and each robot runs its own FSM autonomy stack behind a hardware abstraction layer. The full specification is [`docs/PRD.md`](docs/PRD.md); this README is the front door.
 
 > [!IMPORTANT]
-> **Sprint 0 prototype. Phases 1–4 are implemented; Phase 5's code is implemented but its exit gate has not been passed.** The seven-check gate at `docs/PRD.md:1501-1509` was audited on 2026-07-29 and scored **0 pass / 3 unproven / 4 fail**. No `phase5_validation_report.md` has ever been committed, so there is no in-tree evidence the gate has been executed end to end. Two simulation-side defects are known to prevent a clean live run and are being worked now — see [Known gaps](#known-gaps). Everything in [Architecture](#architecture) exists as code; read [Status](#status) before relying on any single capability.
+> **Sprint 0 prototype. Phases 1–4 are implemented; Phase 5's code is implemented and mostly demonstrated, and its exit gate has been run twice and does not pass.** On 2026-07-31 `scripts/validate_phase5.sh` returned **8 passed / 1 failed / 2 skipped (exit 1)** and then **9 / 0 / 2 (exit 2)** on ROS 2 Jazzy + Gazebo. Exit 2 is a SKIP, which by the gate's own contract is not a pass; both non-passes are defects in the gate's *measuring apparatus* rather than in the system, and neither was patched, because adjusting an instrument until it stops reporting a problem is precisely the failure this project's deviation register exists to name. In the same period the fleet ran end to end and delivered 94.85 kg of material to the depot, the dashboard was confirmed rendering in a browser, and nineteen new deviations were opened — of which **the cause of a reproducible Gazebo/ODE abort remains unknown**. Everything in [Architecture](#architecture) exists as code; read [Status](#status) and `docs/phase5_deviation_register.md` before relying on any single capability.
 
 ## Why
 
@@ -144,9 +144,11 @@ ros2 topic list
 | 5 — Dashboard & integration | React dashboard, rosbridge, unified launch | Code implemented; **exit gate not passed** |
 | 6 — Polish & hardening | Stability, performance, integration demos | Not started |
 
-**What is independently verified.** The message and service contracts match their definitions field-for-field across 13 topic subscriptions and 2 service calls, with zero mismatches; the dashboard's nine FSM state strings match the agent's `AgentState` enum exactly; the navigator's static obstacle list matches all 26 rocks in the world file; the resource map's update is a real Gaussian conjugate posterior, measured at 0.21 ms per update on the production 500 × 500 grid; the workspace builds clean under ROS 2 Jazzy (all six packages); and the Python suite is **268 passing** and order-independent.
+**What is independently verified.** The message and service contracts match their definitions field-for-field across 13 topic subscriptions and 2 service calls, with zero mismatches; the dashboard's nine FSM state strings match the agent's `AgentState` enum exactly; the navigator's static obstacle list matches all 26 rocks in the world file; the resource map's update is a real Gaussian conjugate posterior, measured at 0.21 ms per update on the production 500 × 500 grid; and the workspace builds clean under ROS 2 Jazzy (all six packages). The Python suite is **604 passing in a single pytest process** spanning all five Python packages, in either collection order, with one declared skip (`selene_hal`'s Gazebo backend, which needs a real `rclpy`); split into the three per-package lanes it is 603 passing and two skips, the extra skip being a `selene_sim` test that stands down when `selene_hal` is not on that lane's path. Measured on pytest 9.1.1 on 2026-07-31; the combined run was re-measured on the `pytest<8` version CI pins. The ROS-free stubs that let the orchestrator import without a workspace are scoped to their own test directory rather than installed process-wide, which is what makes the combined run possible; it aborted at collection until 2026-07-31. See `docs/phase5_deviation_register.md` D-14.
 
-**What is not.** Nothing in Phase 5 has been demonstrated end to end against a live Gazebo run, because two simulation-frame defects ([Known gaps](#known-gaps)) prevent one. **CI has been failing since 2026-04-08** — the cause (a missing `numpy` in the fast test job) is fixed and the lint blocker is cleared, but a green pipeline has not yet been observed. Do not treat CI as a signal until it goes green on its own.
+Also independently verified, and worth naming because the register spent two days calling it the change most likely to be silently wrong: the **`ImageData` row flip** that puts the fused resource map on the dashboard canvas is **correct**. Three independent passes executed the producer's flat index, the consumer's decode and the blit's negative-y transform outside a browser and all reproduced `ResourceMap.grid_to_world()` exactly, one of them over 36,000 cells with zero mismatches; omitting the flip would mirror the map about y = 0, which is the defect this repository has shipped once before. That is arithmetic agreeing with arithmetic — **the raster has still never been rendered**.
+
+**What is not.** Three Phase 5 deviations were measured on a live ROS 2 Jazzy + Gazebo run on 2026-07-30 — launch configurability, the fused resource map on the wire, and the RViz2 overlay. **Everything else in Phase 5 is implemented and unit-tested but has never been executed against ROS 2, Gazebo, rosbridge, RViz2 or a browser**, the rewritten exit gate included, and no `colcon build` has compiled the nine new or amended message definitions. `docs/phase5_deviation_register.md` states this per deviation and is the authority; it draws the "implemented" versus "demonstrated" line that this paragraph summarises. Two of those deviations — the fleet map (D-01) and the resource heatmap (D-02) — were additionally closed on 2026-07-30 with **no adversarial review at all**, because the reviewer assigned to them failed mid-run and nobody recorded the gap; the review was finally run on 2026-07-31 and opened four new deviations, D-15 through D-18, all open. That is the strongest argument in this repository for why a same-day closure by an implementer is not evidence. **CI has been failing since 2026-04-08** — the cause (a missing `numpy` in the fast test job) is fixed and the lint blocker is cleared, but a green pipeline has not yet been observed. Do not treat CI as a signal until it goes green on its own.
 
 ## Simulation
 
@@ -204,7 +206,7 @@ Invariants that hold, and what enforces them.
 3. **A* never cuts a corner diagonally** — a diagonal step is admitted only when both adjacent cardinals are free, and ties break on a monotonic counter, so paths are deterministic.
 4. **Recharge cannot oscillate** — entry at ≤ 15 %, exit at ≥ 90 %, with the FSM transition table omitting `ENERGY_CRITICAL` from the recharging state entirely. Exactly one entry and one exit per cycle.
 5. **Losing a robot does not lose its work** — a heartbeat timeout marks it offline and returns its assigned and in-progress tasks to `PENDING` for re-auction. Covered by unit tests.
-6. **The test suite is order-independent** — ROS stubs are installed per-test and torn down, verified by running all four suites in both orders in one process (268 passing either way).
+6. **The test suite is order-independent** — 604 passing in one pytest process spanning all five Python packages, byte-identical totals in both collection orders. This broke once (D-14: `conftest.py` installed process-global ROS stubs that were incomplete relative to what `selene_hal` imports, and a combined run aborted at collection having run zero tests) and the fix is structural rather than a patched stub: the stubs are inserted into `sys.modules` only while pytest is collecting or running something under `selene_orchestrator/test`, and removed on the way out. Enforced by `selene_hal/test/test_ros_stub_isolation.py` — which fails on both the loud form of the defect and the silent one — and by the `cross-package-tests` CI job, which runs both orders on both pytest 7 and pytest 9.
 
 ## Roadmap
 
@@ -212,7 +214,7 @@ Invariants that hold, and what enforces them.
 - [x] **Phase 2 — Single-agent autonomy.** FSM, A* navigator, energy manager, skill library.
 - [x] **Phase 3 — Multi-agent coordination.** Sealed-bid auction, fleet monitor, Bayesian resource map.
 - [x] **Phase 4 — Orchestration intelligence.** HTN decomposition, dynamic reallocation, ISRU cycle.
-- [ ] **Phase 5 — Dashboard & integration.** Code complete; exit gate not passed. Blocked on the simulation-frame defects below.
+- [ ] **Phase 5 — Dashboard & integration.** Code complete; **exit gate not passed — the rewritten gate has never been run.** See `docs/phase5_deviation_register.md`.
 - [ ] **Phase 6 — Polish & hardening.** Integration demos, NFR performance validation, 30-minute stability run. Not started.
 
 ## Known gaps
@@ -221,10 +223,11 @@ Stated plainly, because a demo that surprises you is worse than one that is scop
 
 - **Robots spawn below the terrain surface.** The heightmap generator raises the whole field by 15 m and nothing downstream compensates, so every robot, rock and the depot originates inside the terrain. Being fixed now, with a validator that samples the height map at every placement coordinate.
 - **Odometry is spawn-relative but consumed as world coordinates.** There is no world-pose publisher, so every consumer shares the same offset frame. They agree with each other, which is why the dashboard looks correct while the fleet is elsewhere in the physics world. Being fixed now.
-- **The ISRU mass ledger is not instrumented.** `MaterialInventory` is constructed and read but never written, so extracted / in-transit / deposited masses are zero in a live run. The dashboard shows them as explicitly *not instrumented* rather than as a real 0.00 kg reading.
-- **`num_scouts` / `num_excavators` / `num_haulers` are accepted and ignored** by `simulation.launch.py`, whose spawn loops are fixed at 2/1/1. The dashboard now discovers whatever fleet is actually publishing, but the launch file cannot yet produce a different one.
-- **Task failure is reported as task success.** The agent fires the same FSM event on a failed skill as on a successful one, so a timed-out haul is credited as complete.
-- **FR-MAP-4 (RViz2 resource-map view) is not implemented.** It was descoped as P1; the resource map is never published to any topic, so the dashboard's heatmap renders raw scout samples rather than the fused posterior.
+- **The ISRU mass ledger is instrumented but the chain has never been run.** `MaterialInventory` is now written from a real measurement chain — sim fill *fraction* → HAL `mass_kg` → skill delta → `MaterialEvent` → orchestrator ledger → `MissionProgress` — and mass is never estimated: a skill that cannot read its fill sensor publishes nothing rather than a zero. Nothing in that chain has been executed against Gazebo or DDS, and three defects were found on it *after* it was first recorded as fixed. See D-06.
+- **Robot counts and world files are configurable** (`num_scouts` / `num_excavators` / `num_haulers`, `world`, `ice_config`, `spawn_config`), and `spawn_positions.yaml` describes a ten-robot fleet with every pose surveyed against the terrain. Measured on a live Jazzy run. Asking for more robots than the file describes fails the launch rather than inventing a pose. See D-07.
+- **Task failure reaches the orchestrator, but the agent's FSM still does not distinguish it.** The agent fires the same FSM event on a failed skill as on a successful one — deliberately, because firing `FAULT` would route the robot to ERROR on any transient failure — and instead reports the outcome on `selene_msgs/msg/TaskResult`, which the orchestrator treats as authoritative. A timed-out haul is now recorded FAILED rather than credited as complete. See D-03.
+- **FR-MAP-4 (RViz2 resource-map view) is implemented and was measured live.** The orchestrator publishes a `visualization_msgs/MarkerArray` CUBE_LIST overlay beside the fused posterior, hue for concentration and alpha for certainty, from the same snapshot on the same timer; the dashboard heatmap renders that same posterior through a ported half of the same colour law. See D-08 and D-02.
+- **The Phase 5 exit gate has never been run.** It was rewritten from eight liveness proxies to eleven correlated checks, and the rewrite has not been executed on WSL2. `docs/phase5_validation_report.md` records one run of the *superseded* gate at commit `251e84d` and its footer asserts a waiver that is now false; it is a historical artifact, not current evidence.
 - **`use_sim_time` is set nowhere.** All nodes run on wall clock, and `MissionProgress.elapsed_sim_time` is orchestrator uptime, not Gazebo time.
 - **Lunar gravity and slope costs.** Gravity is now declared at world scope (1.62 m/s²) but has not been re-validated in a running sim. The A* slope-cost grid is allocated and never populated, so slope has no effect on planning.
 - **No `LICENSE` file.** All five `package.xml` files and this README declare Apache-2.0, but the licence text is not in the repository.
@@ -232,15 +235,27 @@ Stated plainly, because a demo that surprises you is worse than one that is scop
 ## Development
 
 ```bash
-# Tests — package roots on PYTHONPATH; runs without a ROS installation
-PYTHONPATH="selene_hal;selene_orchestrator;selene_agent;selene_isru" \
-  python -m pytest selene_hal/test selene_orchestrator/test selene_agent/test selene_isru/test -q
+# Tests — package roots on PYTHONPATH; runs without a ROS installation.
+# Everything, one process, either order (separators are ';' on Windows, ':' elsewhere).
+PYTHONPATH="selene_orchestrator;selene_isru;selene_hal;selene_agent;selene_sim" \
+  python -m pytest selene_orchestrator/test selene_isru/test selene_hal/test \
+                   selene_agent/test selene_sim/test -q                    # 598 passed, 1 skipped
 
-# In a built workspace
+# Or per package. Same tests; the extra skip is selene_sim's cross-check against
+# the HAL, which stands down when selene_hal is not on this lane's path.
+PYTHONPATH="selene_orchestrator;selene_isru" \
+  python -m pytest selene_orchestrator/test selene_isru/test -q            # 321 passed
+
+PYTHONPATH="selene_hal;selene_agent;selene_orchestrator;selene_isru" \
+  python -m pytest selene_hal/test selene_agent/test -q                    # 215 passed, 1 skipped
+
+python -m pytest selene_sim/test -q                                        # 61 passed, 1 skipped
+
+# In a built workspace (each package gets its own process)
 colcon test && colcon test-result --verbose
 
-# Lint (matches CI)
-python -m flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ --max-line-length=100
+# Lint (matches CI; settings come from the repo's .flake8, so run from the root)
+python -m flake8 selene_orchestrator/ selene_agent/ selene_hal/ selene_isru/ selene_sim/ scripts/
 
 # Dashboard
 cd selene_dashboard && npm ci && npm run build && npx eslint src --ext .js,.jsx

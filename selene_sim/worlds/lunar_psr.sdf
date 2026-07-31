@@ -73,27 +73,71 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- Processing depot marker.
+    <!-- ISRU PROCESSING DEPOT, ON THE CRATER FLOOR. Moved here from (-30,-100)
+         on 2026-07-31, and the reason is a measurement rather than a taste.
+
+         THE PSR CRATER IS A ONE-WAY TRIP. generate_heightmap.py carves it at
+         (-100,-150) with diameter 120, depth 15 and flat_fraction 0.25, so the
+         15 m of relief is spread over the 45 m annulus between r=15 and r=60
+         and the parabolic profile puts its steepest part AT THE RIM. Evaluating
+         the shipped field (seed 42) radially from the crater centre on 24
+         azimuths at 15 deg spacing, the maximum uphill gradient over a 3 m
+         baseline is 34.3-39.2 deg on EVERY ONE of them; the gentlest way out is
+         34.3 deg at azimuth 135. That is not a slope these vehicles climb, and
+         it is not a slope any profile could fix at this diameter: 15 m over a
+         45 m run is 18.4 deg on average whatever shape you give it.
+         selene_sim/test/test_mission_traversability.py recomputes those numbers
+         from the generator on every run so this comment cannot rot.
+
+         WHAT THAT DID. Every ice deposit in ice_deposits.yaml is inside the
+         crater (r = 20.6-22.4 m from its centre) and both previous depot
+         positions were outside it, so EVERY HAUL had to cross that wall. On
+         2026-07-31 a hauler tried: it climbed to r=57.5 m, pitched over to
+         -35 deg and pinned, and for 320.7 s its wheels turned at the commanded
+         0.395 m/s while its body moved 6.6 cm. Its dead-reckoned pose sailed on
+         to within 0.4 m of the configured depot and it unloaded 19 kg there,
+         241.577 m from where it actually was. (Figures from that run's
+         analyser; not re-measured here.)
+
+         SO THE DEPOT IS WHERE THE MISSION CAN REACH IT. On the flat crater
+         floor, central to all four deposits (20.3-22.4 m from each), which is
+         also a defensible ISRU architecture: process the regolith where it is
+         and ship the product out later. What it does NOT solve is the return
+         leg -- the recharge pad below is still outside the crater and still
+         behind that wall. Recorded, not hidden: see docs/phase5_deviation_register.md.
+
          The marker is STATIC, so unlike a robot it never settles - whatever z is
          written here is where it stays, and it must be placed by measurement.
-         MEASURED collision surface at (-30,-100) = +0.886175 m (2026-07-30,
+         MEASURED collision surface at (-100,-150) = -13.914932 m (2026-07-30,
          gz-sim 8.14.0, scripts/check_terrain.sh, probe sphere pinned to a
-         prismatic Z-only joint so it cannot roll off the sample point).
+         prismatic Z-only joint so it cannot roll off the sample point; the
+         number is recorded in selene_sim/config/spawn_positions.yaml beside the
+         four spawn surfaces measured in the same run).
          The marker is a cylinder of radius 1.0 and length 0.1, so its centre
          must sit at surface + 0.05 to rest on the ground:
-         0.886175 + 0.05 = 0.936, rounded UP to 0.94 so the disc's underside
-         clears the ground rather than grazing it.
-         This moved down from 1.86 because the heightmap normalisation bug was
-         fixed - the terrain itself is ~0.92 m lower here now. See
-         selene_sim/scripts/generate_heightmap.py and the note on terrain_link in
-         models/lunar_terrain/model.sdf. Before that fix, z=1.5 put the disc's
-         TOP 0.26 m BELOW the surface: the depot was entirely inside the terrain
-         and invisible.
+         -13.914932 + 0.05 = -13.864932, rounded UP to -13.86 so the disc's
+         underside clears the ground rather than grazing it.
          If you regenerate the heightmap, re-run scripts/check_terrain.sh and
          reset this from its reported surface_z for the depot row. -->
     <include>
       <uri>model://depot_marker</uri>
       <name>depot</name>
+      <pose>-100 -150 -13.86 0 0 0</pose>
+    </include>
+
+    <!-- RECHARGE PAD, on the illuminated plain outside the PSR. This is the
+         coordinate the depot marker used to occupy, and it keeps its surveyed
+         height: MEASURED collision surface at (-30,-100) = +0.886175 m, so a
+         0.1 m disc rests with its centre at 0.886175 + 0.05 = 0.936, rounded UP
+         to 0.94. Same gate, same run as the depot above.
+         It is a marker only. Nothing in the code reads it; the recharge
+         position lives in world_params.yaml and selene_agent's parameters, and
+         those three coordinates do not all agree (see world_params.yaml). What
+         this does buy is that the place the fleet is told to recharge at is now
+         a place with something visible on it, which is one more than before. -->
+    <include>
+      <uri>model://depot_marker</uri>
+      <name>recharge_pad</name>
       <pose>-30 -100 0.94 0 0 0</pose>
     </include>
 

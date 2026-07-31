@@ -14,6 +14,16 @@
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <!-- The ros_gz bridge renders gz.msgs.Pose_V as a TFMessage, which is how
+       each robot's ground-truth world pose reaches world_odometry_node. -->
+  <depend>tf2_msgs</depend>
+
+  <!-- Runtime only: simulation.launch.py resolves
+       FindPackageShare('selene_hal') to hand hopper_node and bin_load_node the
+       RCDL that declares their capacity_kg and transfer_rate. No selene_sim
+       source imports selene_hal, so pydantic stays out of the simulation
+       runtime and these nodes remain testable without a colcon install. -->
+  <exec_depend>selene_hal</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

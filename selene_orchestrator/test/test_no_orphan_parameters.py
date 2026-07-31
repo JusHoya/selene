@@ -13,9 +13,24 @@ a supported knob in the config file and in `ros2 param list`, an operator can
 set it, and it does nothing. This test finds them by AST rather than by grep,
 so a name in a comment or a docstring cannot mask one.
 
-It is deliberately an allow-list, not a blanket ban. The two names below are
-pre-existing orphans that this change does not fix; they are recorded here so
-they are visible and counted, and so a NEW one fails the build.
+It is deliberately an allow-list, not a blanket ban. The name below is a
+pre-existing orphan that this change does not fix; it is recorded here so it is
+visible and counted, and so a NEW one fails the build.
+
+THE LIST SHRANK ON 2026-07-31. It used to hold two names. `recharge_threshold`
+was the other, annotated "the agent decides recharge locally (selene_agent
+battery logic); the orchestrator declares a threshold it never applies" — an
+accurate description of the orchestrator's half and a wrong assumption about
+the agent's. The agent had NO battery logic on that path: ``_handle_working``
+ended every task with an unconditional ``_start_recharge()``, so robots
+recharged after every waypoint at 88-93% charge and the survey never finished.
+The parameter has moved to the node that can act on it
+(``selene_agent/agent_node.py``, passed by ``selene_agent/launch/agent.launch.py``)
+and the recharge decision it names now exists. See deviation D-19.
+
+That is the lesson this file was written for, arriving from the other
+direction: an entry on an allow-list is a claim about the rest of the system,
+and nothing was checking that claim.
 """
 
 import ast
@@ -24,16 +39,11 @@ import pathlib
 SOURCE = (pathlib.Path(__file__).resolve().parents[1]
           / 'selene_orchestrator' / 'orchestrator_node.py')
 
-# Declared but never read, as of 2026-07-30. Both are real gaps, both predate
-# this test, neither is in scope for the FR-MAP-4 work that added it:
-#   recharge_threshold       - the agent decides recharge locally
-#                              (selene_agent battery logic); the orchestrator
-#                              declares a threshold it never applies.
+# Declared but never read, as of 2026-07-31:
 #   fleet_state_publish_rate - the orchestrator has no fleet-state publisher at
 #                              all; robot state flows agent -> dashboard.
 # Removing a name from this set is a fix. Adding one needs a reason in writing.
 KNOWN_ORPHANS = {
-    'recharge_threshold',
     'fleet_state_publish_rate',
 }
 
