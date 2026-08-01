@@ -4071,11 +4071,55 @@ Added 2026-07-31 (evening), from the live runs and the exit-gate runs:
     strongest of them (exit-gate check 10) recomputes through the same module the
     publisher uses. This is the single largest remaining gap between what Phase 5
     claims and what the PRD asks for.
-    **Re-checked 2026-08-01 and UNCHANGED. `rviz:=true` is wired into the launch
-    and WSLg is available on the machine that ran everything else this session;
-    it was not run.** Three gate runs, a 54-trial Gazebo campaign and two browser
-    sessions have now gone past this item without discharging it. It is not
-    blocked on anything.
+    **AMENDED 2026-08-01, LATE: RViz2 HAS NOW BEEN STARTED, AND IT RENDERS THE
+    OVERLAY. The item is NOT discharged.** The paragraph above was written
+    earlier the same day and said "it was not run"; that is now false and is
+    kept visible rather than deleted, because the sequence matters.
+
+    What was observed: `ros2 launch selene_sim unified_sim.launch.py rviz:=true`
+    brought RViz2 up against `selene_sim/rviz/selene_sim.rviz`; the
+    `Resource Map` display reported `Status: Ok` on
+    `/orchestrator/resource_map_markers`; and after the camera was moved over the
+    deposit field a CUBE_LIST of coloured cells was drawn. The dashboard,
+    separately, reported `1633 cells · 7917 readings` on its own legend. **This
+    is the first time RViz2 has ever been started in this project.**
+
+    **Four reasons this does NOT discharge the item, in descending severity.**
+
+    (a) **TWO ORCHESTRATORS WERE PUBLISHING AT THE TIME, and this is the one that
+    invalidates the comparison rather than merely weakening it.** A previous
+    launch out of `~/selene_ws` had never been torn down, so a second complete
+    SELENE stack was live alongside the `~/selene` one under test:
+    `ros2 topic info /orchestrator/resource_map_markers` reported
+    **`Publisher count: 2`**. RViz2 and the dashboard therefore cannot be shown
+    to have been reading the same publisher, and the claim that both render *one*
+    posterior is **not established by this observation**. The reading of
+    `7917` against a seeded `3920` is consistent with that contamination and was
+    not otherwise explained. A clean re-run needs exactly one stack.
+
+    (b) **The map was SEEDED, not surveyed** — 49 synthetic `ResourceMapUpdate`
+    readings shaped like `deposit_alpha`, the same method exit-gate check 10 uses
+    and discloses. The fleet did not find this ice.
+
+    (c) **The framings are not identical.** RViz2 was looking at the edge of the
+    field (blue, low concentration) and the dashboard capture is centred on the
+    peak (green/yellow). `docs/PRD.md:1504` asks for a side-by-side; two pictures
+    of different regions is a weaker thing and must not be quoted as one.
+
+    (d) **A static `map` transform had to be published by hand for RViz2 to work
+    at all**, and this is a finding in its own right rather than a testing
+    artefact. Nothing in SELENE publishes TF, so RViz2's fixed frame did not
+    exist and `Global Status` read `Warn — Frame [map] does not exist`; the view
+    could not be established until
+    `ros2 run tf2_ros static_transform_publisher --frame-id map
+    --child-frame-id rviz_anchor` was run outside the launch. **The FR-MAP-4
+    overlay is therefore not usable as shipped**: an operator following the
+    documented `rviz:=true` path gets a warned fixed frame and no established
+    view. That is a real gap between "the markers are published correctly", which
+    check 10 proves, and "an operator can see them", which nothing does.
+
+    The diagnostic camera lived in a `/tmp` copy; `selene_sim/rviz/selene_sim.rviz`
+    was not modified.
 
 Added 2026-08-01:
 
