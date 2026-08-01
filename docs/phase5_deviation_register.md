@@ -24,6 +24,28 @@ in a frame that has since been proved not to be the frame they claimed. One
 theory this register carried, and one the repository's own configuration files
 asserted as fact, are **refuted**.
 
+**Amended again on 2026-08-01, and this is the first amendment written after
+every entry it inherited as open had been closed.** Four commits landed on
+`phase5-hardening` between the last revision and this one — `c4548ce`,
+`d390315`, `7727ba8` and `9c1a4d7` — and the exit gate was run a **third** time,
+against `9c1a4d7`. **All six deviations this register carried as open (D-28,
+D-30, D-31, D-32, D-34, D-35) are closed below**, one of them — D-32 — dissolved
+rather than fixed, and one of them — D-31 — diagnosed for the first time. Five
+new deviations are opened: **D-38, D-39, D-40 and D-41, each closed or worked
+around on the evidence that found it, and D-42, which is OPEN with an UNKNOWN
+cause.** The headline measurement is the gate:
+
+    2026-07-31   8 passed / 1 failed / 2 skipped   (exit 1)
+    2026-07-31   9 passed / 0 failed / 2 skipped   (exit 2 — a SKIP is not a pass)
+    2026-08-01  10 passed / 1 failed / 0 SKIPPED   (exit 1)   at 9c1a4d7
+
+**Zero skips is the finding.** Checks 6 and 9 produced verdicts for the first
+time, so PRD exit-gate rows 3 and 4 are **measured at last** rather than
+unmeasurable — that is D-34 closed, on the gate's own output. **The gate still
+does not pass**, and the reason is new: check 11 failed because the gate chose a
+robot reporting 0% battery and never checked that it could perform the
+manoeuvre. That robot's 0% is **D-42, and nobody knows what produced it.**
+
 **Provenance, and it changed under this amendment.** Every entry below was
 written and verified against the **uncommitted** working tree on branch
 `phase5-hardening` at base commit `bab8af6`, which is what the `file:line`
@@ -33,6 +55,20 @@ running it found" — 134 files, +29,815 / -1,420), so those citations now point
 into committed code on `phase5-hardening` and are more stable than this document
 originally claimed. **Nothing here was committed by this register's own
 author.**
+
+**Provenance of the 2026-08-01 amendment, which is different again.** Every
+citation added or revised on this pass was opened and read against the committed
+tree at **`9c1a4d7`**, and every test-lane count in it was re-run on this box
+rather than copied from a commit message. The live figures are not this pass's
+own: they come from the 2026-08-01 exit-gate run (report regenerated **by that
+run** at `$HOME/selene/phase5_validation_report.md`, source commit `9c1a4d7`,
+launch log `/tmp/selene_unified_launch.log`, probe JSON
+`/tmp/selene_phase5_probe.35401.json`), from the 54-trial slope campaign
+committed as `docs/slope_capability_2026-08-01.json`, and from a browser session
+whose ROS side was a **rosbridge test double, not the real stack** — that
+qualification is repeated in every entry that rests on it, because it bounds
+what those observations can prove. CI conclusions cited below were read from the
+GitHub Actions API by run id.
 
 **Read "Verification limits" at the bottom before quoting anything here as
 evidence.** The 2026-07-30 closures of D-01..D-06 and D-10 were written and
@@ -85,32 +121,34 @@ permission slip. This file replaces it.
 | FR-DASH-4 Robot Detail Panel | P1 | — | Delivered | — |
 | FR-DASH-5 Manual Task Injection | P1 | D-04 | **Closed — demonstrated** | injected over the rosbridge websocket in the exit gate, twice, and announced + assigned under its own id in the launch log |
 | FR-DASH-6 Robot Override | P2 | D-05 | **Implemented; half demonstrated** | both overrides reached the FSM live (gate checks 7, 8, 11); the override's row in the rendered task history was never itemised |
-| FR-DASH-7 Mission Progress | P1 | D-06, D-11, D-28 | **Closed — demonstrated** | 5 deliveries, `deposited_quantity` 94.85 kg, `unaccounted_quantity` exactly 0.0, on a 30-minute ten-robot run |
-| FR-SIM-7 Launch & Config (full) | P0 | D-07 | **Closed — demonstrated** | measured on WSL2 / Jazzy; re-exercised at 4/3/3 twice since |
-| FR-MAP-4 RViz2 Visualization | P1 | D-08 | **Closed — implemented, overlay never seen** | published and machine-paired live; **its 2026-07-30 hot-cell figure is SUPERSEDED** (odom frame); no RViz2 has ever rendered it |
-| FR-MAP-1(e)(f) fused map on the wire | P0 | D-09 | **Closed — demonstrated** | largest live `ResourceMap` websocket frame 362 B (gate check 3, both runs) |
-| Phase 5 exit gate itself | — | D-10, D-29, D-34, D-35 | **Run, twice. DOES NOT PASS** | 8 passed / 1 failed / 2 skipped (exit 1), then 9 / 0 / 2 (exit 2) |
+| FR-DASH-7 Mission Progress | P1 | D-06, D-11, D-31 | **Closed — demonstrated; one published field was wrong** | 5 deliveries, `deposited_quantity` 94.85 kg, `unaccounted_quantity` exactly 0.0, on a 30-minute ten-robot run. `fleet_distance_total` on that same run was 2.21× the truth — diagnosed and fixed 2026-08-01 (D-31), **sufficiency not established**. (This row read "D-28" until 2026-08-01; that was a typo — D-28 is the slope limit and has nothing to do with mission progress.) |
+| FR-SIM-7 Launch & Config (full) | P0 | D-07 | **Closed — demonstrated** | measured on WSL2 / Jazzy; re-exercised at 4/3/3 twice since, and at 2/1/1 in the 2026-08-01 gate run |
+| FR-MAP-4 RViz2 Visualization | P1 | D-08 | **Closed — implemented, overlay never seen** | published and machine-paired live; **its 2026-07-30 hot-cell figure is SUPERSEDED** (odom frame); **no RViz2 has ever rendered it, and that is still true on 2026-08-01** |
+| FR-MAP-1(e)(f) fused map on the wire | P0 | D-09 | **Closed — demonstrated** | largest live `ResourceMap` websocket frame 362 B (gate check 3, all three runs) |
+| Navigation slope limit | P1 | D-28, D-32 | **Closed 2026-08-01 — measured, enforced, demonstrated** | 54-trial capability campaign (`docs/slope_capability_2026-08-01.json`); limit 20°, enforced **per step**; every agent in the 2026-08-01 gate run logged depot and recharge pad **REACHABLE** |
+| Phase 5 exit gate itself | — | D-10, D-29, D-34, D-35, D-42 | **Run, three times. DOES NOT PASS** | 8/1/2 (exit 1), then 9/0/2 (exit 2), then **10 passed / 1 failed / 0 skipped (exit 1)** on 2026-08-01 at `9c1a4d7`. **Zero skips**: rows 3 and 4 measured at last. The remaining failure is D-42, cause unknown |
 
 All nine Phase 5 requirements are **code-complete**, every deviation this
 register named against them has a fix in the tree, and as of the evening of
 2026-07-31 most of them have been **observed working on a running system**. What
-has not happened is a green exit gate: the gate was run twice and returned exit 1
-and then exit 2. **Phase 5 cannot be recorded as closed.** See "Recommended
-disposition".
+has not happened is a green exit gate: the gate has now been run **three** times
+and returned exit 1, exit 2 and exit 1. **Phase 5 cannot be recorded as
+closed.** See "Recommended disposition".
 
 **The implemented / demonstrated distinction is load-bearing and this register
-will not collapse it**, even now that most entries have crossed it. Three things
+will not collapse it**, even now that most entries have crossed it. Two things
 in the table above are still short of their PRD acceptance method and say so in
 place: the RViz2 overlay has never been rendered by RViz2 and the side-by-side
-comparison `docs/PRD.md:1504` asks for has never been performed; PRD row 7
-(dashboard frame timing) is NOT COVERED by construction; and PRD rows 3 and 4
-were **not measured at all** in either gate run, for the reason recorded as
-D-34.
+comparison `docs/PRD.md:1504` asks for has never been performed; and PRD row 7
+(dashboard frame timing) is NOT COVERED by construction. **PRD rows 3 and 4 are
+no longer on that list** — they were unmeasured in both 2026-07-31 runs for the
+reason recorded as D-34, and on 2026-08-01, with D-34 fixed on both sides, they
+produced verdicts and both PASSed.
 
-**Nineteen deviations have been opened since this register's first draft.**
-D-11..D-18 came from verifying the 2026-07-30 closures rather than accepting
-them. **D-19..D-37 were opened on the evening of 2026-07-31**, and they divide
-into three groups worth naming separately:
+**Thirty-two deviations have been opened since this register's first draft —
+D-11 through D-42.** D-11..D-18 came from verifying the 2026-07-30 closures
+rather than accepting them. **D-19..D-37 were opened on the evening of
+2026-07-31**, and they divide into three groups worth naming separately:
 
 - **Four defects that had been quietly costing the mission for phases**
   (D-19..D-22): an orphaned `recharge_threshold` that made the fleet recharge
@@ -125,13 +163,37 @@ into three groups worth naming separately:
   could see a robot whose wheels turn while its body does not; `ros2 launch`
   outlived the simulator; and the FR-ISRU-2 overdraw alarm fired on every healthy
   haul.
-- **Ten items the runs surfaced and did not close** (D-28..D-37), of which
-  **seven are open**, including the one that matters most: **the cause of the ODE
-  abort is unknown** (D-37).
+- **Ten items the runs surfaced and did not close** (D-28..D-37), of which seven
+  were open at the close of 2026-07-31. **Six of those seven are closed on
+  2026-08-01** — D-28, D-30, D-31, D-32, D-34 and D-35 — leaving the one that
+  matters most: **the cause of the ODE abort is unknown** (D-37), untouched by
+  this amendment.
+
+**Five more were opened on 2026-08-01** (D-38..D-42), and four of them came from
+running something nobody had ever run:
+
+- **D-38**, the dashboard lockfile: CI's newest job could not install the
+  dashboard **at all**, and nothing had noticed because that job had never
+  fired on this branch. Its first firing failed on its own configuration.
+- **D-39**, two world files that were **invalid XML** — and, one line below the
+  failure that says so, a check that printed a green line for lunar gravity
+  **against an empty value**.
+- **D-40**, the Resource Knowledge Map: **the animation loop was never started**,
+  reported by the operator and invisible to every test the project owns.
+- **D-41**, a `gz sim -s` segfault in the depth-camera render path, which
+  **counterfeited four "cannot climb" results** in the slope campaign and would
+  have set the fleet's slope limit far too low.
+- **D-42**, OPEN: a scout reported **"Battery critical (0.0%)" 6.15 s after its
+  agent started**, three times, and took check 11 down with it. **The cause is
+  unknown.** Several candidate mechanisms are eliminated in the entry; none of
+  them explains it.
 
 Two lists remain required reading: "Open items carried forward" for what a
 closure deliberately does not cover, and "Verification limits" for what nobody
 has checked.
+
+**Two deviations are open as of 2026-08-01: D-37 and D-42, and neither has a
+known cause.** Everything else this register has ever opened is closed.
 
 **A process failure is recorded in D-01 and D-02 themselves.** Every other
 2026-07-30 closure in this register was put through an adversarial review and
@@ -1251,7 +1313,69 @@ time array would add ~1 MB per message for a field nothing reads.
 > partly because the fleet's own map was empty — see the superseded-figure note
 > under D-08 — so treat 362 B as a floor, not a typical load.
 
-## D-10 — the exit gate tests less than its report implies — RUN 2026-07-31, TWICE. THE GATE DOES NOT PASS
+## D-10 — the exit gate tests less than its report implies — RUN THREE TIMES. THE GATE DOES NOT PASS
+
+> **Third run, 2026-08-01, and the shape of the failure changed.** Run against
+> `9c1a4d7` on ROS 2 Jazzy / Ubuntu 24.04.4 at `2/1/1`
+> (`num_scouts:=2 num_excavators:=1 num_haulers:=1`), on a workspace built by
+> `scripts/sync_and_build.sh` whose `.selene_source_commit` reads `9c1a4d7`:
+>
+> | | Run 1 `221355Z` | Run 2 `222000Z` | Run 3 `2026-08-01 00:29:59 CDT` |
+> |---|---|---|---|
+> | Summary | `8 passed, 1 failed, 2 skipped` | `9 passed, 0 failed, 2 skipped` | `10 passed, 1 failed, 0 skipped` |
+> | Exit code | **1** (a FAIL) | **2** (a SKIP) | **1** (a FAIL) |
+>
+> **ZERO SKIPS IS THE RESULT.** Checks 6 and 9 SKIPped on both earlier runs and
+> cost PRD exit-gate rows 3 and 4 outright. On this run both produced verdicts
+> and both PASSed — **check 6** with the injected task `manual_0000` announced
+> **0.71 s** and assigned to `scout_01` **11.21 s** after injection, target
+> matched to 1e-3; **check 9** with a websocket transport latency of **5 ms,
+> median of 554 samples**. Those two rows have never been measured before. That
+> is D-34 closed, and it is closed on the gate's own regenerated report rather
+> than on a unit test.
+>
+> **The gate still does not pass, and the reason is not the system and not the
+> instrument's aim.** Check 11 FAILed: `scout_02`'s planned path ended **4.54 m**
+> from the commanded target, and it ended there because the robot the gate picked
+> was reporting **0.0% battery**, so the energy-critical rule overrode the
+> operator command **six milliseconds** after the FSM accepted it. **That 0% is
+> D-42 and its cause is unknown.** What check 11 is missing is a precondition —
+> it never asks whether the robot it selected can perform the manoeuvre — and
+> that is a real gap in the gate, distinct from D-35's aim problem, which this
+> run shows was fixed.
+>
+> **D-35's repairs are visible inside the failure line itself**, which is the
+> cleanest evidence available that they are in force: the bearing was chosen at
+> `+45 deg off heading 0.691 rad` rather than due east, and the window was
+> `11.0s derived at 0.50 m/s from .../selene_hal/share/selene_hal/config/scout.yaml`
+> rather than a hard 12 s. Both of D-35's unrepaired reporting defects are also
+> repaired: the FAIL message now carries the `path_note` (`planned_path ends
+> (-29.50, -99.50), 4.54 m from the commanded target`), which run 1 withheld, and
+> the PRD coverage column now states that the displacement is read off
+> `/<rid>/odom_world` carrying the simulator's **true world pose** rather than
+> repeating the stale "STILL DEAD-RECKONED" caveat.
+>
+> **The report was regenerated BY that run**, to
+> `$HOME/selene/phase5_validation_report.md`, source commit `9c1a4d7`. It is not
+> hand-edited and it is not green, so it prints no green-run paragraph.
+> `docs/phase5_validation_report.md` **in the repository is still the superseded
+> eight-check gate at `251e84d`** and must not be quoted; committing the new one
+> is not this document owner's file to commit.
+>
+> **One thing check 6 measured is worth reading before the PASS is over-read.**
+> The probe still could not find a naturally IDLE prospect-capable robot: it
+> waited its full **60 s**, no robot became IDLE in that window, and it then
+> freed `scout_01` with an operator `cancel_task` and measured on the robot it had
+> perturbed — which the report says in the row. **That is fleet behaviour, not a
+> sampling defect**: all four robots were genuinely busy. What D-34's fix bought
+> is that the IDLE the cancel produced was *observable*: `scout_01` sat in IDLE
+> for **0.220 s** (`297.9157` → `298.1354` in the launch log) and the gate
+> recorded an IDLE state sample inside it. A 0.5 s timer alone catches a 0.220 s
+> window less than half the time, so this is consistent with publish-on-transition
+> carrying it and is **not by itself proof** that it did.
+
+The 2026-07-31 status block follows, unchanged, because it is the record of the
+first two runs and of what they cost.
 
 > **Status changed 2026-07-31 (evening), and this is the headline of the whole
 > amendment.** The rewritten gate had never been executed. It has now been
@@ -2412,7 +2536,154 @@ open item 20, and it is the check this closure did not perform.
 
 ---
 
-## D-28 — `navigation.max_traversable_slope_deg` has had zero readers since Phase 2 — OPEN
+## D-28 — `navigation.max_traversable_slope_deg` has had zero readers since Phase 2 — CLOSED 2026-08-01, MEASURED AND DEMONSTRATED
+
+> **CLOSED 2026-08-01 at `9c1a4d7`.** The parameter now has production readers
+> (`selene_agent/selene_agent/agent_node.py:219`, and
+> `selene_agent/selene_agent/navigator.py` in six places), it carries a
+> **measured** value rather than a guessed one, and the rule it enforces is not
+> the rule its name suggests. Three things had to be true together and the third
+> is the interesting one.
+>
+> **1. THE CAMPAIGN.** `scripts/measure_slope_capability.sh` ran **54 trials** on
+> ROS 2 Jazzy / gz-sim on WSL2 — 3 robot types × 9 grades × 2 directions — driving
+> each vehicle from rest straight up or straight down the local fall line and
+> judging **world displacement against the COMMAND**, never against odometry (the
+> D-25 lesson: a buried wheel satisfies odometry perfectly). Pass criterion: 70%
+> of commanded displacement at under 25% slip. Artefacts are committed —
+> `docs/slope_capability_2026-08-01.json`, `docs/slope_campaign_2026-08-01.log`
+> and `docs/slope_capability_2026-08-01.PROVENANCE.md`.
+>
+>     scout      ascent 35    descent 25
+>     excavator  ascent 20    descent 25    (ascent NON-MONOTONIC)
+>     hauler     ascent 20    descent 25    (ascent NON-MONOTONIC)
+>     counts: 24 pass, 15 fail, 4 buried, 2 tumbled, 9 no_site
+>
+> Worst ascent 20, worst descent 25, so **a mission needing round trips is
+> governed by 20°**, and that is the number in `nav_params.yaml:61` and
+> `world_params.yaml:100`. **The non-monotonicity is recorded, not smoothed**:
+> the excavator and the hauler both FAILED at 10° and 15° and then PASSED at 20°
+> (`verdict.per_robot_direction.*.monotonic: false` in the artefact). A capability
+> that is not monotonic in grade means the trials are not measuring grade alone —
+> see D-41, which explains four of those apparent failures and cannot explain all
+> of them.
+>
+> **2. THE PROVENANCE FILE, and why it exists rather than an edit.** The
+> artefact's own `git_commit` and `workspace_source_commit` both read
+> **`ff80ed1`, and both are WRONG** — the campaign ran against the files of
+> `7727ba8`. The WSL2 workspace was a clone at `ff80ed1` whose *files* were then
+> rsynced from the Windows tree, and rsync excludes `.git`, so git answered
+> honestly about a repository nobody had moved. **The as-run JSON was NOT
+> edited.** Its SHA-256 fields are the chain that makes it evidence, and editing
+> it would break that chain; the correction is recorded additively in
+> `docs/slope_capability_2026-08-01.PROVENANCE.md`. **The measurement stands
+> because the hashes stand**: world, relief heightmap, collision heightmap and
+> terrain datum were all verified against the committed repository and all match —
+> including the **post-D-39** `lunar_psr.sdf`, so the campaign did not run on a
+> pre-fix world. One further discrepancy is recorded and unresolved in that same
+> file: `gz sim --versions` answered **8.10.0** while `gz sim --version` answered
+> **8.11.0** on the same host on the same day, and which one describes the physics
+> that produced these trials has not been established.
+>
+> **3. THE CONTRADICTION, AND ITS RESOLUTION, WHICH IS THE POINT.** 20° is far
+> below the crater rim, and the mission is inside the crater. The rim was
+> re-measured as a **minimax barrier** — a binary search over connected-component
+> labelling of the planning lattice, so a winding route *would* have been found if
+> one existed — and it is **34.02°** (`navigator.py:31`). Two other numbers for
+> the same rim are in the tree and are not the same measurement, and all three are
+> kept distinct on purpose: the campaign artefact's 2-D native gradient magnitude
+> minimised over 72 azimuths is **34.0349°**, and the radial 1-D derivative that
+> `selene_sim/test/test_mission_traversability.py` uses over the same azimuths is
+> **34.09°** (`terrain_slope.py:68` pins the pair at 0.5° agreement). There is no
+> gentler way round on any of the three. **Yet on 2026-07-31 the fleet delivered
+> 94.85 kg into that crater** (D-06), hauler ground truth 1.539 m from the depot
+> marker.
+>
+> Both facts are true because they are about different quantities. **A vehicle
+> climbs along its own heading, not along the terrain's fall line.** A path
+> crossing ground of slope `S` at a heading `theta` off the fall line climbs at
+> `atan(tan(S) * cos(theta))` along its direction of travel; at S = 34.02° a path
+> **≥ 57.4° off the fall line climbs at ≤ 20°, for a 1.85× length penalty**. That
+> is a switchback. **The campaign measured `theta = 0` by construction** — the
+> steepest heading that ground offers.
+>
+> So the limit is enforced **PER STEP**, against the grade along each expanded
+> edge, and **NOT per cell**, which is what the parameter's name invites. Measured
+> over the 500 × 500 / 1.0 m lattice, 8-connected, on the **collision** heightmap
+> (the surface the robot contacts), and independently re-derived by the
+> implementer:
+>
+>     per-step   10 deg -> depot UNREACHABLE (237,727 of 250,000 cells)
+>                15 deg -> reachable          (248,606)
+>                20 deg -> reachable          (250,000)
+>     per-cell   10 / 15 / 20 / 25 deg -> UNREACHABLE;  34 deg -> reachable
+>
+> **The per-cell reading would have refused the entire mission at every limit the
+> campaign can support.** That is not a tuning detail; it is the difference
+> between a fleet and a parked fleet.
+>
+> **DEMONSTRATED LIVE on the 2026-08-01 gate run.** Every agent logs the audit at
+> startup — this is `scout_02`'s, verbatim from `/tmp/selene_unified_launch.log`
+> lines 97–100:
+>
+>     [TERRAIN] slope limit 20.0 deg, enforced PER STEP against the 'collision'
+>               heightmap (navigation.max_traversable_slope_deg).
+>     [TERRAIN] 250000 cells at 1.00 m: 8729 (3.5%) exceed the limit by the
+>               per-CELL gradient reading, which is NOT the rule in force, and
+>               208 are occupied by mapped obstacles.
+>     [TERRAIN] under the per-STEP rule the navigable set is 1 connected
+>               component(s); this robot starts at (-45.2, -88.6) in one of
+>               249792 mutually reachable cells.
+>     [TERRAIN] depot (-100.0, -150.0): REACHABLE | recharge_pad (-30.0, -100.0):
+>               REACHABLE
+>
+> The audit is **a report and never a gate** — it cannot refuse to start an agent,
+> deliberately (`navigator.py`, `ReachabilityAudit`), because the shipped terrain
+> has been through three different beliefs about what is climbable in two days and
+> aborting a fleet on arithmetic over a heightmap would be the worse failure. Its
+> purpose is that the first time a hauler cannot get home, the reason is already
+> in the log from before it set off.
+>
+> **A guard the existing one could not provide.**
+> `test_no_orphan_parameters.py` AST-walks the **orchestrator's**
+> `declare_parameter` calls, so a YAML key no node declares at all is invisible to
+> it — the parameter is not orphaned, it is absent, which is exactly D-28's shape.
+> `selene_agent/test/test_nav_params_are_read.py` sees that shape. **MEASURED:
+> `nav_params.yaml` had 26 leaf keys of which 17 had no reader; it now has 22 keys
+> with 5 unread**, all `obstacle_avoidance.*`, allow-listed with a written reason
+> (`ObstacleAvoidance` itself has no production caller — the same pattern again,
+> one frame smaller). Re-verified on this pass: 22 leaf keys, and the allow-list
+> holds exactly those five.
+>
+> **Two defects found while building this, neither predicted.**
+> (a) `_simplify_path` silently discarded the cost preference: A* correctly
+> detoured off 19° ground and the simplifier straightened it back on, because
+> line-of-sight has no objection to ground that is drivable and merely expensive.
+> Shortcuts are now priced with the search's own cost function.
+> (b) `scripts/run_demo.sh` printed `Recharge station: (40, 40)`, which was never
+> true anywhere — it is `RechargeSkill`'s stale constructor default.
+> The goal guard also refuses a target **on** over-limit ground, which caught
+> `nav_params.yaml`'s own first prospect waypoint at (−60, −120), **36.80°**.
+>
+> **WHAT IS NOT DEMONSTRATED, and it is not small.**
+> * **Side-slope rollover — usually the binding limit on a real vehicle, and
+>   exactly the mode a switchback route spends its time in — WAS NOT MEASURED,
+>   and nothing in SELENE bounds it.** The rule closed here *licenses* the
+>   manoeuvre whose failure mode nobody has characterised. This is stated in the
+>   config comment beside the constant as well as here.
+> * **One trial per (robot, grade, direction).** No repeats, no run-to-run spread,
+>   no confidence interval. 54 trials is 54 samples of 54 different conditions.
+> * **No vehicle has driven a switchback.** The route lengths quoted under D-32
+>   are *executed plans over the committed heightmap*, not journeys.
+> * The spawned model was **sensor-stripped** — see D-41 — so the vehicle measured
+>   is not byte-identical to the vehicle the mission flies.
+> * Sites were chosen on the 513-sample **visual** heightmap while the wheels
+>   contact the 129-sample **collision** decimation, which can only be smoother;
+>   the grade actually felt is at most the grade reported.
+
+The entry as first written follows, unchanged — its present tense describes the
+state before the status block above, and it is kept because it is the record of
+how the defect was found.
 
 **The fifth instance of the "wired but never called" pattern**, and the one that
 made D-23 possible.
@@ -2484,7 +2755,54 @@ publisher used, so a defect *inside* that module is invisible to it.
 
 ---
 
-## D-30 — `_check_simulation_stall`: four false positives, zero true positives — OPEN
+## D-30 — `_check_simulation_stall`: four false positives, zero true positives — CLOSED 2026-08-01, ROOT-CAUSED AND FIXED
+
+> **CLOSED 2026-08-01 at `7727ba8`, and the root cause is a measurement error,
+> not a threshold.** This entry said "the fix is a judgement rather than a
+> constant". That was right about the remedy and wrong about the diagnosis:
+> **the check was measuring the wrong quantity.**
+>
+> `_last_pose_change` is "time since this robot last moved 1 cm" — **a clock that
+> runs while a robot is parked.** A robot that sat in IDLE for 60 s was therefore
+> already "stalled" **the instant its FSM flipped to NAVIGATING**, before it had
+> been given any chance to move. And parked robots are stalled by construction, so
+> the *all online robots stalled* clause was satisfied for free by the nine
+> members of a ten-robot fleet that happened to be parked — which made one wedged
+> scout **bit-identical** to a dead simulator. Both of the observed failure modes
+> above fall straight out of that: Run A's fleet-wide label on a single wedged
+> `scout_04`, and Run B's two one-second all-stationary flickers.
+>
+> **Now**: `FleetMonitor.assess_motion` measures how long each robot has been
+> **EXPECTED to move and has not** — a robot that is not expected to move is
+> neither a mover nor stalled — and the fleet-level clause requires every *mover*
+> to be stalled **and** at least `sim_stall_min_movers` of them
+> (`fleet_monitor.py`; the parameter is declared at `orchestrator_node.py:1130`).
+> The alert reports **"N of M"** rather than asserting a fleet-wide cause:
+> `'{len(report.stalled)} of {len(report.movers)} robot(s) expected to be moving
+> are in this condition.'` (`orchestrator_node.py`, `_report_per_robot_stalls`).
+>
+> **The threshold is derived from this repository's own kinematics, not from
+> n = 1**: a 180° reversal from rest was integrated against the real
+> `PathFollower` and the minimum per-sample displacement came out at **14.9×
+> `POSE_MOTION_EPSILON_M`** (excavator) to **24.8×** (scout). D-21's genuine dead
+> simulator still fires, with a test.
+>
+> **What the live evidence is worth, stated plainly: almost nothing.** The
+> 2026-08-01 gate run logged **zero** `MOTION STALL` lines — but it was a
+> two-minute run of four robots in which nothing was wedged, so it demonstrates
+> the absence of a false positive on one short sample and **not** that a true
+> positive would fire. The mechanism's evidence is
+> `selene_orchestrator/test/test_simulation_stall.py`, which is a unit test, and
+> this entry does not upgrade it beyond that. Two coverage holes are written into
+> the code rather than only here: a robot that has given up and gone to ERROR is
+> no longer expected to move, so once the whole fleet has given up the alert goes
+> quiet (it dates the failure, it does not track it); and **a robot that never
+> acquires a position fix is not watched at all**, because there is no position
+> measurement to call stationary.
+
+The entry as first written follows, unchanged — its present tense describes the
+state before the status block above, and it is kept because it is the record of
+how the defect was found.
 
 Its own docstring predicts the wallpaper failure mode. The failure mode has
 arrived.
@@ -2512,7 +2830,90 @@ a cause.
 
 ---
 
-## D-31 — `fleet_distance_total` is 2.21× the fleet's true path — OPEN, NOT DIAGNOSED
+## D-31 — `fleet_distance_total` is 2.21× the fleet's true path — DIAGNOSED AND FIXED 2026-08-01; SUFFICIENCY NOT ESTABLISHED
+
+> **This entry's title said "OPEN, NOT DIAGNOSED". IT IS NOW DIAGNOSED**, at
+> `7727ba8`, and the mechanism is not the hypothesis recorded below.
+>
+> **The agent published a FABRICATED pose before odometry existed.**
+> `GazeboOdometrySensor.read()` never raises; before the first `/odom_world`
+> message it hands back a cached `OdometryReading` constructed with
+> **`is_valid=False, x=0.0, y=0.0`** (`gazebo_hal.py:357-359`), and
+> `AgentNode._publish_state` copied `odom.x` / `odom.y` straight into
+> `RobotState.pose` **with no validity test — while the same file guards its
+> other two odometry reads on exactly that flag.** The message had no way to say
+> "this is not a measurement", so `FleetMonitor.update_robot` seeded `_last_pose`
+> from the fabricated origin and booked **|spawn|** as travel the first time a
+> real pose arrived.
+>
+> **The arithmetic, reproduced twice against the real module** (once by the
+> diagnosis, once independently by its reviewer, both landing on the same
+> digits): two (0, 0) samples then the true spawn pose books **1096.580 m** over
+> the shipped ten-robot fleet — **90.050 m** (`scout_03`) to **127.224 m**
+> (`hauler_02`) per robot — and **102.416 m** for a single scout at (−45, −92).
+> **Every one of those increments is under the 500 m implausible-jump guard**,
+> which was sized for respawns, so nothing rejected them and nothing counted
+> them. The launch timing makes it certain rather than theoretical: agents all
+> start at t = 12 s while spawns are staggered 2 s apart, so robots 7–10 publish
+> state for 2–8 s before their Gazebo model exists.
+>
+> **SUFFICIENCY IS NOT ESTABLISHED, and this is the honest half.** 1096.580 m
+> **OVER**-explains the 913.07 m excess rather than matching it. What the launch
+> timing guarantees is that robots 7–10 fabricated; their spawns sum to
+> **470.717 m, 51.6% of the excess**. Whether the other six also fabricated was
+> never measured, and if they did not, **roughly 442 m remains unattributed.**
+> A second mechanism of the same shape is **NOT eliminated**:
+> `world_odometry_node` re-evaluates `truth_fresh` on every odom message against
+> a 1.0 s timeout, so one second of silence on `/pose_truth` flips the published
+> pose to dead reckoning and back — two jumps of |DR − truth| per episode, which
+> this register measures at **166.2 m** for `hauler_02` on that same run, all of
+> it under the 500 m guard. The figure usually cited against that
+> ("worst |odom_world − truth| = 0.0816 m") is ~0 **by construction** in
+> localisation mode and cannot detect a flip. **The mechanism is proven; that it
+> accounts for the whole excess is not, and this closure does not claim it.**
+> The caveat is committed in the test's own docstring
+> (`selene_orchestrator/test/test_fleet_distance.py:21-40`), not only here.
+>
+> **The fix is a new field on a published message, and it is fail-safe by
+> choice.** `selene_msgs/msg/RobotState` gains a trailing `bool pose_valid`;
+> `pose` is **still populated** when it is false — the flag carries the meaning,
+> not the value — because the same message is the heartbeat
+> `FleetMonitor.check_heartbeats` reads. **The cost of the fail-safe default is
+> stated rather than assumed** in the `.msg` file itself: ROS 2 default-initialises
+> `bool` to false and a subscriber cannot tell "the publisher set it false" from
+> "the publisher never set it", so any `RobotState` built by code not rebuilt in
+> the same pass reports "no fix" and drops out of the distance total and the
+> orchestrator's survey centroid. **Rebuild all six packages in one `colcon
+> build`.**
+>
+> **Three readers consume it**, which is what makes this different from the
+> orphan pattern: the orchestrator directly (`fleet_monitor.py`,
+> `orchestrator_node.py`); the exit-gate probe, through
+> `getattr(msg, 'pose_valid', True)` (`scripts/phase5_probe.py:962`) so that a
+> pre-D-31 workspace degrades rather than crashes, with samples carrying
+> `pose_valid = false` **dropped** from the motion measurement (`:2765`); and the
+> dashboard (`useFleetState.js`, `utils/poseFix.js`, `FleetCards.jsx`,
+> `MissionProgress.jsx`, `RobotDetail.jsx`).
+>
+> **The dashboard half was DEMONSTRATED IN CHROME on 2026-08-01 — against a
+> rosbridge test double, not the real stack.** A robot with no fix moves to an
+> amber **"NO POSITION FIX"** roster reading *"not drawn — position unknown, not
+> (0, 0)"*, keeps its card and its battery gauge, presents no hit target on the
+> map (`FleetMap.jsx:1244`, `:1814`), and moves onto the map when odometry
+> arrives. That observation proves what the browser does when messages of that
+> shape arrive and **nothing about ROS, DDS or QoS**. **No robot has yet been
+> seen publishing `pose_valid = false` on a real run.**
+>
+> **A sixth instance of the wired-but-never-called pattern was found here.**
+> Until 2026-07-31 `FleetMonitor.get_total_distance` had zero *test* callers and
+> `get_robot_distance` had **zero callers anywhere in the repository**. The
+> assertions in `test_fleet_distance.py` are the first this accumulator has ever
+> carried. Every rejected increment now also carries its **magnitude**, because a
+> count of eight cannot distinguish eight 2.6 m hiccups from four 166 m flips.
+
+The entry as first written follows, unchanged — its present tense describes the
+state before the status block above, and it is kept because it is the record of
+how the defect was found.
 
 **Measured on the ten-robot run**: `MissionProgress.fleet_distance_total`
 reported **1665.37 m** against **752.3 m** of true fleet path — and the 752.3 m
@@ -2536,7 +2937,62 @@ a factor of two.
 
 ---
 
-## D-32 — the recharge station is behind an unclimbable wall — OPEN
+## D-32 — the recharge station is behind an unclimbable wall — DISSOLVED 2026-08-01, NOT FIXED
+
+> **DISSOLVED is the honest word, and it is not a synonym for fixed.** Nothing
+> moved the pad, nothing graded a route and nothing changed the terrain. What
+> changed is that the premise below — that the wall is unclimbable — turned out to
+> be a statement about **climbing it straight up**, which is the one heading no
+> route has to take. See D-28: at a measured per-step limit of 20°, a path ≥ 57.4°
+> off the fall line of 34.02° ground climbs at ≤ 20° for a 1.85× length penalty.
+> **The wall was never unclimbable; it was unclimbable straight up, and nothing
+> had ever asked the planner to go round.**
+>
+> **MEASURED at `9c1a4d7`**, over the 500 × 500 / 1.0 m lattice, 8-connected, on
+> the collision heightmap: under the per-step rule at 20° the navigable set is
+> **one connected component** of 249,792 cells, and executed plans give
+>
+>     spawn -> depot        132.0 m against  79.9 m straight   (1.65x)
+>     depot -> recharge pad 130.2 m against  86.0 m straight   (1.51x)
+>
+> — the switchback, measured. **Both are executed plans over the committed
+> heightmap. NO VEHICLE HAS DRIVEN EITHER OF THEM.** The live corroboration is one
+> step weaker and one step more useful: every agent on the 2026-08-01 gate run
+> logged `depot (-100.0, -150.0): REACHABLE | recharge_pad (-30.0, -100.0):
+> REACHABLE` at startup, which is the planner's own lattice answering, not a
+> journey.
+>
+> **The three-way coordinate disagreement is resolved by DELETION, not by
+> promotion.** `mission.recharge_position: [-75.0, -100.0]` is **deleted** from
+> `nav_params.yaml` rather than corrected, and the reasoning is recorded at the
+> point of deletion (`selene_agent/config/nav_params.yaml:126-140`): it was read
+> by nothing, it disagreed with both the physical `recharge_pad` include in the
+> world and `agent_node`'s own parameter default, and it sat on ground no robot
+> could have stopped on. **Promoting an unread key to authority is the same defect
+> from the other end** — it would have moved every robot's charger 45 m. The
+> single source of truth is the physical pad at (−30, −100): the world marker,
+> `world.recharge_station.position` in `world_params.yaml`, and the
+> `recharge_x` / `recharge_y` parameters `agent_node` declares and
+> `agent.launch.py` now passes explicitly. Two other silent duplicates went with
+> it (`low_battery_threshold`, `recharge_target`), each a copy of a ROS parameter
+> that is declared and read.
+>
+> **What is NOT resolved.** The pad still recharges from solar and the crater is
+> still permanently shadowed, so the *power architecture* objection in the body
+> below stands untouched — a route exists; sunlight at the depot does not. And no
+> robot has yet made the return leg: on the 2026-08-01 run `scout_02` tried, under
+> D-42's spurious 0% battery, and got 0.71 m from the pad marker on a planned path
+> it never completed.
+>
+> **`test_mission_traversability.py` was STRENGTHENED, not weakened, by this
+> change.** Its deposit-edge assertion failed at 20° exactly as predicted —
+> 16.83° at (−72.3, −130.8), reproducing this register's own figure — and the
+> `> limit` inequality it used, which passed for anything between 15 and 90,
+> became a ±0.05° value pin **plus** `<= limit`.
+
+The entry as first written follows, unchanged — its present tense describes the
+state before the status block above, and it is kept because it is the record of
+how the defect was found.
 
 D-23 moved the depot onto the crater floor because that is where the mission is.
 **The recharge pad is still on the illuminated plain outside**, at (−30, −100),
@@ -2631,7 +3087,52 @@ recorded before 2026-07-31. Comparisons across that boundary are not valid.
 
 ---
 
-## D-34 — the exit gate cannot observe an FSM state shorter than its sampling period — OPEN
+## D-34 — the exit gate cannot observe an FSM state shorter than its sampling period — CLOSED 2026-08-01, DEMONSTRATED ON THE GATE'S OWN OUTPUT
+
+> **CLOSED 2026-08-01. Both halves were fixed at `7727ba8`, and the 2026-08-01
+> gate run returned ZERO SKIPS — checks 6 and 9 both produced verdicts and both
+> PASSed, so PRD exit-gate rows 3 and 4 are measured for the first time.**
+>
+> **Agent side**: `AgentFSM` gains a transition observer and `AgentNode`
+> publishes `RobotState` **on transition** as well as on the 0.5 s timer, so a
+> 0.247 s IDLE window is no longer structurally invisible.
+> **Gate side**: the probe detects the transition from the sample history **it
+> was already recording and throwing away**, so it is correct even if the agent
+> half were absent. Two halves, either sufficient — which is the right shape for
+> an instrument, because the gate must not depend on the thing it measures.
+>
+> **Two comments that DEPENDED on the old blindness were made false by this
+> change and are rewritten rather than left standing** (`fsm.py`,
+> `recharge_policy.py`). That is the failure mode this register keeps finding:
+> a comment describing behaviour that a later change removed.
+>
+> **What the live run shows, and where it stops.** `scout_01` was freed by an
+> operator `cancel_task` at `297.9157` and left IDLE at `298.1354` — an IDLE
+> window of **0.220 s** — and the gate recorded an IDLE state sample inside it
+> (`check 6`: *"corroborated by an IDLE state sample after the cancel"*). A 0.5 s
+> timer alone catches a 0.220 s window less than half the time, so this is
+> **consistent with** publish-on-transition carrying the sample and is **not
+> proof** that it did; n = 1 cannot separate them.
+>
+> **A separate thing this run measured, which the SKIP used to hide.** The probe
+> still waited its full **60 s** for a naturally IDLE prospect-capable robot and
+> none appeared — all four robots were busy. That is fleet behaviour, not an
+> instrument defect, and it was invisible while the check SKIPped. The check now
+> says so in its own row: *"this row was measured on a robot the gate
+> perturbed."*
+>
+> **The product observation below still stands, and is NOT closed by this.** The
+> dashboard consumes the same topic; it now sees transitions because the
+> publisher emits them, and a **247 ms IDLE hand-off (NAVIGATING → IDLE →
+> BIDDING) was observed in `RobotDetail`'s state history in Chrome on
+> 2026-08-01 — against a rosbridge test double, not the real stack.** The old
+> `throttle_rate: 500` would have dropped it. **That proves the transport and the
+> render, not the agent**: the edges were published by a test double, and the
+> agent half's authoritative evidence is the gate run above.
+
+The entry as first written follows, unchanged — its present tense describes the
+state before the status block above, and it is kept because it is the record of
+how the defect was found.
 
 **Two of the PRD's seven exit-gate rows are currently unmeasurable, and the
 system is not why.**
@@ -2672,7 +3173,63 @@ document's owner does not own either file.
 
 ---
 
-## D-35 — the gate's send-to-location check is a coin flip — OPEN
+## D-35 — the gate's send-to-location check is a coin flip — CLOSED 2026-08-01; THE CHECK STILL FAILS, FOR A DIFFERENT REASON
+
+> **CLOSED 2026-08-01 at `7727ba8`, and the closure has to be read carefully:
+> check 11 FAILED again on the 2026-08-01 run, and it did not fail for this
+> reason.** D-35 is the *aim* of the instrument, and the aim is fixed. What took
+> the check down on 2026-08-01 is **D-42** — the gate chose a robot reporting 0%
+> battery and never asked whether it could perform the manoeuvre.
+>
+> **Fixed as this entry demanded and not the way it warned against.** The bearing
+> is now chosen **relative to the robot's current heading**, and the baseline is
+> **re-sampled after the override is accepted**. **The 12 s window literal is
+> DELETED, not raised** — widening it would have been choosing a threshold from
+> n = 1, which is the move this register exists to prevent.
+>
+> **Both repairs are visible inside the 2026-08-01 failure line itself**, which is
+> the cleanest evidence available that they are in force:
+>
+>     bearing +45 deg off heading 0.691 rad, target (-30.96, -95.20),
+>     window 11.0s derived at 0.50 m/s from
+>       /home/hoyer/selene/install/selene_hal/share/selene_hal/config/scout.yaml,
+>     pose_source localisation
+>
+> **The verifier then found that the mechanism credited with killing the coin flip
+> had NO regression test** — mutating it to always-true left all 45 tests green.
+> The decision is now extracted into a pure function pinned by 11 more tests, of
+> which 9 mutations each turn at least one red; the extraction is proven
+> behaviour-preserving over 168 exhaustive and 20,000 randomised histories with 0
+> mismatches. **That is the part of this closure that would have been worth doing
+> even if the check had gone green**: a fix with no test that fails without it is
+> not closed, it is asserted.
+>
+> **Both reporting defects this entry recorded as "neither repaired" are
+> repaired**, and both are visible in the regenerated report:
+> 1. `path_note` is now included in the **FAIL** message — the 2026-08-01 FAIL
+>    row carries `planned_path ends (-29.50, -99.50), 4.54 m from the commanded
+>    target`, which is exactly the evidence run 1's FAIL withheld.
+> 2. PRD row 5's coverage column no longer says the displacement is read off a
+>    pose that is *"STILL DEAD-RECKONED"*; it now states that `/<rid>/odom_world`
+>    carries the simulator's **true world pose** whenever `pose_source` is
+>    `localisation`, that the check reads that parameter off each `world_odom`
+>    node and prints what it found, and that the fallback to dead reckoning
+>    happens only with an ERROR log and a CRITICAL `FleetAlert`.
+>
+> **What is now visibly missing from the check, and is NOT closed here.** Check 11
+> selects a robot and issues the override without establishing that the robot can
+> obey it. On 2026-08-01 it picked `scout_02` at 0.0% battery; the FSM went
+> `RETURNING --(OPERATOR_GOTO)--> NAVIGATING` and **six milliseconds later**
+> `NAVIGATING --(ENERGY_CRITICAL)--> RETURNING`, so the planned path ended
+> **0.71 m from the recharge pad** and 4.54 m from the commanded target. The
+> override path did exactly what it is supposed to do, twice, in the right order.
+> **A precondition on check 11 is a real remaining gap in the gate**; it is listed
+> in the disposition rather than patched here, because the first question is why a
+> robot reported 0% at all — **D-42**.
+
+The entry as first written follows, unchanged — its present tense describes the
+state before the status block above, and it is kept because it is the record of
+how the defect was found.
 
 **Check 11 FAILed on run 1 and PASSed on run 2, on identical invocations.** It is
 not currently trustworthy in either direction.
@@ -2776,6 +3333,35 @@ rather than asserted.
 `selene_orchestrator/test` alone. `e2e-integration` declares that PYTHONPATH but
 names a single test file, so it would not have caught this. A lane that runs the
 whole orchestrator suite on the two-package path is still missing.
+
+> **THAT REMAINDER IS CLOSED, 2026-08-01 at `d390315`.** A new CI job
+> **`gate-lane-tests`** (`.github/workflows/ci.yaml:121`, "Gate lane pytest
+> (orchestrator + isru only)") runs the gate lane **whole** — the command this
+> register calls THE GATE LANE and the one the operator runs by hand now has a
+> machine reading it. It installs the **same** dependency set as
+> `cross-package-tests` so that `PYTHONPATH` is the only variable between the
+> two, and on failure it names D-36, because a red gate lane beside a green
+> cross-package lane has essentially one cause.
+>
+> **MUTATION-TESTED before commit rather than asserted.** The `importorskip`
+> guard was removed, all three legs were measured, and the file was then restored
+> byte-identical to HEAD:
+>
+>     guard removed, gate lane (2 pkgs)       1 failed, 518 passed   <- catches it
+>     guard removed, cross-package (5 pkgs)   51 passed              <- blind
+>     guard restored, gate lane               518 passed, 1 skipped
+>
+> The first line **reproduces this entry's own recorded measurement exactly**.
+> The second is the point: the job that already existed cannot see this defect.
+>
+> **Verified green in CI on this branch**: the `gate-lane-tests` job's "Run the
+> orchestrator and isru suites on the two-package path" step succeeded in runs
+> `30678095310` (`d390315`), `30681543994` (`7727ba8`) and `30685883138`
+> (`9c1a4d7`).
+>
+> D-14's rule was "do not add a test lane without a cross-package lane". Its
+> converse — a cross-package assertion needs a guard for the lanes that do not
+> span those packages — is D-36. **Both now have a job behind them.**
 
 ---
 
@@ -2896,6 +3482,320 @@ hazard can be distinguished from a per-second one.
 
 ---
 
+## D-38 — the dashboard lockfile made CI's newest job red on its first-ever run — CLOSED 2026-08-01, FIXED AND VERIFIED IN CI
+
+**Found by running a lane nobody had ever run.** `npm ci` could not install the
+dashboard **at all**:
+
+    npm error `npm ci` can only install packages when your package.json and
+    npm error package-lock.json ... are in sync.
+    npm error Invalid: lock file's typescript@6.0.2 does not satisfy typescript@4.9.5
+
+`package.json` never declared `typescript`, and there is no TypeScript source in
+this project — every dashboard file is `.js` or `.jsx`. It is in the tree only
+because `react-scripts` pulls `fork-ts-checker-webpack-plugin`, whose peer range
+is the very loose `typescript >= 2.7`. npm resolved that to whatever was newest
+when the lock was written — **6.0.2**, which satisfies `>= 2.7` and violates
+`react-scripts@5.0.1`'s own peer range of `^3.2.1 || ^4`. **The lock has been
+internally inconsistent since `1aec25e`**; `npm install` tolerates it and
+`npm ci` does not, so a developer's machine and CI disagree by construction.
+
+**Nothing caught it because nothing had ever run it.** The `dashboard-tests` job
+was added on 2026-07-31 with the 39-test Jest suite, and `SELENE CI` triggers
+only on push to `main`/`develop`, PR to `main`, or `workflow_dispatch`
+(`.github/workflows/ci.yaml:4-14`) — so on `phase5-hardening` the pipeline had
+not run since `1200327`, **before that job existed**. Dispatched on this branch
+as run **30677902046** (`ff80ed1`): `Install dependencies` **failed**, and the
+lint, test and build steps it gates were all skipped.
+
+**This is a job that had never fired testing its own configuration rather than
+the thing it guards** — the same shape as every other entry in this register
+where an absence of evidence had been reading as a green line.
+
+**Fixed** by declaring the constraint instead of leaving it to transitive
+resolution: `typescript: ^4.9.5` in `devDependencies`
+(`selene_dashboard/package.json`), lock regenerated. The regeneration is
+surgical — **8 insertions, 28 deletions** — and moves no other package:
+`react-scripts` stays 5.0.1, `react` 18.3.1, `three` 0.160.1, `roslib` 1.4.1.
+
+**MEASURED under node 18.20.8 / npm 10.8.2**, the same node major CI uses, by
+running all four CI steps rather than reasoning about them: `npm ci` added 1319
+packages, exit 0; `typescript` resolved 4.9.5; `npx eslint --ext .js,.jsx src`
+exit 0; `CI=true npx react-scripts test` 39 passed; `react-scripts build`
+compiled.
+
+**Verified in CI. Run `30678000922` at `c4548ce` went 8/8 green.** Read from the
+GitHub Actions API on this pass: `conclusion: success`, all eight jobs green
+including `Dashboard lint, test and build (no ROS)`.
+
+> **One claim about that run needs correcting, and the correction is smaller
+> than the claim.** It was described as "the first fully green `SELENE CI` run
+> this branch has ever had". **That is not true**: run `30586258889` at
+> `1200327` (2026-07-30) also concluded `success`. It ran **four jobs** —
+> terrain-datum, e2e-integration, shell-lint, build-and-test — because
+> `gate-coverage`, `cross-package-tests` and `dashboard-tests` did not exist
+> yet; they arrived with `30403a8`. **The accurate statement is that
+> `30678000922` is the first green run of the pipeline as it now stands**, and
+> that `30678095310` at `d390315` is the first green run of the nine-job pipeline
+> (`gate-lane-tests` is the ninth; `cross-package-tests` is a two-way pytest
+> matrix, which is why eight jobs come from seven `jobs:` keys).
+
+**SELENE CI is now green on this branch at every commit in this session**, read
+from the API by run id: `30678000922` (`c4548ce`, 8/8), `30678095310`
+(`d390315`, 9/9), `30681543994` (`7727ba8`, 9/9) and `30685883138` (`9c1a4d7`,
+9/9), including the Humble `colcon build` / `colcon test` lane. The separate
+**Simulation gates** workflow — `check_terrain.sh` and `check_drive.sh`, which
+run real Gazebo sessions — also concluded `success` on push at `7727ba8`
+(`30681538436`) and `9c1a4d7` (`30685878027`).
+
+---
+
+## D-39 — two world files were invalid XML, and the check that noticed printed a green line with no value — CLOSED 2026-08-01
+
+`selene_sim/worlds/lunar_psr.sdf` and
+`selene_sim/models/depot_marker/model.sdf` each contained a literal `--` inside
+an XML comment, which **XML 1.0 §2.5 forbids**. Introduced by `30403a8`, in
+prose added to explain D-23.
+
+**Gazebo never cared.** libsdformat is lenient and parses straight past it,
+which is why three live runs and two gate runs never saw it. Strict parsers do
+care, and the repository has one.
+
+**The visible half** was `scripts/check_env.sh` exiting 1 with a blocking
+`lunar_psr.sdf is not valid XML`.
+
+**The dangerous half is the one worth recording.** The very next check printed
+
+    [ OK ]   world-scope <gravity> =
+
+against an **empty value**. `check_env.sh:170-183` runs the strict parse
+(`ET.parse`) for the validity line and then extracts `<gravity>` in a **second**
+`python3` heredoc, also with `2>/dev/null`; when that parse fails, `$GRAV` is
+left empty, and empty is not the sentinel `MISSING` the failure branch tests for.
+So the check that exists to confirm the world runs at lunar gravity printed OK
+**while measuring nothing**. That is the same shape as D-29's vacuous check 10 —
+an absence of evidence rendered as a green line — and here it was sitting one
+line below a failure loud enough that nobody read further.
+
+**Fixed** by replacing `--` with `-` inside the comments only: three prose edits
+(two in `depot_marker/model.sdf`, one in `lunar_psr.sdf`), no semantic content
+touched. Verified on this pass: both files parse under `xml.dom.minidom`.
+`check_env.sh` now reports **19 ok, 0 failed**, and
+`world-scope <gravity> = 0 0 -1.62`.
+
+**Not fixed, and named**: the gravity check still cannot fail closed on a parse
+error, because the empty string and the sentinel are different values and only
+one of them is tested. It happens to be correct now because the input is valid.
+
+---
+
+## D-40 — the Resource Knowledge Map's animation loop was never started — CLOSED 2026-08-01, DEMONSTRATED IN A BROWSER AGAINST A TEST DOUBLE
+
+**Reported by the operator** as "the knowledge map in the dashboard doesn't seem
+to be working correctly", and the cause is simpler and more fatal than anything
+this register predicted.
+
+**Was**: `ResourceGraph.jsx` took an empty-state early return whenever
+`readings.length === 0` — **which is the state on every page load**, since the
+reducer initialises `resourceReadings: []` — and that branch rendered **no
+`<canvas>` and no container ref**. All three canvas effects therefore ran against
+null refs and bailed: the sizing / `ResizeObserver` effect, the
+`requestAnimationFrame` loop (dependency array `[]`), and the wheel listener.
+**None of those dependency arrays ever changed again**, so when readings finally
+arrived nothing re-ran: the loop was never scheduled, `updateCanvasSize` never
+ran, and the canvas kept its default **300 × 150** backing store underneath a
+header, legend and stats panel showing real numbers over a black rectangle.
+
+The same defect fired a second way: a rosbridge reconnect dispatches `RESET`,
+readings go back to `[]`, the canvas unmounts, and when readings resume React
+mounts a **new** canvas while the loop keeps drawing into the detached one it
+captured on the first commit.
+
+**`FleetMap.jsx` has the identical loop and no empty-state early return, which
+is exactly why the fleet map worked and its sibling did not.** One component
+away, one `if` apart, and no test in the project could see the difference.
+
+Three further defects in the same file, all fixed: the render-time
+`edgesRef.current = edges` write that could dereference an unbuilt node inside
+the rAF callback and **kill the loop permanently** (the trailing
+`requestAnimationFrame` never runs after a throw); `slice(0, negative)` on a
+reading-count shrink, which retained stale nodes across a reconnect; and the
+index scramble once the 500-reading cap is reached, after which every node
+silently adopts a different reading while keeping its settled position.
+
+**Fixed** by replacing the plain refs with **state-backed callback refs**
+(`ResourceGraph.jsx:405-406`), so every effect that touches the canvas lists the
+element it touches and re-runs when that element actually mounts. The reasoning
+is written into the file: the invariant is "the loop is attached to the canvas
+that is in the DOM", and `readings.length > 0` in the deps would fix the
+empty-mount case while leaving the canvas-**replacement** case broken, because it
+keys the loop on something merely correlated with the invariant. The empty state
+still renders no canvas — that is now correct rather than fatal.
+
+**MEASURED IN CHROME, 2026-08-01, against a rosbridge TEST DOUBLE publishing
+real `ResourceMapUpdate` shapes — not against the real stack** — with the view
+opened **before any reading had arrived**, which is the operator's path and the
+only diagnostic one, because opening the view *after* readings exist has always
+worked even with the defect present:
+
+    view opened empty                 0 canvases, empty state
+    first reading arrives             canvas mounts after 822 ms
+    canvas backing store              1240 x 576   (NOT the 300x150 default)
+    frames scheduled in 1200 ms       144
+    disconnect                        readings retained, canvas stays
+    reconnect -> RESET                back to 0 canvases, empty
+    readings resume                   remounts after 3127 ms, same backing
+                                      store, same frame rate
+
+**The 1240 × 576 is the load-bearing number**: it proves `updateCanvasSize` ran
+*after* mount, which the old code could never do. 144 frames in 1200 ms is the
+30 fps interval the file asks for, doubled by rAF's own cadence and throttled in
+the draw — it establishes that the loop is running, not that any particular
+frame rate is met.
+
+**What this does not cover.** The test double proves **nothing about ROS, DDS,
+QoS or the real orchestrator** — only what the browser does when messages of
+that shape arrive. Colour fidelity, legibility and frame timing were not
+assessed, and open item 18 (this view has no confidence channel at all) is
+untouched.
+
+---
+
+## D-41 — `gz sim -s` segfaults in the depth-camera render path on a host with no GL context — WORKED AROUND 2026-08-01, NOT FIXED
+
+Found while running the D-28 slope campaign. A server-only `gz sim -s` died
+partway through the first robot's trials, and every trial after it recorded
+"no pose after spawn":
+
+    Sensors::CreateSensor -> DepthCameraSensor::SetScene
+      -> Ogre2DepthCamera::CreateDepthTexture
+      -> CompositorManager2::addWorkspace
+      -> Ogre::HlmsDatablock::_unlinkRenderable -> SIGSEGV
+
+`gz sim -s` still loads the sensors system, and all three robot models declare a
+`depth_camera`. Creating its depth texture needs a real GL context; under WSL2's
+software rasteriser Ogre2 dies.
+
+**THIS IS NOT D-37 AND MUST NOT BE CONFLATED WITH IT.** D-37 **aborts** in
+`dxHashSpace::collide` on an **ODE assertion**, with **physics on the stack**.
+This **segfaults** in `Ogre::HlmsDatablock::_unlinkRenderable`, in a texture
+allocation, with **no physics on the stack at all**. Different signal, different
+subsystem, different trigger. Treating them as one failure would lose both.
+
+**Worked around, not fixed**: the campaign spawns a copy of each model with
+every `<sensor>` element removed. Safe for what it measures — the sensors are
+massless, declare no `<collision>`, and neither `sensors/depth` nor `sensors/imu`
+has any subscriber repo-wide (this register's own open item 11) — so removing
+them cannot change wheel-terrain contact, mass, inertia or friction. **The
+substitution is disclosed in the campaign's own printed limitations and in the
+committed JSON artefact** (`limitations[0]`), and the stripped SDFs are kept in
+the work directory so the substitution can be diffed. The artefact's own wording
+is the right standard: *"the vehicle measured is not byte-identical to the
+vehicle the mission flies."*
+
+**THE NEAR-MISS IS THE REASON THIS ENTRY EXISTS.** Four trials recorded
+`no_pose` at **10° and 15°** — which is **indistinguishable from a vehicle that
+cannot climb those grades.** Taken at face value they would have set
+`max_traversable_slope_deg` far below the true value and refused routes the
+fleet drives today. Only the script's own distinction between an **apparatus**
+failure and a **measured** failure caught it — the same discipline as D-34's
+"a SKIP is not a PASS", arriving from the opposite direction. Note that the
+committed verdict still carries `monotonic: false` for excavator and hauler
+ascent, so **the apparatus is not established to have explained every anomalous
+trial**; it explains the four it names.
+
+---
+
+## D-42 — a scout reported "Battery critical (0.0%)" 6.15 s after startup, three times — OPEN, CAUSE UNKNOWN
+
+**This is the second entry in this register whose cause is unknown, and it is
+the one that cost the 2026-08-01 gate run its green.**
+
+**The observation**, from `/tmp/selene_unified_launch.log` on the 2026-08-01
+run, verbatim and complete — three firings, all `scout_02`, none on any other
+robot:
+
+    [1785562221.112635] [agent_scout_02] Battery critical (0.0%), returning to recharge
+    [1785562221.112991] [agent_scout_02] IDLE --(ENERGY_CRITICAL)--> RETURNING
+    [1785562298.216274] [agent_scout_02] Battery critical (0.0%), returning to recharge
+    [1785562298.216705] [agent_scout_02] NAVIGATING --(ENERGY_CRITICAL)--> RETURNING
+    [1785562309.312948] [agent_scout_02] Battery critical (0.1%), returning to recharge
+    [1785562309.313518] [agent_scout_02] IDLE --(ENERGY_CRITICAL)--> RETURNING
+
+`agent_scout_02` started at `1785562214.960339`, so the first firing is
+**6.152 s** after the agent came up. `battery_scout_02` started at
+`1785562202.610303` announcing `50.0 Wh capacity`, so it is **18.50 s** after
+the battery node came up.
+
+**How it took check 11 down.** The operator's `send_to_location` was accepted and
+the FSM went `RETURNING --(OPERATOR_GOTO)--> NAVIGATING` at `298.210547`. **Six
+milliseconds later** — `298.216705` — the energy-critical rule fired and sent it
+straight back to the pad. The planned path therefore ended **0.71 m from the
+recharge pad** at (−29.50, −99.50) and **4.54 m from the commanded target**, and
+check 11 FAILed. **Neither the override path nor the FSM did anything wrong**:
+both transitions are correct, in the right order, on the inputs they were given.
+
+### What has been ruled out, by reading and arithmetic
+
+* **The sim node cannot report 0%.** `battery_node` sets
+  `remaining_wh = capacity_wh` at construction and drains
+  `power_w * dt / 3600`, publishing `msg.percentage = remaining_wh /
+  capacity_wh` (`selene_sim/selene_sim/battery_node.py:84, :171-194`). A scout's
+  largest modelled draw is `idle 10 W + 150 W/(m/s) × 0.5 m/s × slope_factor`,
+  and `slope_factor` is capped by `1 + 2 sin(angle)` — at most about 235 W, with
+  `actuator_draw_w` zero for a scout (200 W is drill power, excavator only). At
+  235 W for the full 18.50 s since the node started, that is **1.21 Wh of 50, or
+  2.4%.** The node's own model cannot reach 0.
+* **It is NOT the D-31 fabricated-default pattern.** `GazeboBattery.__init__`
+  constructs its cache **full** —
+  `BatteryState(capacity_wh=descriptor.battery.capacity,
+  remaining_wh=descriptor.battery.capacity)` (`gazebo_hal.py:570-573`) — and
+  `BatteryState.charge_fraction` **defaults to 1.0**
+  (`selene_hal/selene_hal/data_types.py:115`). `EnergyManager` reads
+  `charge_fraction` directly (`energy_manager.py:92-102`). So a HAL that has
+  received **no** message reports **100%**, not 0%. `StubBattery` does the same.
+* **The topic has exactly one publisher and one subscriber.**
+  `battery_node.py:111` publishes `/<rid>/battery_state`; `gazebo_hal.py:574`
+  subscribes. Nothing else in the tree touches it.
+* **A fleet-wide default would not produce this.** Four robots ran; only
+  `scout_02` was affected, and `scout_01` — same type, same capacity, same
+  launch — never fired once.
+
+### What remains, and it is the whole of it
+
+**Something delivered `percentage = 0.0` to that agent, and nothing above
+explains what.** The third firing reports **0.1%**, about 7.5 s after the robot
+reached `RECHARGING` — which is consistent with a battery that really is near
+empty and really is charging slowly, and is *not* consistent with a stale or
+default-constructed cache. **That is an observation, not a mechanism.**
+
+**This needs a live probe of `/scout_02/battery_state`** — its rate, its
+`percentage` field, and whether the value the HAL caches matches what the node
+publishes — on a run that reproduces it. **NO CAUSE IS PROPOSED HERE.** The
+temptation to write one down is exactly what D-37's refuted terrain-edge theory
+is a monument to.
+
+### One thing this exposes regardless of cause
+
+`agent_node` has a **5 s startup grace** on the energy-critical check
+(`agent_node.py:374`, `:412-415`), and its own comment says why it exists:
+*"skip during startup grace period so DDS can deliver the first real battery
+reading (avoids 0% phantom)"*, repeated at `:1049` and in
+`recharge_policy.py:188`. **`scout_02` fired at 6.15 s — just past the grace.**
+So the grace is a band-aid over something real, and it is 1.15 s too short for
+whatever this is.
+
+**And the mechanism those three comments assert does not exist in the code as it
+stands.** They claim "the HAL reports a phantom 0%" before the first message;
+both HAL battery implementations report a **full** battery before the first
+message, as above. Either the comments are stale — describing a HAL that has
+since changed — or there is a path to 0% that nobody has named. **Whichever it
+is, three comments in two files currently document a mechanism this repository
+cannot demonstrate**, and that is the same defect class as the two configuration
+files D-37 had to correct.
+
+---
+
 ## FR-MAP-3 - adaptive survey never ran - CLOSED 2026-07-30
 
 Not a Phase 5 deviation: FR-MAP-3 is P0 **Phase 4** scope
@@ -2982,6 +3882,14 @@ suite), **item 7 is superseded by D-32**, and **items 19-22 are new**. Item 1
 `use_sim_time` has zero code occurrences, and `/clock`, `gz.msgs.Clock` and
 `rosgraph_msgs` have zero occurrences of any kind in the tree. Everything in this
 system still runs on wall clock.
+
+**Revised again 2026-08-01.** **Item 22 stands unchanged and is now the oldest
+untouched gap in this register** — RViz2 has still never been started. Item 14
+is partly discharged and partly worse: `_publish_assignment_msg` still has no
+caller, and the same pattern was found twice more this session (D-31's
+`get_robot_distance`, and `hazard_penalty_weight` / `_hazard_w`, both deleted
+rather than defaulted). **Items 23-27 are new**, and four of the five are limits
+the slope campaign and the browser session deliberately did not reach.
 
 1. **`use_sim_time` — DEFERRED, deliberately.** It is still set by nothing: no
    node declares it, no launch file passes it, and `/clock`, `gz.msgs.Clock` and
@@ -3163,6 +4071,52 @@ Added 2026-07-31 (evening), from the live runs and the exit-gate runs:
     strongest of them (exit-gate check 10) recomputes through the same module the
     publisher uses. This is the single largest remaining gap between what Phase 5
     claims and what the PRD asks for.
+    **Re-checked 2026-08-01 and UNCHANGED. `rviz:=true` is wired into the launch
+    and WSLg is available on the machine that ran everything else this session;
+    it was not run.** Three gate runs, a 54-trial Gazebo campaign and two browser
+    sessions have now gone past this item without discharging it. It is not
+    blocked on anything.
+
+Added 2026-08-01:
+
+23. **Side-slope rollover is not measured and nothing in SELENE bounds it.**
+    This is the direct cost of D-28's closure: the per-step rule licenses
+    switchback routes, and a switchback spends its time traversing across the
+    fall line — which is the attitude a real vehicle rolls over in, and usually
+    the binding limit rather than the climbing grade. The campaign measured
+    straight up and straight down only, by construction. The limitation is stated
+    in `nav_params.yaml` beside the constant and in the campaign artefact's own
+    `limitations` list; **it is not stated in any test, and nothing fails if it
+    is violated.**
+24. **The slope campaign is one trial per condition.** 54 trials, 54 different
+    (robot, grade, direction) triples, no repeats. No run-to-run spread was
+    measured and no confidence interval can be quoted from it — and two of the
+    six per-robot-direction verdicts are **non-monotonic in grade**, which means
+    something other than grade is moving the outcome. D-41 names one such thing
+    and does not account for all of them.
+25. **No vehicle has driven a switchback.** The 132.0 m and 130.2 m routes under
+    D-32, and the "one connected component" result under D-28, are **executed
+    plans over the committed heightmap**, not journeys. The startup audit that
+    runs on every agent reports the same lattice arithmetic. Whether a
+    differential-drive rover on this terrain can actually follow one of these
+    paths is untested, and it is the obvious next physical experiment.
+26. **Every browser observation in this register from 2026-08-01 was made against
+    a rosbridge TEST DOUBLE, not the real stack.** That covers D-40's canvas
+    lifecycle, D-31's "NO POSITION FIX" roster and D-34's 247 ms IDLE hand-off.
+    They prove what the browser does when messages of that shape arrive; they
+    prove nothing about ROS, DDS, QoS, the orchestrator, or message shapes the
+    double does not reproduce. The 2026-07-31 Chrome pass (D-01..D-04, D-17) was
+    against a **live** rosbridge and is a different and stronger kind of
+    evidence; the two must not be quoted as if they were the same.
+27. **Two Gazebo version strings disagree on the machine that produced the
+    campaign.** `gz sim --versions` answers **8.10.0** and `gz sim --version`
+    answers **8.11.0** on the same installation on the same host on 2026-08-01;
+    the campaign artefact records the former and the 2026-07-31 gate runs are
+    recorded here against the latter. **Which version describes the physics
+    engine that produced any of these measurements has not been established**,
+    and the difference is recorded rather than assumed cosmetic
+    (`docs/slope_capability_2026-08-01.PROVENANCE.md`). Every cross-run
+    comparison in this register quietly assumes one physics build.
 
 ---
 
@@ -3172,6 +4126,12 @@ Added 2026-07-31 (evening), from the live runs and the exit-gate runs:
 by running the system, and each says so in place rather than being deleted** —
 a reader who remembers this list as it stood needs to see which line moved. The
 ones that remain are the ones that matter now.
+
+**Amended 2026-08-01.** Item **19** carries new counts, all re-run on this box.
+Item **20** is **LIFTED, and it was also partly wrong when it was written** —
+see the entry. Items **24-27** are new and are the limits of the slope campaign,
+the browser session and the 2026-08-01 gate run. Item 1's unqualified clause
+("RViz2 was never started") is still unqualified.
 
 This section applies to the whole register. **None of the following may be
 described as verified, measured, or observed.**
@@ -3358,10 +4318,42 @@ described as verified, measured, or observed.**
     reducer and the mark planner behave. They say nothing whatever about what is
     drawn: jsdom has no canvas. The only rendering evidence in this register is
     the operator's Chrome pass.
-20. **`shellcheck` was not run** and is not installed here; see D-10. It has
-    still never been run against the rewritten `validate_phase5.sh` — which has
-    now been executed twice, so its behaviour is known even though its lint
-    status is not. `bash -n` is clean on the shell scripts this work touched.
+
+    > **RE-MEASURED 2026-08-01 on the committed tree at `9c1a4d7`**, same box,
+    > by this amendment's author, running each command rather than copying a
+    > commit message. Counts rise as repairs add tests; the invariant is the
+    > comparison, not the absolute number.
+    >
+    >     all FIVE packages in ONE process        1150 passed, 1 skipped
+    >         (was 947/1) — identical in both collection orders
+    >     gate lane (orchestrator + isru)           623 passed, 3 skipped
+    >         (was 518/1, and 1 failed/518 before D-36)
+    >     flake8 over five packages + scripts/      exit 0, 0 findings
+    >     CI=true npx react-scripts test            101 passed, 7 suites
+    >         (was 39 passed, 2 suites)
+    >
+    > **The gate lane's three skips are all `importorskip`-guarded with the D-36
+    > reason, and the cross-package lane still RUNS all of those assertions with
+    > zero skips** — which is the half that makes a skip legitimate rather than a
+    > hiding place. Both are now enforced by CI jobs (`gate-lane-tests` and
+    > `cross-package-tests`); see D-36.
+20. ~~**`shellcheck` was not run**~~ **LIFTED 2026-08-01 — and this item was
+    partly wrong when it was written, which is worth more than the lift.** It
+    said shellcheck "has still never been run against the rewritten
+    `validate_phase5.sh`". **CI had already run it.** The `shell-lint` job
+    executes exactly `shellcheck -S warning scripts/*.sh`
+    (`.github/workflows/ci.yaml:403-405`), and its `shellcheck` step concluded
+    `success` in run `30586258889` at `1200327` on 2026-07-30 — a commit at which
+    `validate_phase5.sh` already carried its `251e84d` rewrite. The true claim
+    was the narrower one this item also made: it was not run **here**, on this
+    box, and is not installed here (still true — no `shellcheck` binary exists in
+    the WSL2 distro either). **The lesson is the register's own**: "nobody has
+    run X" is a claim about a search, and the search had not been run against CI.
+    **Now**: `shellcheck -S warning scripts/*.sh` succeeded in CI at `d390315`,
+    `7727ba8` and `9c1a4d7` (runs `30678095310`, `30681543994`, `30685883138`),
+    so the current `validate_phase5.sh` — the most-executed script in the tree —
+    is covered. The operator additionally reports `rc=0` locally. `bash -n` is
+    clean on the shell scripts this work touched.
 21. **Nothing in the two ten-robot runs, the three four-robot runs or the two
     gate runs was executed by this document's owner**, and none of the raw
     artefacts is in the repository. The pose captures, launch logs and analyser
@@ -3380,15 +4372,61 @@ described as verified, measured, or observed.**
     on one machine, and it presumes a hazard model nobody has justified.** See
     D-37's four caveats. It is not a fix and must not be recorded as one.
 
+Added 2026-08-01:
+
+24. **Nothing in the slope campaign, the 2026-08-01 gate run or the browser
+    session was executed by this document's owner**, and the same rule as item 21
+    applies: those figures are reported on the authority of the runs that
+    produced them. What **was** executed here is every test lane in item 19, every
+    `file:line` citation added on this pass, the XML validity of the two files in
+    D-39, the `nav_params.yaml` leaf-key and allow-list counts in D-28, the
+    battery arithmetic in D-42, and the CI run and job conclusions, read from the
+    GitHub Actions API by run id.
+25. **The slope campaign's committed artefact carries a WRONG commit id and is
+    still evidence, for a reason that must not be generalised.**
+    `slope_capability_2026-08-01.json` records `git_commit: ff80ed1`; the run
+    used `7727ba8`'s files. It stands **only** because all four input SHA-256s
+    verify against the committed repository — the world, both heightmaps and the
+    terrain datum. **A future artefact without those hashes would not survive the
+    same mistake.** The correction is additive
+    (`docs/slope_capability_2026-08-01.PROVENANCE.md`); the as-run JSON was not
+    edited, because the hash chain inside it is what makes it evidence.
+26. **The 2026-08-01 gate run's `pose_valid` evidence is one-sided.** Three
+    consumers read the new field and the dashboard's no-fix path was seen in a
+    browser against a test double, but **no robot has been observed publishing
+    `pose_valid = false` on a running system**, and the fail-safe default means a
+    partially rebuilt workspace produces exactly that value for the wrong reason.
+    The mitigation is procedural — rebuild all six packages in one `colcon
+    build` — and nothing enforces it.
+27. **`colcon test` still has not run.** `colcon build` has run many times,
+    including in this session's workspace sync; the per-package test entry points
+    remain unexercised under a real workspace on this machine. CI's
+    `build-and-test` job does run `colcon test` under ROS 2 **Humble**, which is
+    not the distro the operator's workspace uses.
+
 ---
 
 ## Recommended disposition
 
-**Phase 5 cannot be closed. The exit gate has now been run, twice, and it does
-not pass** — 8 passed / 1 failed / 2 skipped (exit 1), then 9 / 0 / 2 (exit 2).
-That is the whole answer. Everything below is detail on it, and the detail has
-changed shape entirely since the last revision: **the problem is no longer that
-nothing has been run.**
+**Phase 5 cannot be closed. The exit gate has now been run three times and it
+does not pass** — 8/1/2 (exit 1), then 9/0/2 (exit 2), then **10 passed /
+1 failed / 0 skipped (exit 1)** on 2026-08-01 at `9c1a4d7`. That is the whole
+answer. Everything below is detail on it, and the detail has changed shape twice
+since the revision before last: **the problem is no longer that nothing has been
+run, and it is no longer that the instrument cannot see.**
+
+**What the third run changed.** **Zero skips.** Checks 6 and 9 produced verdicts
+for the first time and both PASSed, so **PRD exit-gate rows 3 and 4 are measured
+at last** — that is D-34 closed on the gate's own output. The remaining failure
+is check 11, and it is neither the system nor the aim of the check: the gate
+selected a robot reporting 0.0% battery and never established that it could
+perform the manoeuvre, so the energy-critical rule overrode the operator command
+six milliseconds after the FSM accepted it. **That 0% is D-42 and its cause is
+unknown.**
+
+**All six deviations this register carried as open are closed** (D-28, D-30,
+D-31, D-32, D-34, D-35), and five new ones were opened (D-38..D-42). **Two are
+open now, D-37 and D-42, and neither has a known cause.**
 
 What is true, and it is a great deal more than it was on 2026-07-30. Phase 5 is
 **code-complete against all nine requirements**. The workspace builds — six
@@ -3406,17 +4444,22 @@ in this system had ever been physically possible.**
 
 What is missing:
 
-1. **The gate must go green, and two of its checks cannot currently produce a
-   verdict.** Checks 6 and 9 SKIP on a correct system because the gate cannot
-   observe an FSM state that lasts 0.25–0.30 s through a 0.5 s sampler
-   (**D-34**), which costs PRD rows 3 and 4. Check 11 is a coin flip separated
-   by 33 cm of displacement (**D-35**). **Neither was patched, deliberately** —
-   adjusting an instrument until it stops reporting a problem is the specific
-   failure this register exists to name, and a threshold chosen from n=1 is not
-   a fix. Both need a considered change by their owner. Only then is a green run
-   meaningful, and `docs/phase5_validation_report.md` must be regenerated **by
-   that run**, never hand-edited: it still describes the superseded eight-check
-   gate at commit `251e84d`.
+1. **The gate must go green, and what stands between it and green is now ONE
+   check and ONE unknown.** ~~Checks 6 and 9 SKIP on a correct system…~~
+   **DONE 2026-08-01**: D-34 was fixed on both sides, checks 6 and 9 produced
+   verdicts, and the run had **zero skips**. D-35's coin flip is fixed too — the
+   bearing is chosen off the robot's heading and the window is derived from
+   `scout.yaml`, both visible in the run's own output — and the 12 s literal was
+   **deleted, not raised**. **What remains is check 11's missing precondition**:
+   it issues an override to a robot without establishing that the robot can obey
+   it, and on 2026-08-01 it chose one at 0% battery. Fixing the check is cheap;
+   **finding out why that robot reported 0% is D-42 and comes first**, because a
+   gate taught to avoid a robot in a state nobody understands is a gate taught to
+   look away. `$HOME/selene/phase5_validation_report.md` was regenerated **by**
+   the 2026-08-01 run and is not green; the in-tree
+   `docs/phase5_validation_report.md` **is still the superseded eight-check gate
+   at `251e84d`** and must be replaced by the output of a green run, never
+   hand-edited.
 
 2. **The ODE abort's cause is unknown, and this is the largest open risk in the
    repository.** Three reproducible SIGABRTs; no root cause. The terrain-edge
@@ -3448,36 +4491,47 @@ What is missing:
    re-measuring in world coordinates**; the adaptive-versus-static comparison
    survives, the coordinates do not.
 
-5. **Seven deviations remain open and two of them will bite a demo.** D-28 (the
-   planner reads no slope limit — the fifth instance of this repository's
-   "wired but never called" pattern, and the one that cost the mission), D-30
-   (the fleet-stall check produced four false positives and zero true positives
-   across two runs), D-31 (`fleet_distance_total` is 2.21× the fleet's true
-   path, undiagnosed, and it is on the dashboard), D-32 (the recharge pad is
-   behind the same unclimbable wall D-23 moved the depot away from — no run has
-   hit it and nothing detects it), plus D-34, D-35 and D-36.
+5. ~~**Seven deviations remain open and two of them will bite a demo.**~~
+   **SIX OF THE SEVEN ARE CLOSED, 2026-08-01.** D-28 is closed with a **measured**
+   slope limit (54 trials) enforced **per step**, and a startup audit every agent
+   logs. D-30 is root-caused — the detector was timing "how long since this robot
+   moved 1 cm", a clock that runs while a robot is parked — and now reports
+   "N of M". D-31 is **diagnosed for the first time** (a fabricated pose
+   published before odometry existed) and fixed with a `pose_valid` flag three
+   consumers read, **with sufficiency explicitly not claimed**. D-32 is
+   **dissolved**: the wall was never unclimbable, only unclimbable straight up.
+   D-34 and D-35 are closed on the gate's own output. D-36's remainder has a CI
+   job. **What remains open is D-37 and D-42, and neither has a cause.**
+   **Two things a demo should still expect**: no vehicle has driven a switchback,
+   and side-slope rollover — the failure mode the new rule licenses — is
+   unmeasured and unbounded (open items 23 and 25).
 
-6. ~~**Fix D-36 before anyone trusts a lane count.**~~ **DONE 2026-07-31** —
-   `test_terrain_guard.py`'s unguarded `selene_agent` import is now an
-   `importorskip`; the gate lane is 518 passed / 1 skipped and the cross-package
-   lane still RUNS the assertion (51 passed, no skip), which is the half that
-   makes the skip legitimate rather than a hiding place. See D-36.
-   **What remains from that entry**: nothing in CI runs `selene_orchestrator/test`
-   in full on the two-package path — `e2e-integration` declares that PYTHONPATH
-   but names one file, so it would not have caught this. D-14's rule was "do not
-   add a test lane without a cross-package lane"; its converse is now written
-   down in D-36, and the missing lane is still missing.
+6. ~~**Fix D-36 before anyone trusts a lane count.**~~ **DONE 2026-07-31**, and
+   **its remainder is DONE 2026-08-01.** `test_terrain_guard.py`'s unguarded
+   `selene_agent` import is an `importorskip`, and a new CI job
+   `gate-lane-tests` now runs the gate lane **whole** on the two-package path —
+   mutation-tested before commit, reproducing D-36's own measurement (guard
+   removed: gate lane 1 failed/518 passed while the cross-package lane stays
+   green at 51 passed). Green in CI at `d390315`, `7727ba8` and `9c1a4d7`.
 
-7. **Run `colcon test` and `shellcheck`.** `colcon build` has run many times;
-   `colcon test` never has, so the per-package test entry points are unexercised
-   under a real workspace. `shellcheck` has never seen the rewritten
-   `validate_phase5.sh`, which is now the most-executed script in the tree.
+7. **Run `colcon test` on the operator's distro.** ~~and `shellcheck`~~ —
+   `shellcheck -S warning scripts/*.sh` has now run green in CI at all three of
+   this session's later commits, so the rewritten `validate_phase5.sh` is
+   covered; see verification limit 20, **which was wrong about this and says so**.
+   `colcon test` still has not run under Jazzy on the operator's workspace;
+   CI runs it under **Humble**, which is a different distro.
 
-8. **Accept the twenty-two open items explicitly**, particularly `use_sim_time`
-   — **re-checked on this pass and still set by nothing**, with `/clock`,
-   `gz.msgs.Clock` and `rosgraph_msgs` at zero occurrences repo-wide. Every
-   duration in this system, including `MissionProgress.elapsed_sim_time`, is
-   wall clock. That outlives Phase 5.
+8. **Run RViz2.** It is item 22, it is the largest gap between what Phase 5
+   claims and what `docs/PRD.md:1504` asks for, `rviz:=true` is already wired and
+   WSLg is available on the machine that ran everything else in this session.
+   **Three gate runs, a 54-trial Gazebo campaign and two browser sessions have
+   now gone past it.** Nothing blocks it.
+
+9. **Accept the twenty-seven open items explicitly**, particularly `use_sim_time`
+   — **re-checked and still set by nothing**, with `/clock`, `gz.msgs.Clock` and
+   `rosgraph_msgs` at zero occurrences repo-wide. Every duration in this system,
+   including `MissionProgress.elapsed_sim_time`, is wall clock. That outlives
+   Phase 5.
 
 **A closing note on what changed and why it should be trusted more than the last
 revision.** The previous disposition said the gap was "evidence, not code". It
@@ -3490,3 +4544,26 @@ below its own printing precision, and a hauler that reported a perfect delivery
 suite, and one of them made every haul in the system impossible.** The register's
 own rule — that a passing test is not a demonstration — was, if anything,
 understated.
+
+**A second closing note, 2026-08-01, because the lesson this session taught is
+not the same one.** Every defect above came from *running the system*. Four of
+this session's five new deviations came from **running the checking apparatus** —
+a CI job that had never fired and failed on its own configuration (D-38), a
+preflight script whose gravity line printed OK against an empty string (D-39), a
+view whose animation loop had never once started while its header and stats
+panel showed correct numbers (D-40), and a simulator crash that manufactured
+four "cannot climb" results indistinguishable from real ones (D-41). **In each
+case the instrument, not the system, was the thing that was wrong, and in three
+of the four the instrument was reporting success.**
+
+And the largest single finding is of the same species. D-28 had been read for
+two days as "the planner ignores a slope limit". It was not: it was **a limit
+nobody had measured, expressed in the wrong quantity.** The measured limit is
+20°, the wall is 34°, and both numbers are right — because a vehicle climbs
+along its own heading and not along the fall line. **A limit enforced per cell
+would have refused the entire mission; the same limit enforced per step admits
+it.** The register carried a correct observation attached to a wrong model of
+what it meant for four revisions, and only measuring the vehicle settled it.
+
+**What has not moved: D-37's cause is unknown, D-42's cause is unknown, RViz2
+has never been started, and the gate does not pass.**
