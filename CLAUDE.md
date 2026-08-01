@@ -178,6 +178,20 @@ Caveats a reader should know:
   crater floor at (-100, -150). D-24/D-25: dead reckoning was the only position estimate, its
   error reached **166 m**, and a hauler once reported a perfect 19 kg delivery while standing
   **241.577 m** from the depot with its wheels spinning at 100% slip.
+- **THE PATH FOLLOWER ORBITED ITS WAYPOINTS, AND IT COST THE MISSION THE WHOLE ISRU CHAIN
+  (D-43, fixed 2026-08-01).** `_find_lookahead` stops steering toward a waypoint inside
+  `lookahead_distance` (2.0 m) and scans forward FROM `_target_idx`, while the retirement
+  loop advanced that index only inside `waypoint_tolerance` (1.0 m). On a reversal the
+  follower curves away, never closes to 1 m, and re-acquires the same waypoint forever.
+  **The follower code is older than the symptom**: `9c1a4d7` closed D-28 by enforcing the
+  slope limit per STEP, which turned crater-wall routes into chains with 135° reversals —
+  exactly the geometry that makes a 2 m lookahead miss a 1 m tolerance. **A correct fix
+  exposed a latent defect one layer down, for the second time in this register.** The
+  remedy is the invariant, `max(tolerance, lookahead)`, not a retuned constant; arrival
+  stays tight and a test asserts so. Measured A/B on two identical 16-minute runs:
+  surveys completed **6/10 → 10/10**, first reading **802.5 s → 240.4 s**, path/net
+  **5.29× → 2.59×**, `(excavate)` auctions **0 → 1**, and **the excavator drove 48.2 m
+  having previously recorded a single FSM transition in sixteen minutes.**
 - **A SECOND SELENE STACK IS A HAZARD THIS SYSTEM HAS NO DEFENCE AGAINST, and it is now
   the first thing to check when a live number looks impossible.** `ros2 launch` leaves
   children running; nothing sets `ROS_DOMAIN_ID`; `GZ_PARTITION` covers Gazebo transport
@@ -353,7 +367,7 @@ Caveats a reader should know:
   # Everything, one process, either collection order
   PYTHONPATH="selene_orchestrator;selene_isru;selene_hal;selene_agent;selene_sim" \
     python -m pytest selene_orchestrator/test selene_isru/test selene_hal/test \
-                     selene_agent/test selene_sim/test -q            # 1206 passed, 1 skipped
+                     selene_agent/test selene_sim/test -q            # 1220 passed, 1 skipped
 
   # The gate lane — the two-package path CI now runs whole (job `gate-lane-tests`)
   PYTHONPATH="selene_orchestrator;selene_isru" \

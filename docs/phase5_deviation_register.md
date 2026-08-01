@@ -4120,6 +4120,110 @@ files D-37 had to correct.
 
 ---
 
+## D-43 — the path follower orbited its waypoints, and it cost the mission the whole ISRU chain — CLOSED 2026-08-01, ROOT-CAUSED, MUTATION-TESTED, DEMONSTRATED LIVE
+
+**This is the cause of open item 22(b), and it was not where anyone was
+looking.** The fleet was not slow because of terrain, traction, slip, latency or
+battery. `PathFollower` could not retire a waypoint it had stopped steering
+toward, so on any sharp corner it circled that waypoint until something else
+timed out.
+
+### THE INVARIANT THAT WAS VIOLATED
+
+`PathFollower._find_lookahead` (`navigator.py:1014-1022`) scans forward **from
+`_target_idx`** and returns the first waypoint at or beyond
+`lookahead_distance` — so it stops steering toward any waypoint closer than
+**2.0 m**. The retirement loop in `update` advanced `_target_idx` only when the
+robot was within `waypoint_tolerance` — **1.0 m**.
+
+Between 1.0 m and 2.0 m sits a band in which the follower has stopped steering
+toward a waypoint but has not retired it. **On a straight path that band is
+harmless**: the robot crosses it anyway and closes to 1 m. **On a reversal it is
+fatal**: the follower curves away toward a point 2 m further along, never closes
+to 1 m, `_target_idx` never advances, the next scan starts from the same stale
+index and re-acquires the same waypoint.
+
+**THE FOLLOWER CODE IS OLDER THAN THE SYMPTOM.** What changed is the paths.
+Commit `9c1a4d7` closed D-28 by enforcing the slope limit **per step**, which
+turned A\* routes across the crater wall from a couple of waypoints with no turns
+into long chains with reversals of up to **135°** — precisely the geometry that
+makes a 2 m lookahead miss a 1 m tolerance. D-28 did not introduce this bug; it
+introduced the routes that trip it. That is the second time in this register
+that a correct fix has exposed a latent defect one layer down.
+
+### THREE INDEPENDENT METHODS AGREE ON THE NUMBER
+
+| method | net progress |
+|---|---|
+| offline, **real** planner + **real** follower, **ideal frictionless plant** | 0.048 m/s |
+| the running system, 4 robots, 16 minutes | **0.044 m/s** |
+
+The offline reproduction drove **599.8 m** and swept **68,370° of yaw** without
+reaching a goal in 1200 s. **An ideal plant cannot slip**, so terrain, traction
+and latency are all excluded as necessary conditions.
+
+### THE FIX IS THE INVARIANT, NOT A RETUNED CONSTANT
+
+    retire_radius = max(self._wp_tol, self._lookahead)
+
+Whatever the lookahead scan declines to steer to is retired, by construction.
+Raising `waypoint_tolerance` in `nav_params.yaml` would have papered over it and
+would also have loosened the **arrival** test, which is a different question and
+stays tight — `test_arrival_tolerance_is_still_tight` asserts the goal test still
+refuses at 1.5 m against a 1.0 m tolerance, so the fix cannot be a widened
+threshold in disguise.
+
+**MUTATION-TESTED BEFORE COMMIT**, which is this register's own standard: with
+the retirement radius reverted to `self._wp_tol`, **10 of the 14 new tests fail**
+— and the 30° corner and the straight path still pass, because the bug does not
+bite on those geometries. The tests fail for the reason the mechanism predicts,
+not merely because something changed.
+
+### DEMONSTRATED LIVE, SAME SCRIPT BOTH SIDES
+
+Two 16-minute 2/1/1 runs, one clean stack each, identical invocation:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| survey waypoints COMPLETED | **6 of 10** | **10 of 10** |
+| first reading reaches the map | t = **802.5 s** | t = **240.4 s** |
+| `map_update` messages | 4 | **9** |
+| `total_observations` | 319 | **716** |
+| path / net ratio, scout_01 | **5.29×** | **2.59×** |
+| scout_01 FSM transitions | 17 | **31** |
+| **`(excavate)` auctions started** | **0** | **1** |
+| **excavator_01 FSM transitions** | **1** | **4** |
+| **excavator_01 distance driven** | **0 m** | **48.2 m** |
+
+**THE EXCAVATOR MOVED.** Pre-fix, 70 auctions ran in 16 minutes and every single
+one was `(prospect)`; the excavator and hauler had nothing to bid on because
+`HTNPlanner.check_and_advance` resolves `select_site` only when **every** survey
+task is COMPLETED (`htn_planner.py:313-322`) — a conjunction, with no
+concentration, certainty or reading-count threshold anywhere in the chain. Six of
+ten made it false. Post-fix all ten complete, the conjunction resolves, and an
+excavate task exists for the first time in these runs.
+
+### WHAT THIS ENTRY DOES NOT CLAIM
+
+* **Item 22(b) is not thereby discharged.** The fleet now surveys all ten
+  waypoints in about four minutes of reading time, which is what (b) needed, but
+  the side-by-side has not been re-taken against a surveyed map. That is the
+  remaining work.
+* **The path/net ratio is still 2.59×**, against the register's 1.85×
+  switchback estimate. Better than 5.29× and not yet explained.
+* **Five survey tasks were still ABANDONED** (`no bids in 5 consecutive
+  auctions`) before being woken by `idle_arrivals` and completed. The wake
+  mechanism works; the churn is real and unmeasured.
+* **`Dropping map update ... unusable sensor uncertainty inf` fired once in each
+  run**, at (-104.2, -152.7) and (-94.4, -163.7). The guard is behaving
+  correctly — a scout more than the spectrometer's 10 m `max_detection_range`
+  from every deposit reads `ice=0.000 +/-inf` and the reading is refused rather
+  than fusing a fabricated confidence. **But it means a survey waypoint sited
+  more than 10 m from any deposit contributes NOTHING to the map**, and nothing
+  in the survey planner knows that.
+
+---
+
 ## FR-MAP-3 - adaptive survey never ran - CLOSED 2026-07-30
 
 Not a Phase 5 deviation: FR-MAP-3 is P0 **Phase 4** scope

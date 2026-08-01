@@ -937,10 +937,54 @@ class PathFollower:
         odom = self._odom.read()
         rx, ry, rtheta = odom.x, odom.y, odom.theta
 
-        # Advance target index past waypoints already reached
+        # Advance the target index past waypoints already reached.
+        #
+        # THE RETIREMENT RADIUS IS THE LOOKAHEAD, NOT THE ARRIVAL TOLERANCE, and
+        # the two being different is what made the fleet orbit its waypoints.
+        #
+        # WHAT WAS WRONG. This loop retired a waypoint at `waypoint_tolerance`
+        # (1.0 m) while `_find_lookahead` below stops steering at that same
+        # waypoint as soon as it is within `lookahead_distance` (2.0 m) --
+        # and `_find_lookahead` scans FORWARD FROM `_target_idx`. With
+        # tolerance < lookahead there is a band, 1.0 m to 2.0 m, in which the
+        # follower has already stopped steering toward a waypoint but has not
+        # retired it. On a straight path that band is harmless: the robot
+        # crosses it and closes to 1 m anyway. On a REVERSAL it is not -- the
+        # follower curves away toward a point 2 m further along, never closes to
+        # 1 m, `_target_idx` never advances, the next scan starts from the same
+        # stale index and re-acquires the same waypoint. The robot orbits it
+        # until something else times out.
+        #
+        # WHY IT STARTED ON 2026-08-01. This code is older than the symptom.
+        # Commit 9c1a4d7 closed D-28 by enforcing the slope limit PER STEP,
+        # which turned A* routes across the crater wall from a couple of
+        # waypoints with no turns into long chains with reversals of up to
+        # 135 deg -- and a 135 deg reversal is exactly the geometry that makes a
+        # 2 m lookahead miss a 1 m tolerance. D-28 did not introduce this bug;
+        # it introduced the paths that trip it.
+        #
+        # MEASURED. Offline against this same PathFollower and the real A*
+        # planner, with an IDEAL frictionless plant that cannot slip: 599.8 m
+        # driven, 68,370 deg of yaw swept, goal never reached in 1200 s, net
+        # progress 0.048 m/s. On the running system the operator measured
+        # 0.044 m/s of net progress and a path/net ratio that grew from 1.30x
+        # to 5.29x as the scouts entered the crater approach. Six of ten survey
+        # waypoints completed in 16 minutes; the other four never did, so
+        # HTNPlanner's select_site conjunction never resolved and the excavator
+        # and hauler recorded ZERO FSM transitions for the whole run.
+        #
+        # THE FIX IS THE INVARIANT, NOT A RETUNED CONSTANT. A waypoint the
+        # lookahead scan will skip is, for steering purposes, already behind us,
+        # so it must be retired. Using `max(tolerance, lookahead)` makes the
+        # retirement radius track the skip radius by construction: whatever
+        # `_find_lookahead` declines to steer to, this retires. Raising
+        # `waypoint_tolerance` in nav_params.yaml would paper over it and would
+        # also loosen the ARRIVAL test below, which is a different question and
+        # must stay tight.
+        retire_radius = max(self._wp_tol, self._lookahead)
         while self._target_idx < len(self._path) - 1:
             wx, wy = self._path[self._target_idx]
-            if math.hypot(wx - rx, wy - ry) < self._wp_tol:
+            if math.hypot(wx - rx, wy - ry) < retire_radius:
                 self._target_idx += 1
             else:
                 break
