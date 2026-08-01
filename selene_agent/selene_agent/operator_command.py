@@ -40,7 +40,10 @@ class _OperatorCommandContext:
     get_pending_task_id: Callable[[], str]
     set_pending_task_id: Callable[[str], None]
     publish_bid_withdrawal: Callable[[str, str], None]
-    start_navigation: Callable[[float, float], None]
+    #: Returns '' on success, or the planner's reason for refusing the goal.
+    #: The return value is load-bearing: `send_to_location` reports accepted
+    #: only when a route actually exists.
+    start_navigation: Callable[[float, float], str]
     set_operator_target: Callable[[Optional[tuple]], None]
     start_recharge: Callable[[], None]
     get_last_seq: Callable[[], int]
@@ -145,7 +148,23 @@ def operator_command_logic(ctx: _OperatorCommandContext, request, response):
         target_y = float(request.target.y)
         ctx.set_operator_target((target_x, target_y))
         ctx.fire_event(FSMEvent.OPERATOR_GOTO)
-        ctx.start_navigation(target_x, target_y)
+        # THE PLANNER'S VERDICT DECIDES THE RESPONSE. `start_navigation` returns
+        # '' on success or the reason it could not plan, and that reason used to
+        # be discarded: this function set accepted=True unconditionally, so a
+        # goal the terrain guard refuses was reported to the operator as
+        # accepted and abandoned 0.3 ms later with nothing on the wire to say
+        # so. See AgentNode._start_operator_navigation for the measured
+        # sequence. `start_navigation` has already fired OPERATOR_CANCEL and
+        # returned the robot to IDLE by the time we get here, so refusing is
+        # only a matter of telling the truth about what happened.
+        failure = ctx.start_navigation(target_x, target_y)
+        if failure:
+            ctx.set_current_task_id('')
+            ctx.set_operator_target(None)
+            ctx.set_last_seq(int(request.sequence))
+            response.accepted = False
+            response.reason = failure
+            return response
     elif request.command == 'force_recharge':
         ctx.fire_event(FSMEvent.OPERATOR_RECHARGE)
         ctx.start_recharge()

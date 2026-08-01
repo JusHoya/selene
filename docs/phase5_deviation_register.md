@@ -1374,6 +1374,40 @@ time array would add ~1 MB per message for a field nothing reads.
 >    information. The budget is now tested again before each motion window and
 >    the ceiling is **540 s**.
 >
+> **A FIFTH DEFECT IN CHECK 11, FOUND 2026-08-01 (latest), AND IT WAS PREDICTED
+> IN WRITING BEFORE IT HAPPENED.** `goto_target`'s own docstring carried this
+> note: *"A\* refuses a goal only for occupancy or bounds, because
+> `navigation.max_traversable_slope_deg` has no reader anywhere in production
+> (register D-28). **If D-28 is fixed, a heading-relative pick may start hitting
+> slope refusals.**"* D-28 was fixed at `9c1a4d7`. The refusals started.
+>
+> Measured: the gate commanded `scout_02` to (-81.5, -94.5) and the agent refused,
+> **correctly** —
+>
+>     Operator goto plan failed: goal (-81.5, -94.5) is on 26.1 deg ground, over
+>     the 20.0 deg traversable limit; a robot could not stop, work or set off
+>     again there
+>     NAVIGATING --(OPERATOR_CANCEL)--> IDLE
+>
+> The terrain guard did exactly its job. **Check 11 then measured the STALE
+> `planned_path` from the robot's previous survey task**, found it ended 32.35 m
+> from the commanded target, and reported the override as failed.
+>
+> `probe.paths[rid]` is `(recv_time, points)` and **the recv_time was recorded
+> and never read** — so any path, of any age, satisfied assertion (4). That is
+> the ninth instance of this repository's characteristic defect and the third
+> inside the gate. The freshness test now exists: a path older than the command
+> means the agent refused the goal, which for a slope refusal is correct
+> behaviour and an unplannable pick BY THE PROBE, so the documented retry policy
+> takes the next bearing instead of blaming the override. The service returns
+> `accepted` **before** the plan is attempted, so acceptance was never evidence
+> that a route exists.
+>
+> **THAT IS THREE DISTINCT WAYS CHECK 11 HAS MEASURED THE WRONG THING**: the
+> wrong stimulus (D-35, a due-east bearing and a constant window), the wrong
+> subject (D-42, a robot it could see could not obey), and now a stale artefact
+> from a command that was correctly refused.
+>
 > **Third run, 2026-08-01, and the shape of the failure changed.** Run against
 > `9c1a4d7` on ROS 2 Jazzy / Ubuntu 24.04.4 at `2/1/1`
 > (`num_scouts:=2 num_excavators:=1 num_haulers:=1`), on a workspace built by

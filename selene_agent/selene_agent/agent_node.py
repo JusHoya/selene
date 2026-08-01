@@ -1337,8 +1337,35 @@ class AgentNode(Node):
     # Operator override helpers
     # ===================================================================
 
-    def _start_operator_navigation(self, target_x: float, target_y: float):
+    def _start_operator_navigation(self, target_x: float, target_y: float) -> str:
         """Plan a path to *(target_x, target_y)* and begin path-following.
+
+        Returns '' on success, or the planner's failure reason.
+
+        THE RETURN VALUE IS THE WHOLE POINT, and it used to be discarded.
+        ``operator_command_logic`` called this and then set
+        ``response.accepted = True`` unconditionally, so an operator issuing
+        ``send_to_location`` to a goal the terrain guard refuses was told the
+        command had been accepted — and the agent abandoned it 0.3 ms later:
+
+            [scout_02] NAVIGATING --(OPERATOR_GOTO)--> NAVIGATING
+            [scout_02] Operator goto plan failed: goal (-81.5, -94.5) is on
+                       26.1 deg ground, over the 20.0 deg traversable limit
+            [scout_02] NAVIGATING --(OPERATOR_CANCEL)--> IDLE
+
+        All three lines inside half a millisecond, and the ONLY record of the
+        refusal was a log line on the robot. The service said yes. There was no
+        'accepted but not performable' channel back to whoever asked, which is
+        the same defect class as a skill that reports success it did not
+        achieve.
+
+        WHY IT SURFACED NOW. Until D-28 was closed at 9c1a4d7 nothing read
+        ``navigation.max_traversable_slope_deg``, so A* refused a goal only for
+        occupancy or bounds and this path was nearly unreachable. The exit
+        gate's check 11 picks its target 6 m from the robot on a heading-relative
+        bearing; with the slope rule live, that pick lands on refused ground
+        often enough to fail the check — and check 11 then measured a stale
+        ``planned_path`` and blamed the override. Register D-10.
 
         Used by the operator ``send_to_location`` command. Skips skill
         creation entirely — the navigator drives the wheels directly,
@@ -1347,9 +1374,9 @@ class AgentNode(Node):
         """
         result = self._navigator.plan_to((target_x, target_y))
         if not result.success:
+            reason = result.failure_reason or 'planner returned no path'
             self.get_logger().error(
-                f"[{self._robot_id}] Operator goto plan failed: "
-                f"{result.failure_reason}"
+                f"[{self._robot_id}] Operator goto plan failed: {reason}"
             )
             self._operator_target = None
             # Drop back to IDLE so we don't strand the agent.
@@ -1357,8 +1384,9 @@ class AgentNode(Node):
                 self._fsm.handle_event(FSMEvent.OPERATOR_CANCEL)
             except Exception:
                 pass
-            return
+            return reason
         self._navigator.start_following(result.path)
+        return ''
 
     def _stop_navigation(self):
         """Unconditionally halt motion: stop path following, zero cmd_vel.

@@ -3166,10 +3166,52 @@ def run_send_to_location(results, probe, robot_id, rcdl_dir, yaml_module,
                 time.sleep(GOTO_POLL_INTERVAL_SEC)
 
         # (4).
+        #
+        # THE PATH MUST BE NEWER THAN THE OVERRIDE, and that test was missing.
+        # `probe.paths[rid]` is `(recv_time, points)` and the recv_time was
+        # recorded and never read -- so a path left over from the robot's
+        # PREVIOUS task satisfied this assertion, and the check reported the
+        # distance from the commanded target to the end of a route that had
+        # nothing to do with the command.
+        #
+        # MEASURED 2026-08-01. The gate commanded scout_02 to (-81.5, -94.5) and
+        # the agent refused to plan, correctly:
+        #     Operator goto plan failed: goal (-81.5, -94.5) is on 26.1 deg
+        #     ground, over the 20.0 deg traversable limit; a robot could not
+        #     stop, work or set off again there
+        #     NAVIGATING --(OPERATOR_CANCEL)--> IDLE
+        # The system did exactly the right thing. Check 11 then measured the
+        # stale path from the previous survey task, found it ended 32.35 m away,
+        # and FAILed the override.
+        #
+        # THIS WAS PREDICTED. `goto_target`'s own docstring carried the note that
+        # A* refuses a goal only for occupancy or bounds "because
+        # navigation.max_traversable_slope_deg has no reader anywhere in
+        # production (register D-28)" and that "if D-28 is fixed, a
+        # heading-relative pick may start hitting slope refusals". D-28 was fixed
+        # at 9c1a4d7 and the refusals started.
+        #
+        # An unplannable pick is THE PROBE'S FAULT, and the documented retry
+        # policy already covers it: a bearing that fails to PLAN is retried on
+        # the next bearing. What was missing was the detection -- the service
+        # returns accepted BEFORE the plan is attempted, so acceptance is not
+        # evidence that a route exists. A path that is not newer than `cut` now
+        # means exactly that, and the check retries instead of blaming the
+        # override.
         with probe.lock:
             recorded = probe.paths.get(robot_id)
         problems = []
-        path_recorded = bool(recorded is not None and recorded[1])
+        path_is_fresh = bool(recorded is not None and recorded[0] >= cut)
+        if recorded is not None and not path_is_fresh:
+            attempts.append(
+                'bearing %+.0f deg: accepted, but no planned_path was published '
+                'after the command (the newest is %.1fs older than it) -- the '
+                'agent refused the goal, which for a slope refusal is correct '
+                'behaviour and an unplannable pick by this probe'
+                % (bearing, cut - recorded[0]))
+            probe.override(robot_id, 'cancel_task')
+            continue
+        path_recorded = bool(path_is_fresh and recorded[1])
         if path_recorded:
             last_x, last_y = recorded[1][-1]
             offset = math.hypot(last_x - target_x, last_y - target_y)
