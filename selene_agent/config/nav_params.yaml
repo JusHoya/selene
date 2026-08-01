@@ -18,11 +18,69 @@ navigation:
   # (half a collision cell + robot half-extent + arrival slop + slack) is in
   # world_params.yaml beside `safety_margin_m`, which must carry the same value.
   terrain_margin_m: 10.0
-  max_traversable_slope_deg: 15.0
+  # ------------------------------------------------------------------------
+  # THE SLOPE LIMIT. It has a production reader as of 2026-08-01 (D-28); it had
+  # none for four phases, and the number itself changed at the same time.
+  #
+  # WHAT WAS MEASURED. A Gazebo campaign on 2026-08-01 -- 54 trials, 3 robot
+  # types x 9 grades x 2 directions -- recorded in
+  # `docs/slope_capability_2026-08-01.json`. READ
+  # `docs/slope_capability_2026-08-01.PROVENANCE.md` BEFORE QUOTING IT: the
+  # artefact's own `git_commit` field is WRONG (it names ff80ed1; the campaign
+  # ran against the working tree of 7727ba8), and the reason the measurement
+  # still stands is that all four input SHA-256s were verified against the
+  # committed repository. The pass criterion was 70% of commanded displacement
+  # at under 25% slip. Steepest grade passing:
+  #     scout      ascent 35   descent 25
+  #     excavator  ascent 20   descent 25
+  #     hauler     ascent 20   descent 25
+  #     counts: 24 pass, 15 fail, 4 buried, 2 tumbled, 9 no_site
+  # Worst ascent 20, worst descent 25, so the ROUND-TRIP GOVERNING LIMIT is 20.
+  #
+  # WHAT THE NUMBER IS NOT, and every line here is a reason to distrust it:
+  #   * It is a FALL-LINE figure -- every trial drove straight up or straight
+  #     down the steepest direction. It is enforced PER STEP, i.e. against the
+  #     grade along the path's own direction of travel, which is the same
+  #     quantity. It is NOT a limit on how steep the ground may be beneath a
+  #     robot: a path 57.4 deg off the fall line of 34 deg ground climbs at
+  #     20 deg. See navigator.py's module docstring.
+  #   * The excavator and hauler ascent verdicts are NON-MONOTONIC: both first
+  #     FAILED at 10 deg and then PASSED at 20. A capability that is not
+  #     monotone in grade means something other than grade is deciding some
+  #     trials, and that something was not identified.
+  #   * ONE TRIAL PER CELL, NO REPEATS. There is no spread, so there is no
+  #     basis for a confidence interval and none is claimed.
+  #   * SIDE-SLOPE ROLLOVER WAS NOT MEASURED AT ALL. On a real vehicle that is
+  #     usually the binding constraint, and it is exactly the mode a switchback
+  #     route -- which is what this per-step rule licenses -- spends its time
+  #     in. Nothing in SELENE bounds it today.
+  #
+  # It must agree with `world.max_traversable_slope_deg` in
+  # selene_sim/config/world_params.yaml, which is the world-scoped copy that
+  # selene_sim/test/test_mission_traversability.py evaluates the terrain against.
+  max_traversable_slope_deg: 20.0
+  # Weight on the per-cell terrain cost (`slope / limit`, written by
+  # OccupancyGrid.load_terrain). Biases a route toward gentler ground among the
+  # steps the limit above already admits; it refuses nothing on its own. READ AS
+  # OF 2026-08-01: agent_node passes it to Navigator, which passes it to
+  # AStarPlanner. Until then AStarPlanner was constructed with no arguments and
+  # this number reached nothing.
   slope_penalty_weight: 2.0
-  hazard_penalty_weight: 10.0
+  # `hazard_penalty_weight: 10.0` WAS HERE and is deleted. It reached no
+  # constructor, and the `_hazard_w` it would have set was assigned and read by
+  # nothing -- the same "wired but never called" shape as the slope limit above,
+  # one frame smaller. There is no hazard layer for it to weight. When there is
+  # one, add the key back together with its reader, not before.
   obstacle_inflation_radius: 0.5
 
+# READ AS OF 2026-08-01, all six keys. Navigator built its PathFollower with the
+# constructor's own defaults, so this entire block was settable and inert. The
+# values below are IDENTICAL to those defaults (navigator.py PathFollower
+# __init__), so wiring them changed no behaviour -- the point is that editing one
+# now does something. `stall_timeout_s` maps to the constructor's `stall_timeout`
+# through navigator.PATH_FOLLOWER_KEYS, which is explicit because that one name
+# does not survive a mechanical translation; an unknown key here now raises at
+# agent start rather than being silently ignored.
 path_follower:
   lookahead_distance: 2.0
   waypoint_tolerance: 1.0
@@ -31,6 +89,13 @@ path_follower:
   max_angular_speed: 1.0
   stall_timeout_s: 5.0
 
+# STILL UNREAD, AND ON THE ALLOW-LIST WITH THAT REASON IN WRITING. All five keys
+# name real arguments of selene_agent/selene_agent/obstacle_avoidance.py's
+# ObstacleAvoidance, and its defaults match these values -- but that class has NO
+# PRODUCTION CALLER either (only selene_agent/test/test_navigator.py constructs
+# it), so wiring the config would only move the dead end one level up. Reading
+# these keys is blocked on calling the class, which is a behaviour change to the
+# driving loop and not a config fix. See test_nav_params_are_read.py's allow-list.
 obstacle_avoidance:
   detection_range: 5.0
   critical_range: 1.5
@@ -39,15 +104,47 @@ obstacle_avoidance:
   depth_image_bins: 16
 
 mission:
+  # Standalone-mode survey stations, driven in order (agent_node._handle_idle).
+  # Every one is a place a robot must STOP and hold station to take a reading,
+  # so each is checked against max_traversable_slope_deg by the goal guard in
+  # AStarPlanner.plan -- a goal on over-limit ground is refused outright.
+  #
+  # THE FIRST ONE WAS (-60, -120) AND IT WAS ON A WALL. Measured 2026-08-01,
+  # SAMPLING_RESAMPLED on the collision layer: 37.24 deg (37.36 on the visual
+  # layer; 36.80 deg SAMPLING_NATIVE). It sits on the PSR crater rim, 50 m from
+  # the crater centre, and no point within 9 m of it is under 20 deg. It is
+  # replaced by (-52, -114) -- 10.0 m away, 12.20 deg collision / 11.86 visual,
+  # on the crater lip, which keeps the station's purpose (the first look into
+  # the basin from the spawn cluster) and is somewhere a robot can actually park.
+  # The other four are on the crater floor and were always fine: 4.71, 1.72,
+  # 6.11 and 5.00 deg respectively.
   prospect_waypoints:
-    - [-60, -120]
+    - [-52, -114]
     - [-80, -140]
     - [-100, -150]
     - [-110, -170]
     - [-90, -130]
-  recharge_position: [-75.0, -100.0]
-  low_battery_threshold: 0.15
-  recharge_target: 0.9
+  # THREE KEYS WERE DELETED HERE ON 2026-08-01 and each was a second, silent
+  # copy of a number that lives somewhere else:
+  #
+  #   recharge_position: [-75.0, -100.0]   -- deviation D-32. A THIRD recharge
+  #     coordinate, read by nothing, disagreeing with both the `recharge_pad`
+  #     <include> in selene_sim/worlds/lunar_psr.sdf and agent_node's own
+  #     parameter default, and sitting on 33.91 deg ground that no robot could
+  #     have stopped on. The single source of truth is the physical pad at
+  #     (-30, -100): the world marker, `world.recharge_station.position` in
+  #     selene_sim/config/world_params.yaml, and the `recharge_x`/`recharge_y`
+  #     parameters agent_node declares and selene_agent/launch/agent.launch.py
+  #     now passes explicitly. It was NOT fixed by correcting the value here:
+  #     promoting an unread key to authority is the same defect from the other
+  #     end, and it would have moved every robot's charger 45 m.
+  #   low_battery_threshold: 0.15  -- duplicate of the `energy_critical_threshold`
+  #     ROS parameter (agent_node.py, declared and read).
+  #   recharge_target: 0.9         -- duplicate of `energy_recharge_target`, same.
+  #
+  # The two energy numbers were identical to the parameters they shadowed, so
+  # deleting them changed nothing; a stale copy that had drifted would have been
+  # invisible, which is the whole argument.
 
 static_obstacles:
   rocks:

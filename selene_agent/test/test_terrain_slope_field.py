@@ -3,12 +3,23 @@ methods, and the shape the terrain has under a 15 degree limit.
 
 WHY THIS EXISTS
 ---------------
-``selene_agent/config/nav_params.yaml:21`` declares
-``navigation.max_traversable_slope_deg: 15.0`` and nothing in production reads
-it (D-28). ``terrain_slope.py`` is the module that makes reading it possible,
-and these are the assertions that make its numbers quotable.
+``selene_agent/config/nav_params.yaml:21`` declared
+``navigation.max_traversable_slope_deg: 15.0`` and nothing in production read it
+(D-28). ``terrain_slope.py`` is the module that made reading it possible, and
+these are the assertions that make its numbers quotable.
 
-Three of them are worth stating up front, because each is a claim somebody will
+WHAT CHANGED ON 2026-08-01, because it changes how every number below should be
+read. The limit is now a MEASURED 20.0 (a 54-trial Gazebo campaign,
+``docs/slope_capability_2026-08-01.json``) and the planner enforces it PER STEP
+-- against the grade along a path's own direction of travel -- not per cell.
+Everything in this file is still a per-CELL reading of the terrain, which is the
+right question for "how steep is the ground here" and the WRONG one for "can a
+route cross it". The per-step consequences live in
+``test_navigator_slope_enforcement.py``; ``DECLARED_LIMIT_DEG`` below is kept at
+15.0 as a fixed probe of the terrain's shape, not because 15 is enforced
+anywhere.
+
+Three claims are worth stating up front, because each is one somebody will
 otherwise rediscover the expensive way:
 
   * THE TWO SAMPLING METHODS ARE NOT INTERCHANGEABLE, and the difference is not
@@ -17,15 +28,19 @@ otherwise rediscover the expensive way:
     point reads 13.88 native and its own cell centre reads 22.71. The 0.6
     degree figure that circulates for this is what three particular landmarks
     happen to show, NOT a bound.
-  * UNDER A 15 DEGREE LIMIT THE WORLD IS DISCONNECTED. The passable set splits
-    into a plain of 227,185 cells holding all ten spawns and the recharge pad
-    and a crater basin of 3,531 cells holding the depot and all four ice
-    deposits, with no route between them. Enforcing 15 as a hard cut would
+  * UNDER A 15 DEGREE PER-CELL CUT THE WORLD IS DISCONNECTED. The passable set
+    splits into a plain of 227,185 cells holding all ten spawns and the recharge
+    pad and a crater basin of 3,531 cells holding the depot and all four ice
+    deposits, with no route between them. Enforcing that as a hard cut would
     refuse every spawn-to-depot route and break a mission that demonstrably
     works, which is why the campaign in
-    ``scripts/measure_slope_capability.sh`` exists.
-  * ``mission.recharge_position: [-75, -100]`` in the same nav_params.yaml
-    sits on 37.08 degree ground and is in NO passable component at all.
+    ``scripts/measure_slope_capability.sh`` exists -- and, in the end, why the
+    rule that shipped is per step and not per cell. Measured 2026-08-01, the
+    per-step rule at 20 degrees puts all 250,000 cells in ONE component.
+  * ``mission.recharge_position: [-75, -100]``, which was in the same
+    nav_params.yaml until 2026-08-01, sits on 37.08 degree ground and is in NO
+    per-cell passable component at all. It is deleted (D-32); the assertions
+    about it below are kept because they are what justified deleting it.
 
 WHAT THESE TESTS ARE NOT
 ------------------------
@@ -76,8 +91,10 @@ DEPOT = (-100.0, -150.0)
 #: The ``recharge_pad`` <include> in selene_sim/worlds/lunar_psr.sdf, and
 #: agent_node.py's default recharge station.
 RECHARGE_PAD = (-30.0, -100.0)
-#: ``mission.recharge_position`` in selene_agent/config/nav_params.yaml -- a
-#: THIRD position, and the one that is on the crater wall.
+#: ``mission.recharge_position`` in selene_agent/config/nav_params.yaml until
+#: 2026-08-01 -- a THIRD position, and the one that is on the crater wall. The
+#: key is DELETED (D-32); the coordinate is kept here as the literal these
+#: measurements are about.
 NAV_RECHARGE = (-75.0, -100.0)
 #: All ten poses in selene_sim/config/spawn_positions.yaml.
 SPAWNS = [(-45.0, -92.0), (-45.0, -85.0), (-45.0, -78.0), (-52.0, -109.0),
@@ -88,7 +105,12 @@ DEPOSITS = [(-80.0, -140.0), (-110.0, -170.0), (-90.0, -130.0), (-120.0, -155.0)
 #: ``CRATER`` in selene_sim/scripts/generate_heightmap.py.
 CRATER_CENTRE = (-100.0, -150.0)
 
-#: The declared limit under test, from nav_params.yaml:21 / world_params.yaml.
+#: The limit nav_params.yaml and world_params.yaml declared until 2026-08-01.
+#: SUPERSEDED AS A LIMIT -- both files now say 20.0, measured -- and RETAINED
+#: HERE AS A PROBE. Every component figure below was measured at this value and
+#: describes the terrain's shape at it; re-pointing the constant at whatever the
+#: config currently says would silently invalidate all of them and turn a set of
+#: pinned measurements into a moving target. Nothing in production reads 15.
 DECLARED_LIMIT_DEG = 15.0
 
 #: Justified by the matched-azimuth cross-check below: the gate's exact-3.0 m
@@ -435,9 +457,15 @@ def test_lattice_geometry_matches_the_occupancy_grid_it_will_plan_on():
 def test_cost_grid_is_usable_as_a_planner_cost(lattice):
     """0 on the flat, *weight* at the limit, impassable above it.
 
-    ``AStarPlanner`` multiplies ``slope_penalty_weight`` by an OccupancyGrid
-    cost that no terrain has ever written to, so its slope term is identically
-    zero. This is the array that would end that.
+    ``AStarPlanner`` used to multiply ``slope_penalty_weight`` by an
+    OccupancyGrid cost that no terrain had ever written to, so its slope term
+    was identically zero. This is the array that ended that -- though
+    ``OccupancyGrid.load_terrain`` writes a FINITE cost above the limit rather
+    than the ``inf`` this method defaults to, because an infinite per-cell cost
+    is a per-cell refusal and a per-cell refusal at the measured limit
+    disconnects the depot from every spawn. Both behaviours are exercised here;
+    the choice is the caller's, which is what the ``impassable_cost`` argument
+    is for.
     """
     cost = lattice.cost_grid(DECLARED_LIMIT_DEG, weight=2.0)
     slope = np.asarray(lattice.slope_deg)
@@ -551,12 +579,16 @@ def test_the_fleet_and_the_depot_are_in_different_components(components):
 
 def test_the_configured_recharge_position_is_on_impassable_ground(lattice,
                                                                   components):
-    """``mission.recharge_position: [-75, -100]`` is on a 37 degree wall.
+    """``mission.recharge_position: [-75, -100]`` was on a 37 degree wall.
 
-    Not a lint of the config -- a fact about it, pinned so the campaign's
-    verdict is read with it in view. It is a third position, disagreeing with
-    both the recharge_pad marker and the depot, and it is in no passable
-    component at all under the declared limit.
+    Not a lint of the config -- a fact about it, and the fact that got the key
+    DELETED on 2026-08-01 (D-32). It was a third recharge position, disagreeing
+    with both the ``recharge_pad`` marker and the depot, read by nothing, and in
+    no per-cell passable component at all at the probe limit. The coordinate is
+    still measured here because "it was deleted for a reason" is only worth
+    anything if the reason stays checkable; that the KEY is gone is asserted by
+    ``test_startup_reachability_audit.py``, and that the planner would now
+    REFUSE it as a goal by ``test_navigator_slope_enforcement.py``.
     """
     assert lattice.slope_deg_at(*NAV_RECHARGE) == pytest.approx(37.08, abs=0.05)
     assert components.label_at(*NAV_RECHARGE) == IMPASSABLE_LABEL, (

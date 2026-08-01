@@ -62,23 +62,42 @@ world:
   # TRAVERSABILITY. The number the fleet did not have, and the one that decided
   # the 2026-07-31 run.
   #
-  # selene_agent/config/nav_params.yaml has carried
-  # `navigation.max_traversable_slope_deg: 15.0` since Phase 2 and NOTHING HAS
-  # EVER READ IT — grep the repository. So no planner, no guard and no skill in
-  # SELENE knows a slope limit exists, and a hauler was duly routed straight at
+  # UNTIL 2026-08-01 selene_agent/config/nav_params.yaml had carried
+  # `navigation.max_traversable_slope_deg: 15.0` since Phase 2 and NOTHING HAD
+  # EVER READ IT (deviation D-28). So no planner, no guard and no skill in
+  # SELENE knew a slope limit existed, and a hauler was duly routed straight at
   # the PSR crater wall, pinned at a measured -35 deg body pitch, and spent
   # 320.7 s turning its wheels at the commanded 0.395 m/s while its body moved
   # 6.6 cm. It then reported success. (Pitch, duration and displacement from
   # that run's analyser output; not re-measured here.)
   #
-  # The limit below is a DECLARED BOUND, not a measurement of what these
-  # vehicles can climb. The only slope on which one has been observed to fail is
-  # ~35 deg; nothing has swept the range in between, so 15 deg is chosen to sit
-  # far under the single failure point rather than near the true limit.
-  # selene_sim/test/test_mission_traversability.py evaluates the shipped height
-  # field against it and fails the build if the mission cycle needs a steeper
-  # route than this.
-  max_traversable_slope_deg: 15.0
+  # BOTH HALVES OF THAT PARAGRAPH ARE NOW OUT OF DATE, and the correction is the
+  # point. The range HAS been swept, and the parameter HAS a production reader.
+  #
+  # MEASURED, 2026-08-01, in Gazebo: 54 trials, 3 robot types x 9 grades x 2
+  # directions, pass = 70% of commanded displacement at under 25% slip, driving
+  # straight up or straight down the fall line. Artefact:
+  # docs/slope_capability_2026-08-01.json, and its git_commit field is WRONG --
+  # read docs/slope_capability_2026-08-01.PROVENANCE.md, which is why the
+  # measurement still stands (all four input SHA-256s verified). Steepest grade
+  # passing: scout 35 up / 25 down, excavator 20 / 25, hauler 20 / 25. Worst
+  # ascent 20, worst descent 25, so the ROUND-TRIP GOVERNING LIMIT is 20 deg.
+  #
+  # The reasons to distrust it are enumerated beside the copy in
+  # selene_agent/config/nav_params.yaml, which is where the planner reads its
+  # own: a fall-line figure, non-monotonic excavator and hauler ascent verdicts
+  # (both first failed at 10 and then passed at 20), one trial per cell with no
+  # repeats, and SIDE-SLOPE ROLLOVER NOT MEASURED AT ALL.
+  #
+  # THE PLANNER ENFORCES THIS PER STEP, not per cell -- against the grade along
+  # a path's own direction of travel, which is the same quantity the campaign
+  # measured. Enforcing it per cell would refuse the entire mission: the depot
+  # is unreachable from every spawn under a per-cell reading at 10, 15, 20 and
+  # 25 deg. THIS FILE'S COPY IS THE WORLD-SCOPED ONE and is read by
+  # selene_sim/test/test_mission_traversability.py, which evaluates straight-line
+  # routes over the shipped height field -- a directional measure, so it and the
+  # planner are asking the same question of the same number.
+  max_traversable_slope_deg: 20.0
   # ------------------------------------------------------------------------
   # THE ISRU PROCESSING DEPOT, ON THE CRATER FLOOR. Moved from (-30,-100) on
   # 2026-07-31. The reason is measured, from the shipped generator (seed 42):
@@ -98,16 +117,36 @@ world:
   depot:
     position: [-100, -150, 0]
     radius: 10
-  # THE RECHARGE STATION IS STILL OUTSIDE THE CRATER, and that is an open
-  # problem rather than a decision. Solar recharge needs sunlight and the PSR
-  # has none by definition, so the pad has to be on the plain — but the plain is
-  # behind the same 34-39 deg wall. A robot that descends to the ice can
-  # therefore work until its battery reaches the floor and then cannot get back.
-  # No run has hit it yet (batteries end a 20-minute mission at 73-86%), and
-  # nothing detects it. Recorded in docs/phase5_deviation_register.md.
-  # NOTE the third disagreement, unchanged and deliberate:
-  # selene_agent/config/nav_params.yaml's mission.recharge_position is
-  # (-75, -100), which is neither of these.
+  # THE RECHARGE STATION IS OUTSIDE THE CRATER, and it is no longer clear that
+  # this is a problem. The paragraph that used to be here said a robot that
+  # descended to the ice "cannot get back", because the pad is behind the same
+  # 34-39 deg wall. That claim rested on reading the slope limit as a bound on
+  # the ground a robot may cross. It is not: the planner enforces the grade
+  # ALONG a path's direction of travel, per step, and a route that crosses a
+  # 34 deg slope at 57.4 deg off its fall line climbs at 20 deg for a 1.85x
+  # length penalty.
+  #
+  # MEASURED 2026-08-01 over the 500 x 500 / 1.0 m planning lattice, 8-connected,
+  # on the collision heightmap: under the per-STEP rule at 20 deg, ALL 250,000
+  # cells are one mutually reachable component -- the depot, the pad, all ten
+  # spawns and all four deposits together. At 15 deg it is 248,606 cells and
+  # still connected. Under the per-CELL reading the depot is cut off from the
+  # pad at 10, 15, 20 and 25 deg, which is the reading the old paragraph used.
+  # So D-32's "behind an unclimbable wall" premise is DISSOLVED, and the route
+  # is a switchback rather than a wall.
+  #
+  # WHAT IS NOT DISSOLVED: nothing has driven that switchback. The connectivity
+  # above is arithmetic over a committed PNG, the 20 deg it is evaluated against
+  # was measured on the fall line only, and side-slope rollover -- the mode a
+  # switchback spends its whole length in -- was never measured. Solar recharge
+  # still needs sunlight, so the pad still cannot move into the PSR.
+  #
+  # The third disagreeing coordinate is GONE: nav_params.yaml's
+  # mission.recharge_position (-75, -100) was deleted on 2026-08-01. This
+  # position and the `recharge_pad` <include> in worlds/lunar_psr.sdf and
+  # agent_node's recharge_x/recharge_y (passed explicitly by
+  # selene_agent/launch/agent.launch.py) are now the only three statements of it
+  # and all three say (-30, -100).
   recharge_station:
     position: [-30, -100, 0]
     radius: 5

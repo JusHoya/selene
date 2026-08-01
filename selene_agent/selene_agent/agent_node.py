@@ -53,7 +53,9 @@ except ImportError:  # pragma: no cover - srv not built yet
 from selene_hal import create_hal
 from selene_agent.fsm import AgentFSM, AgentState, FSMEvent
 from selene_agent.energy_manager import EnergyManager
-from selene_agent.navigator import Navigator, OccupancyGrid
+from selene_agent.navigator import (
+    Navigator, OccupancyGrid, audit_terrain_reachability,
+)
 from selene_agent.skills import ProspectSkill, ExcavateSkill, HaulSkill, RechargeSkill
 from selene_agent.skills.prospect import ProspectPhase
 from selene_agent.skills.excavate import ExcavatePhase
@@ -119,8 +121,29 @@ class AgentNode(Node):
         self.declare_parameter("rcdl_path", "")
         self.declare_parameter("hal_backend", "gazebo")
         self.declare_parameter("nav_config_path", "")
+        # THE RECHARGE STATION, AND IT IS THE ONLY ONE NOW (deviation D-32).
+        # Three coordinates used to disagree: this pair, which is what actually
+        # reaches the agent; `mission.recharge_position: [-75, -100]` in
+        # nav_params.yaml, read by nothing and on 33.91 deg ground; and
+        # RechargeSkill's (40, 40) constructor default. The nav_params key is
+        # deleted, and this pair is the physical `recharge_pad` <include> in
+        # selene_sim/worlds/lunar_psr.sdf and `world.recharge_station.position`
+        # in selene_sim/config/world_params.yaml. It is passed explicitly by
+        # selene_agent/launch/agent.launch.py so the number is in the dict the
+        # agent is handed rather than only in this default.
         self.declare_parameter("recharge_x", -30.0)
         self.declare_parameter("recharge_y", -100.0)
+        # READ ONLY BY THE STARTUP REACHABILITY AUDIT, and that is the whole
+        # reason it is allowed to exist as a fourth statement of the depot. The
+        # audit has to name the two places the mission REQUIRES this robot to
+        # reach, and "3 connected components" is a statistic while "depot NOT
+        # REACHABLE" is an operator action. The authority remains depot_x /
+        # depot_y in selene_orchestrator/config/orchestrator_params.yaml -- what
+        # rides on TaskAssignment.depot_location and actually directs a haul --
+        # and selene_agent/test/test_startup_reachability_audit.py fails the
+        # build if this default stops agreeing with it.
+        self.declare_parameter("depot_x", -100.0)
+        self.declare_parameter("depot_y", -150.0)
         self.declare_parameter("energy_critical_threshold", 0.15)
         self.declare_parameter("energy_recharge_target", 0.90)
         # D-19. THE RECHARGE FLOOR, AND IT LIVES ON THE AGENT NOW.
@@ -154,6 +177,10 @@ class AgentNode(Node):
         nav_config_path = self.get_parameter("nav_config_path").get_parameter_value().string_value
         self._recharge_x = self.get_parameter("recharge_x").get_parameter_value().double_value
         self._recharge_y = self.get_parameter("recharge_y").get_parameter_value().double_value
+        self._depot_xy = (
+            self.get_parameter("depot_x").get_parameter_value().double_value,
+            self.get_parameter("depot_y").get_parameter_value().double_value,
+        )
         energy_critical = (
             self.get_parameter("energy_critical_threshold").get_parameter_value().double_value
         )
@@ -188,13 +215,30 @@ class AgentNode(Node):
         # selene_dashboard/src/utils/rosTopics.js PLANNED_PATH), so the
         # publisher must be owned here where robot_id is known; Navigator no
         # longer creates its own relative-name 'planned_path' publisher.
+        # THE TERRAIN COMES WITH THE GRID (deviation D-28). from_config loads
+        # the committed heightmap whenever navigation.max_traversable_slope_deg
+        # is present, and RAISES rather than continuing on flat ground if it
+        # cannot find it. That abort is deliberate and it is the loud end of the
+        # guard: an agent that came up believing every slope was zero would look
+        # identical to a working one until a hauler pinned on a wall, which is
+        # the 2026-07-31 run this whole workstream came out of.
         grid = OccupancyGrid.from_config(nav_config)
+        nav_section = nav_config.get("navigation", {})
         self._path_pub = self.create_publisher(
             Path, f"/{self._robot_id}/planned_path", 10
         )
         self._navigator = Navigator(
             self._hal, grid, ros_node=self, path_publisher=self._path_pub,
+            # Both of these reached nothing before 2026-08-01. Navigator built
+            # AStarPlanner(grid) and PathFollower(...) with no arguments, so
+            # navigation.slope_penalty_weight and the whole path_follower: block
+            # were settable and inert -- seven keys, the same defect as the bid
+            # weights in D-13.
+            slope_penalty_weight=float(
+                nav_section.get("slope_penalty_weight", 2.0)),
+            path_follower_config=nav_config.get("path_follower"),
         )
+        self._nav_grid = grid
 
         # -- Create energy manager -----------------------------------------------
         recharge_station = (self._recharge_x, self._recharge_y)
@@ -310,6 +354,17 @@ class AgentNode(Node):
         )
 
         # -- Timers --------------------------------------------------------------
+        # D-28: the startup reachability audit fires on the first tick that has
+        # a valid pose, not here. See _run_terrain_audit_once for why.
+        #
+        # SET BEFORE THE TIMER THAT READS IT, which is the D-34 lesson about
+        # _fsm.set_transition_observer applied to a flag instead of a callback:
+        # anything a timer callback touches must exist before the timer does, or
+        # the failure is an AttributeError raised inside a callback with nothing
+        # in the class to say why. _run_terrain_audit_once still reads it
+        # defensively; this ordering is what makes that check redundant rather
+        # than load-bearing.
+        self._terrain_audit_done = False
         tick_period = 1.0 / self._tick_rate
         self._tick_timer = self.create_timer(tick_period, self._tick)
         self._state_timer = self.create_timer(0.5, self._publish_state)  # 2 Hz
@@ -341,6 +396,8 @@ class AgentNode(Node):
     def _tick(self):
         dt = 1.0 / self._tick_rate
         self._tick_count += 1
+
+        self._run_terrain_audit_once()
 
         # Read current state from HAL
         try:
@@ -392,6 +449,68 @@ class AgentNode(Node):
             self._handle_returning(dt)
         elif state == AgentState.RECHARGING:
             self._handle_recharging(dt)
+
+    # ===================================================================
+    # Startup reachability audit — deviation D-28 / D-32
+    # ===================================================================
+
+    def _run_terrain_audit_once(self):
+        """Log, exactly once, what the slope limit does to this robot's world.
+
+        WHY IT IS NOT IN ``__init__``. The audit's most useful output is whether
+        THIS ROBOT'S OWN position can reach the depot and the recharge pad, and
+        at construction time this node has no position: ``GazeboOdometrySensor``
+        hands back a cached reading with ``is_valid=False`` and x, y at 0.0
+        until the first ``/odom_world`` message arrives (register D-31). An
+        audit run there would have reported reachability from the world origin
+        for every robot in the fleet -- a confident answer about a place none of
+        them is, which is D-31's defect wearing a different hat. So it waits for
+        a real fix, and the flag makes it fire once.
+
+        WHAT IT COSTS. ``per_step_components`` measured 2.0 s on the shipped
+        500 x 500 lattice, and this runs inside the 10 Hz tick callback, so that
+        tick is ~2 s late. Once, during the 5 s startup grace window, before any
+        robot has been given work. Accepted rather than hidden: moving it to a
+        thread would buy a deferred log line and a race with the first plan.
+
+        IT REPORTS AND NEVER REFUSES. No branch here can stop the agent, fault
+        it, or change a decision. If the depot is unreachable the mission is
+        already broken and the operator needs to know before a hauler sets off,
+        which is the one thing the 2026-07-31 run could not do.
+        """
+        if getattr(self, '_terrain_audit_done', False):
+            return
+        try:
+            odom = self._hal.get_sensor("odometry").read()
+        except Exception:                       # noqa: BLE001 - report-only path
+            return
+        if not odom.is_valid:
+            return
+        self._terrain_audit_done = True
+        try:
+            audit = audit_terrain_reachability(
+                self._nav_grid,
+                (odom.x, odom.y),
+                landmarks={
+                    'depot': self._depot_xy,
+                    'recharge_pad': (self._recharge_x, self._recharge_y),
+                },
+            )
+        except Exception as e:                  # noqa: BLE001 - report-only path
+            self.get_logger().warn(
+                f"[{self._robot_id}] terrain reachability audit failed: {e}")
+            return
+        audit.report(
+            lambda line: self.get_logger().info(f"[{self._robot_id}] {line}"))
+        for name in audit.unreachable_landmarks:
+            self.get_logger().error(
+                f"[{self._robot_id}] {name} at {audit.landmarks[name]} is NOT "
+                f"reachable from this robot's start position under the "
+                f"{audit.limit_deg} deg per-step slope limit. The mission "
+                f"cannot close for this robot and nothing downstream will say "
+                f"so -- a hauler sent there will pin on the slope, keep turning "
+                f"its wheels, and report success (register D-23/D-24)."
+            )
 
     # ===================================================================
     # State handlers

@@ -96,9 +96,26 @@ sleep 2
 # 5. Agent node
 echo "[5/5] Starting agent node..."
 echo ""
-echo "  Waypoints: (-60,-120) (-80,-140) (-100,-150) (-110,-170) (-90,-130)"
-echo "  Recharge station: (40, 40)"
+# THESE THREE LINES ARE PRINTED, NOT CONFIGURED, and two of them were wrong.
+#
+#   * The first waypoint was (-60,-120) until 2026-08-01. It is on 37.24 deg
+#     ground on the PSR crater rim -- somewhere a robot cannot stop to take a
+#     reading -- and AStarPlanner now refuses it as a goal. It is (-52,-114).
+#   * "Recharge station: (40, 40)" was NEVER what this script starts. (40, 40)
+#     is RechargeSkill's constructor default, which agent_node always overrides;
+#     the `ros2 run` below passes no recharge_x/recharge_y, so the node's own
+#     declared defaults apply and the robot goes to the physical pad at
+#     (-30, -100). Deviation D-32, and a banner that states a coordinate the
+#     system does not use is the same defect as a config key nothing reads.
+#
+# No recharge_x/recharge_y/depot_x/depot_y override is passed below, for the
+# same reason start_agent() in scripts/start.sh passes no bid weights (D-13):
+# the node's defaults already are these numbers, and a second copy here would be
+# one more place to keep in step.
+echo "  Waypoints: (-52,-114) (-80,-140) (-100,-150) (-110,-170) (-90,-130)"
+echo "  Recharge station: (-30, -100)"
 echo "  Battery critical: 15%"
+echo "  Max traversable slope: 20 deg, enforced per step (D-28)"
 echo ""
 echo "  Monitor: ros2 topic echo /scout_01/state"
 echo "============================================"

@@ -3,12 +3,14 @@
 WHY THIS EXISTS
 ---------------
 Until 2026-07-31 nothing in SELENE asked. ``selene_agent/config/nav_params.yaml``
-has declared ``navigation.max_traversable_slope_deg: 15.0`` since Phase 2 and
-NOTHING HAS EVER READ IT -- ``AStarPlanner`` takes ``slope_penalty_weight`` and
-multiplies it by an ``OccupancyGrid`` cost that no terrain ever writes to, so the
-planner's slope term is identically zero and the limit is decoration. That is the
-fourth instance of this repository's "wired but never called" pattern, and it is
-the one that cost a mission.
+had declared ``navigation.max_traversable_slope_deg: 15.0`` since Phase 2 and
+NOTHING READ IT -- ``AStarPlanner`` took ``slope_penalty_weight`` and multiplied
+it by an ``OccupancyGrid`` cost that no terrain ever wrote to, so the planner's
+slope term was identically zero and the limit was decoration. That was the fifth
+instance of this repository's "wired but never called" pattern (D-28), and it is
+the one that cost a mission. The planner has read it since 2026-08-01; this file
+is no longer the only reader, and it is still the only thing that checks the
+mission's DESIGNED coordinates against it.
 
 WHAT HAPPENED WITHOUT IT. Every ice deposit in ``ice_deposits.yaml`` sits inside
 the PSR crater, and until 2026-07-31 the configured depot sat outside it, so
@@ -28,16 +30,22 @@ It is an arithmetic gate on the SHIPPED, DETERMINISTIC height field
 every push, like ``test_heightmap_datum.py`` beside it and for the same reason:
 the property is invisible from every file that depends on it.
 
-It is NOT a measurement of what these vehicles can climb. The only slope on which
-one has been observed to fail is ~35 degrees; nothing has swept the range, so
-``max_traversable_slope_deg`` is a declared bound chosen to sit far under that,
-not an estimate of the true limit.
+It is NOT a measurement of what these vehicles can climb. That measurement now
+exists and is separate: a 54-trial Gazebo campaign on 2026-08-01
+(``docs/slope_capability_2026-08-01.json``, and read its ``.PROVENANCE.md``)
+put the round-trip governing limit at 20 degrees, replacing the 15.0 that was a
+declared bound chosen to sit far under a single observed ~35 degree failure.
+Every caveat on that 20 -- fall-line only, non-monotonic excavator and hauler
+ascent verdicts, one trial per cell, side-slope rollover never measured -- is
+recorded beside the constant in ``selene_agent/config/nav_params.yaml``.
 
-It is also NOT a substitute for the planner reading the terrain. A green run here
-says the mission's DESIGNED coordinates are mutually reachable; it says nothing
-about a target an operator injects, or about an extraction site the orchestrator
-picks off a resource-map cell that happens to lie on the wall. Both are still
-unguarded. See the register.
+It is also NOT a substitute for the planner reading the terrain, and the split is
+sharper than it was. This file measures STRAIGHT-LINE routes between the
+mission's DESIGNED coordinates. The planner enforces the same grade PER STEP and
+may switchback, so it can reach places no straight line here could. A green run
+says the designed coordinates are mutually reachable the obvious way; it says
+nothing about a target an operator injects. That one is guarded now, in
+``AStarPlanner.plan``, which refuses a goal on over-limit ground.
 
 WHY THE FINE FIELD AND A 3 m BASELINE
 -------------------------------------
@@ -119,15 +127,51 @@ def _max_slope_deg(field, p, q):
 
 @pytest.fixture(scope='module')
 def slope_limit_deg():
-    """``world.max_traversable_slope_deg`` -- the declared bound."""
+    """``world.max_traversable_slope_deg`` -- the world-scoped copy.
+
+    The measured limit, as of 2026-08-01. Its twin is
+    ``navigation.max_traversable_slope_deg`` in
+    ``selene_agent/config/nav_params.yaml``, which is what the planner enforces;
+    the two must agree and ``test_the_two_slope_limits_agree`` fails the build
+    if they stop.
+    """
     with open(WORLD_PARAMS) as handle:
         world = (yaml.safe_load(handle) or {}).get('world') or {}
     limit = world.get('max_traversable_slope_deg')
     assert limit is not None, (
         f'{WORLD_PARAMS} has no world.max_traversable_slope_deg. This gate is '
-        f'the only reader of a slope limit anywhere in the repository; without '
-        f'it nothing checks that the mission is physically possible.')
+        f'the only thing that checks the mission\'s designed coordinates '
+        f'against a slope limit; without it nothing says the ISRU cycle is '
+        f'physically possible.')
     return float(limit)
+
+
+def test_the_two_slope_limits_agree(slope_limit_deg):
+    """One measured number, two files, and they have to say the same thing.
+
+    ``world_params.yaml`` is what this gate evaluates the terrain against;
+    ``nav_params.yaml`` is what ``AStarPlanner`` refuses edges and goals with.
+    If they drift, this gate certifies a mission the planner will not fly -- and
+    the failure would appear as an unexplained "no path found" at run time,
+    which is the most expensive place in this project to discover a config
+    disagreement. There is no test on the agent side that can see both files,
+    because ``selene_sim``'s config is not on ``selene_agent``'s path.
+    """
+    nav_params = os.path.join(
+        _REPO, 'selene_agent', 'config', 'nav_params.yaml')
+    with open(nav_params) as handle:
+        nav = (yaml.safe_load(handle) or {}).get('navigation') or {}
+    agent_limit = nav.get('max_traversable_slope_deg')
+    assert agent_limit is not None, (
+        f'{nav_params} has no navigation.max_traversable_slope_deg. Its '
+        f'absence is not a relaxed limit, it is NO limit: '
+        f'OccupancyGrid.from_config loads the terrain only when that key is '
+        f'present, so deleting it silently turns the planner\'s slope '
+        f'enforcement off entirely (deviation D-28).')
+    assert float(agent_limit) == pytest.approx(slope_limit_deg, abs=1e-9), (
+        f'the world declares {slope_limit_deg} deg and the planner enforces '
+        f'{float(agent_limit)} deg. This gate would certify routes the agent '
+        f'refuses, or pass routes it should not.')
 
 
 @pytest.fixture(scope='module')
@@ -269,20 +313,44 @@ def test_the_crater_is_a_one_way_trip(field, slope_limit_deg):
           f'(limit {slope_limit_deg:.1f} deg)')
 
 
+#: The worst straight-line route from any 1-sigma point of any ice deposit to
+#: the depot, in degrees over a 3 m baseline, at (-72.3, -130.8). MEASURED here
+#: on the shipped seed-42 field; the deviation register quotes the same figure
+#: for the same point. Pinned as a value rather than compared against the limit
+#: -- see the test below for why that changed on 2026-08-01.
+WORST_ONE_SIGMA_ROUTE_DEG = 16.83
+
+
 def test_deposit_edges_are_reported_even_where_they_are_unreachable(
         field, deposits, configured_depot, slope_limit_deg):
     """The half of the picture the acceptance test above does not cover.
 
     An extraction site is not the deposit centre: the orchestrator picks the
     hottest cell of the fused resource map, and a gaussian deposit puts warm
-    cells up to several sigma out. Some of those lie on the crater wall.
-    Nothing in the planner knows, because nothing reads a slope limit.
+    cells up to several sigma out. This measures the worst of them.
 
-    This test does not fail on that -- it cannot, without either moving the
-    deposits or building the terrain-aware planner that is the real fix. It
-    fails only if the SHAPE of the problem changes, i.e. if the worst 1-sigma
-    route stops exceeding the limit, so the register's claim stays true or
-    somebody is told.
+    WHAT THIS TEST USED TO ASSERT, AND WHY IT CHANGED. It asserted
+    ``worst > slope_limit_deg`` -- a shape-detector for "some plausible
+    extraction site is out of reach", with its own docstring saying that if it
+    ever failed the shape had changed and somebody should be told. On
+    2026-08-01 it failed, and this is being told: the measured worst is
+    16.83 deg and the limit rose from a declared 15.0 to a MEASURED 20.0
+    (docs/slope_capability_2026-08-01.json). Every plausible extraction site now
+    has an admissible straight-line route to the depot.
+
+    THE REPLACEMENT IS STRICTLY STRONGER, not weaker. ``worst > 15`` passed for
+    any value from 15 to 90; this pins the number itself to +/-0.05 deg, so any
+    regrade of the terrain, any move of the depot and any change to the deposit
+    sigmas lands here. It also asserts the consequence -- that the worst route
+    is inside the limit -- so if the limit is ever lowered below the measured
+    worst, the mission's own coordinates stop being reachable and this fails.
+
+    WHAT IT STILL DOES NOT SAY. This is a STRAIGHT-LINE measure and the planner
+    does not have to drive straight lines: it enforces the same grade PER STEP
+    and may switchback. So a route being over the limit here would not prove the
+    site unreachable, only that the obvious route is. The reachability question
+    proper is answered by ``selene_agent``'s per-step component labelling, and
+    the answer at 20 deg is that all 250,000 lattice cells are one component.
     """
     worst = 0.0
     worst_at = None
@@ -298,7 +366,14 @@ def test_deposit_edges_are_reported_even_where_they_are_unreachable(
                     worst, worst_at = slope, point
     print(f'\nworst 1-sigma route to the depot: {worst:.2f} deg at '
           f'({worst_at[0]:.1f}, {worst_at[1]:.1f}), limit {slope_limit_deg:.1f} deg')
-    assert worst > slope_limit_deg, (
-        f'the worst 1-sigma route is now {worst:.2f} deg, inside the limit. '
-        f'Every plausible extraction site is reachable, which is better than '
-        f'the register currently says. Update it and delete this test.')
+    assert worst == pytest.approx(WORST_ONE_SIGMA_ROUTE_DEG, abs=0.05), (
+        f'the worst 1-sigma route to the depot is now {worst:.2f} deg at '
+        f'({worst_at[0]:.1f}, {worst_at[1]:.1f}); it was '
+        f'{WORST_ONE_SIGMA_ROUTE_DEG:.2f} deg at (-72.3, -130.8). The terrain, '
+        f'the depot or the deposits changed.')
+    assert worst <= slope_limit_deg, (
+        f'the worst 1-sigma route is {worst:.2f} deg and the limit has fallen '
+        f'to {slope_limit_deg:.1f}. Extraction sites the orchestrator can pick '
+        f'off its own resource map are outside what the fleet was measured to '
+        f'climb, and the straight-line route to the depot is refused. Either '
+        f'the limit is wrong or the deposits have to move.')

@@ -1,0 +1,268 @@
+  spawn models: 6 <sensor> element(s) removed -> /tmp/selene_slope_campaign.19452/models_nosensors
+                (rendering-only; see the SENSOR-STRIPPED note in this script)
+  planned 45 of 54 trials (9 with no suitable site)
+  terrain: lunar_surface_513.png for site choice, lunar_collision_129.png for spawn height
+  gentlest crater exit over 72 azimuths: 34.03 deg (2-D native; the gate's radial method gives 34.09)
+  NO SITE for 40 deg ascent: 134 candidate cells, 126 rejected on corridor spread
+  NO SITE for 45 deg ascent: 34 candidate cells, 9 rejected on corridor spread
+  NO SITE for 45 deg descent: 34 candidate cells, 9 rejected on corridor spread
+
+SELENE slope capability campaign
+  workspace:  /home/hoyer/selene_ws
+  world:      /home/hoyer/selene_ws/install/selene_sim/share/selene_sim/worlds/lunar_psr.sdf
+  robots:     scout excavator hauler
+  grades:     5 10 15 20 25 30 35 40 45  (degrees)
+  directions: ascent descent
+  command:    linear.x=0.4 for 12s of SIM time
+  artefact:   /home/hoyer/selene_runs/slope_capability.json
+  trials:     54  (budget ~40 s each plus ~35 s per robot type)
+
+
+--- bringing up lunar_psr for 'scout' ---
+[1/54] scout_g05_up: target 5.0 deg ascent at (-224.500000, 93.500000) yaw 2.944351184
+    site 4.9989 deg, corridor 4.7246..5.3122 deg (mean 5.1243), spawn z 0.553951
+[2/54] scout_g05_dn: target 5.0 deg descent at (76.500000, -70.500000) yaw 3.019260029
+    site 5.0011 deg, corridor 4.7310..5.0011 deg (mean 4.9069), spawn z 0.542118
+[3/54] scout_g10_up: target 10.0 deg ascent at (171.500000, -9.500000) yaw 0.020440972
+    site 9.9911 deg, corridor 9.5731..9.9911 deg (mean 9.7122), spawn z 2.037873
+[4/54] scout_g10_dn: target 10.0 deg descent at (191.500000, -138.500000) yaw 2.987515299
+    site 10.0062 deg, corridor 9.7808..10.0320 deg (mean 9.8832), spawn z 5.223086
+[5/54] scout_g15_up: target 15.0 deg ascent at (185.500000, 165.500000) yaw 0.247151954
+    site 15.0052 deg, corridor 15.0052..15.0832 deg (mean 15.0557), spawn z 4.934341
+[6/54] scout_g15_dn: target 15.0 deg descent at (191.500000, 94.500000) yaw -3.132199706
+    site 14.9965 deg, corridor 14.8314..14.9965 deg (mean 14.8960), spawn z 5.591905
+[7/54] scout_g20_up: target 20.0 deg ascent at (220.500000, 233.500000) yaw 3.091083719
+    site 20.0007 deg, corridor 20.0007..20.3228 deg (mean 20.2365), spawn z 4.010680
+[8/54] scout_g20_dn: target 20.0 deg descent at (209.500000, -215.500000) yaw -0.091078784
+    site 19.9517 deg, corridor 19.4719..20.3525 deg (mean 20.0641), spawn z 5.624860
+[9/54] scout_g25_up: target 25.0 deg ascent at (-73.500000, -182.500000) yaw -0.970692612
+    site 24.8915 deg, corridor 24.8915..29.1542 deg (mean 27.1205), spawn z -8.693277
+[10/54] scout_g25_dn: target 25.0 deg descent at (-68.500000, -124.500000) yaw -2.448092199
+    site 25.0169 deg, corridor 20.6756..25.0169 deg (mean 22.8438), spawn z -8.659272
+[11/54] scout_g30_up: target 30.0 deg ascent at (-129.500000, -113.500000) yaw 2.349687412
+    site 29.9010 deg, corridor 29.9010..32.7904 deg (mean 31.3672), spawn z -5.655793
+[12/54] scout_g30_dn: target 30.0 deg descent at (-153.500000, -171.500000) yaw 0.418974323
+    site 29.8843 deg, corridor 29.8843..33.7991 deg (mean 32.6188), spawn z 1.205887
+[13/54] scout_g35_up: target 35.0 deg ascent at (-48.500000, -143.500000) yaw 0.203947538
+    site 34.8689 deg, corridor 34.8689..35.4583 deg (mean 35.2455), spawn z -2.403845
+[14/54] scout_g35_dn: target 35.0 deg descent at (-155.500000, -139.500000) yaw -0.140822524
+    site 35.0916 deg, corridor 35.0553..35.4490 deg (mean 35.3118), spawn z 2.063186
+[15/54] scout_g40_up: NO SITE - target 40.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+[16/54] scout_g40_dn: target 40.0 deg descent at (71.500000, 46.500000) yaw 0.968656950
+    site 40.8015 deg, corridor 33.2396..44.8682 deg (mean 40.7401), spawn z 0.206304
+[17/54] scout_g45_up: NO SITE - target 45.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+[18/54] scout_g45_dn: NO SITE - target 45.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+
+--- bringing up lunar_psr for 'excavator' ---
+[19/54] excavator_g05_up: target 5.0 deg ascent at (-224.500000, 93.500000) yaw 2.944351184
+    site 4.9989 deg, corridor 4.7246..5.3122 deg (mean 5.1243), spawn z 0.563249
+[20/54] excavator_g05_dn: target 5.0 deg descent at (76.500000, -70.500000) yaw 3.019260029
+    site 5.0011 deg, corridor 4.7310..5.0011 deg (mean 4.9069), spawn z 0.550868
+[21/54] excavator_g10_up: target 10.0 deg ascent at (171.500000, -9.500000) yaw 0.020440972
+    site 9.9911 deg, corridor 9.5731..9.9911 deg (mean 9.7122), spawn z 2.055489
+[22/54] excavator_g10_dn: target 10.0 deg descent at (191.500000, -138.500000) yaw 2.987515299
+    site 10.0062 deg, corridor 9.7808..10.0320 deg (mean 9.8832), spawn z 5.240776
+[23/54] excavator_g15_up: target 15.0 deg ascent at (185.500000, 165.500000) yaw 0.247151954
+    site 15.0052 deg, corridor 15.0052..15.0832 deg (mean 15.0557), spawn z 4.961291
+[24/54] excavator_g15_dn: target 15.0 deg descent at (191.500000, 94.500000) yaw -3.132199706
+    site 14.9965 deg, corridor 14.8314..14.9965 deg (mean 14.8960), spawn z 5.618693
+[25/54] excavator_g20_up: target 20.0 deg ascent at (220.500000, 233.500000) yaw 3.091083719
+    site 20.0007 deg, corridor 20.0007..20.3228 deg (mean 20.2365), spawn z 4.047717
+[26/54] excavator_g20_dn: target 20.0 deg descent at (209.500000, -215.500000) yaw -0.091078784
+    site 19.9517 deg, corridor 19.4719..20.3525 deg (mean 20.0641), spawn z 5.661955
+[27/54] excavator_g25_up: target 25.0 deg ascent at (-73.500000, -182.500000) yaw -0.970692612
+    site 24.8915 deg, corridor 24.8915..29.1542 deg (mean 27.1205), spawn z -8.637493
+[28/54] excavator_g25_dn: target 25.0 deg descent at (-68.500000, -124.500000) yaw -2.448092199
+    site 25.0169 deg, corridor 20.6756..25.0169 deg (mean 22.8438), spawn z -8.612605
+[29/54] excavator_g30_up: target 30.0 deg ascent at (-129.500000, -113.500000) yaw 2.349687412
+    site 29.9010 deg, corridor 29.9010..32.7904 deg (mean 31.3672), spawn z -5.591372
+[30/54] excavator_g30_dn: target 30.0 deg descent at (-153.500000, -171.500000) yaw 0.418974323
+    site 29.8843 deg, corridor 29.8843..33.7991 deg (mean 32.6188), spawn z 1.272829
+[31/54] excavator_g35_up: target 35.0 deg ascent at (-48.500000, -143.500000) yaw 0.203947538
+    site 34.8689 deg, corridor 34.8689..35.4583 deg (mean 35.2455), spawn z -2.332626
+[32/54] excavator_g35_dn: target 35.0 deg descent at (-155.500000, -139.500000) yaw -0.140822524
+    site 35.0916 deg, corridor 35.0553..35.4490 deg (mean 35.3118), spawn z 2.134381
+[33/54] excavator_g40_up: NO SITE - target 40.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+[34/54] excavator_g40_dn: target 40.0 deg descent at (71.500000, 46.500000) yaw 0.968656950
+    site 40.8015 deg, corridor 33.2396..44.8682 deg (mean 40.7401), spawn z 0.305845
+[35/54] excavator_g45_up: NO SITE - target 45.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+[36/54] excavator_g45_dn: NO SITE - target 45.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+
+--- bringing up lunar_psr for 'hauler' ---
+[37/54] hauler_g05_up: target 5.0 deg ascent at (-224.500000, 93.500000) yaw 2.944351184
+    site 4.9989 deg, corridor 4.7246..5.3122 deg (mean 5.1243), spawn z 0.567898
+[38/54] hauler_g05_dn: target 5.0 deg descent at (76.500000, -70.500000) yaw 3.019260029
+    site 5.0011 deg, corridor 4.7310..5.0011 deg (mean 4.9069), spawn z 0.555244
+[39/54] hauler_g10_up: target 10.0 deg ascent at (171.500000, -9.500000) yaw 0.020440972
+    site 9.9911 deg, corridor 9.5731..9.9911 deg (mean 9.7122), spawn z 2.064297
+[40/54] hauler_g10_dn: target 10.0 deg descent at (191.500000, -138.500000) yaw 2.987515299
+    site 10.0062 deg, corridor 9.7808..10.0320 deg (mean 9.8832), spawn z 5.249621
+[41/54] hauler_g15_up: target 15.0 deg ascent at (185.500000, 165.500000) yaw 0.247151954
+    site 15.0052 deg, corridor 15.0052..15.0832 deg (mean 15.0557), spawn z 4.974767
+[42/54] hauler_g15_dn: target 15.0 deg descent at (191.500000, 94.500000) yaw -3.132199706
+    site 14.9965 deg, corridor 14.8314..14.9965 deg (mean 14.8960), spawn z 5.632087
+[43/54] hauler_g20_up: target 20.0 deg ascent at (220.500000, 233.500000) yaw 3.091083719
+    site 20.0007 deg, corridor 20.0007..20.3228 deg (mean 20.2365), spawn z 4.066235
+[44/54] hauler_g20_dn: target 20.0 deg descent at (209.500000, -215.500000) yaw -0.091078784
+    site 19.9517 deg, corridor 19.4719..20.3525 deg (mean 20.0641), spawn z 5.680503
+[45/54] hauler_g25_up: target 25.0 deg ascent at (-73.500000, -182.500000) yaw -0.970692612
+    site 24.8915 deg, corridor 24.8915..29.1542 deg (mean 27.1205), spawn z -8.609602
+[46/54] hauler_g25_dn: target 25.0 deg descent at (-68.500000, -124.500000) yaw -2.448092199
+    site 25.0169 deg, corridor 20.6756..25.0169 deg (mean 22.8438), spawn z -8.589272
+[47/54] hauler_g30_up: target 30.0 deg ascent at (-129.500000, -113.500000) yaw 2.349687412
+    site 29.9010 deg, corridor 29.9010..32.7904 deg (mean 31.3672), spawn z -5.559161
+[48/54] hauler_g30_dn: target 30.0 deg descent at (-153.500000, -171.500000) yaw 0.418974323
+    site 29.8843 deg, corridor 29.8843..33.7991 deg (mean 32.6188), spawn z 1.306300
+[49/54] hauler_g35_up: target 35.0 deg ascent at (-48.500000, -143.500000) yaw 0.203947538
+    site 34.8689 deg, corridor 34.8689..35.4583 deg (mean 35.2455), spawn z -2.297016
+[50/54] hauler_g35_dn: target 35.0 deg descent at (-155.500000, -139.500000) yaw -0.140822524
+    site 35.0916 deg, corridor 35.0553..35.4490 deg (mean 35.3118), spawn z 2.169979
+[51/54] hauler_g40_up: NO SITE - target 40.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+[52/54] hauler_g40_dn: target 40.0 deg descent at (71.500000, 46.500000) yaw 0.968656950
+    site 40.8015 deg, corridor 33.2396..44.8682 deg (mean 40.7401), spawn z 0.355615
+[53/54] hauler_g45_up: NO SITE - target 45.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+[54/54] hauler_g45_dn: NO SITE - target 45.0 deg is not available on this terrain under the corridor and separation rules. NOT TESTED.
+
+trial                 tgt   site      corridor    cmd   along   frac   slip%      dz  outcome
+---------------------------------------------------------------------------------------------
+scout_g05_up            5    5.0       4.7-5.3   5.50   5.409   0.98    -0.7   0.476  PASS
+scout_g05_dn            5    5.0       4.7-5.0   5.42   5.309   0.98    -0.9  -0.516  PASS
+scout_g10_up           10   10.0      9.6-10.0   5.50   5.318   0.97     0.5   0.908  PASS
+scout_g10_dn           10   10.0      9.8-10.0   5.50   5.738   1.04     8.4  -1.021  PASS
+scout_g15_up           15   15.0     15.0-15.1   5.49   4.518   0.82    27.8   1.246  BURIED
+scout_g15_dn           15   15.0     14.8-15.0   5.49   5.226   0.95     1.6  -1.435  BURIED
+scout_g20_up           20   20.0     20.0-20.3   5.53   5.094   0.92     5.3   1.868  PASS
+scout_g20_dn           20   20.0     19.5-20.4   5.50   5.155   0.94     3.5  -1.755  PASS
+scout_g25_up           25   24.9     24.9-29.2   5.46   4.699   0.86    11.4   2.477  PASS
+scout_g25_dn           25   25.0     20.7-25.0   5.50   5.077   0.92     5.0  -2.018  PASS
+scout_g30_up           30   29.9     29.9-32.8   5.45   4.430   0.81    16.6   2.754  PASS
+scout_g30_dn           30   29.9     29.9-33.8   5.45   4.995   0.92     5.8  -2.681  BURIED
+scout_g35_up           35   34.9     34.9-35.5   5.45   4.015   0.74    22.5   2.813  PASS
+scout_g35_dn           35   35.1     35.1-35.4   5.41   4.583   0.85    11.8  -3.229  BURIED
+scout_g40_up           40      -                  nan     nan    nan     nan     nan  NO_SITE
+scout_g40_dn           40   40.8     33.2-44.9   5.45   0.000   0.00   100.0  -0.000  TUMBLED
+scout_g45_up           45      -                  nan     nan    nan     nan     nan  NO_SITE
+scout_g45_dn           45      -                  nan     nan    nan     nan     nan  NO_SITE
+excavator_g05_up        5    5.0       4.7-5.3   5.49   5.203   0.95     0.6   0.460  PASS
+excavator_g05_dn        5    5.0       4.7-5.0   5.49   5.339   0.97    -2.1  -0.518  PASS
+excavator_g10_up       10   10.0      9.6-10.0   5.45   2.673   0.49    48.0   0.448  FAIL
+excavator_g10_dn       10   10.0      9.8-10.0   5.45   5.418   0.99    -4.4  -0.971  PASS
+excavator_g15_up       15   15.0     15.0-15.1   5.42 -10.806  -2.00  -110.6  -1.958  FAIL
+excavator_g15_dn       15   15.0     14.8-15.0   5.45   5.124   0.94     1.1  -1.359  PASS
+excavator_g20_up       20   20.0     20.0-20.3   5.45   4.761   0.87     8.3   1.746  PASS
+excavator_g20_dn       20   20.0     19.5-20.4   5.50   5.229   0.95    -0.0  -1.746  PASS
+excavator_g25_up       25   24.9     24.9-29.2   5.45   0.042   0.01    96.7   0.020  FAIL
+excavator_g25_dn       25   25.0     20.7-25.0   5.49   4.998   0.91     4.5  -1.905  PASS
+excavator_g30_up       30   29.9     29.9-32.8   5.49   0.095   0.02    98.1   0.055  FAIL
+excavator_g30_dn       30   29.9     29.9-33.8   5.41   6.157   1.14   -30.7  -3.466  FAIL
+excavator_g35_up       35   34.9     34.9-35.5   5.41  -0.968  -0.18    79.9  -0.646  FAIL
+excavator_g35_dn       35   35.1     35.1-35.4   5.45  16.388   3.00  -247.9  -3.671  FAIL
+excavator_g40_up       40      -                  nan     nan    nan     nan     nan  NO_SITE
+excavator_g40_dn       40   40.8     33.2-44.9   5.45   0.004   0.00    99.9  -0.002  TUMBLED
+excavator_g45_up       45      -                  nan     nan    nan     nan     nan  NO_SITE
+excavator_g45_dn       45      -                  nan     nan    nan     nan     nan  NO_SITE
+hauler_g05_up           5    5.0       4.7-5.3   5.45   5.173   0.95     0.3   0.459  PASS
+hauler_g05_dn           5    5.0       4.7-5.0   5.49   5.342   0.97    -2.3  -0.519  PASS
+hauler_g10_up          10   10.0      9.6-10.0   5.42   2.694   0.50    47.5   0.454  FAIL
+hauler_g10_dn          10   10.0      9.8-10.0   5.53   5.732   1.04    -8.7  -1.030  PASS
+hauler_g15_up          15   15.0     15.0-15.1   5.46   0.448   0.08    91.4   0.120  FAIL
+hauler_g15_dn          15   15.0     14.8-15.0   5.48   5.123   0.93     1.9  -1.430  PASS
+hauler_g20_up          20   20.0     20.0-20.3   5.49   4.805   0.88     7.3   1.743  PASS
+hauler_g20_dn          20   20.0     19.5-20.4   5.45   5.191   0.95     0.1  -1.749  PASS
+hauler_g25_up          25   24.9     24.9-29.2   5.41   0.415   0.08    91.7   0.207  FAIL
+hauler_g25_dn          25   25.0     20.7-25.0   5.49   5.052   0.92     4.6  -1.914  PASS
+hauler_g30_up          30   29.9     29.9-32.8   5.41   0.075   0.01    98.4   0.045  FAIL
+hauler_g30_dn          30   29.9     29.9-33.8   5.46   9.089   1.66   -74.8  -6.037  FAIL
+hauler_g35_up          35   34.9     34.9-35.5   5.46   0.080   0.01    89.5   0.084  FAIL
+hauler_g35_dn          35   35.1     35.1-35.4   5.41  15.601   2.88  -218.0  -3.729  FAIL
+hauler_g40_up          40      -                  nan     nan    nan     nan     nan  NO_SITE
+hauler_g40_dn          40   40.8     33.2-44.9   5.51  -1.377  -0.25    57.0  -0.190  FAIL
+hauler_g45_up          45      -                  nan     nan    nan     nan     nan  NO_SITE
+hauler_g45_dn          45      -                  nan     nan    nan     nan     nan  NO_SITE
+
+WHY, for every trial that did not simply pass:
+  scout_g15_up         BURIED: settled z 4.9422 is above spawn z 4.9343; the body was created inside the collision surface. Apparatus failure -- raise SPAWN_CLEARANCE_M and re-run this trial.
+  scout_g15_dn         BURIED: settled z 5.5998 is above spawn z 5.5919; the body was created inside the collision surface. Apparatus failure -- raise SPAWN_CLEARANCE_M and re-run this trial.
+  scout_g30_dn         BURIED: settled z 1.2131 is above spawn z 1.2059; the body was created inside the collision surface. Apparatus failure -- raise SPAWN_CLEARANCE_M and re-run this trial.
+  scout_g35_dn         BURIED: settled z 2.0703 is above spawn z 2.0632; the body was created inside the collision surface. Apparatus failure -- raise SPAWN_CLEARANCE_M and re-run this trial.
+  scout_g40_up         NO_SITE: 134 cells lie within 1.0 deg of 40.0 deg (nearest grade on the map 39.99 deg), but none gave a usable site: 126 did not hold the grade to 7.0 deg over the 4.80 m corridor (tightest was 14.36 deg), 0 ran outside the 10.0 m terrain margin, 8 were within 25.0 m of another site
+  scout_g40_dn         TUMBLED: final roll +3.033 rad; the vehicle turned over. Recorded separately from a traction failure because it is a different limit and this campaign does not measure the side-slope one.
+  scout_g45_up         NO_SITE: 34 cells lie within 1.0 deg of 45.0 deg (nearest grade on the map 45.03 deg), but none gave a usable site: 9 did not hold the grade to 7.0 deg over the 4.80 m corridor (tightest was 37.79 deg), 0 ran outside the 10.0 m terrain margin, 25 were within 25.0 m of another site
+  scout_g45_dn         NO_SITE: 34 cells lie within 1.0 deg of 45.0 deg (nearest grade on the map 45.03 deg), but none gave a usable site: 9 did not hold the grade to 7.0 deg over the 4.80 m corridor (tightest was 15.69 deg), 0 ran outside the 10.0 m terrain margin, 25 were within 25.0 m of another site
+  excavator_g10_up     FAIL: along-heading 2.673 m is under 70% of the commanded 5.452 m; slip 48.0% exceeds 25%
+  excavator_g15_up     FAIL: along-heading -10.806 m is under 70% of the commanded 5.416 m; world displacement 10.853 m exceeds 115% of command -- sliding, not driving; slip -110.6% exceeds 25%
+  excavator_g25_up     FAIL: along-heading 0.042 m is under 70% of the commanded 5.451 m; slip 96.7% exceeds 25%
+  excavator_g30_up     FAIL: along-heading 0.095 m is under 70% of the commanded 5.491 m; slip 98.1% exceeds 25%
+  excavator_g30_dn     FAIL: world displacement 6.739 m exceeds 115% of command -- sliding, not driving; slip -30.7% exceeds 25%
+  excavator_g35_up     FAIL: along-heading -0.968 m is under 70% of the commanded 5.414 m; slip 79.9% exceeds 25%
+  excavator_g35_dn     FAIL: world displacement 17.959 m exceeds 115% of command -- sliding, not driving; slip -247.9% exceeds 25%
+  excavator_g40_up     NO_SITE: as above
+  excavator_g40_dn     TUMBLED: final roll -3.140 rad; the vehicle turned over. Recorded separately from a traction failure because it is a different limit and this campaign does not measure the side-slope one.
+  excavator_g45_up     NO_SITE: as above
+  excavator_g45_dn     NO_SITE: as above
+  hauler_g10_up        FAIL: along-heading 2.694 m is under 70% of the commanded 5.422 m; slip 47.5% exceeds 25%
+  hauler_g15_up        FAIL: along-heading 0.448 m is under 70% of the commanded 5.455 m; slip 91.4% exceeds 25%
+  hauler_g25_up        FAIL: along-heading 0.415 m is under 70% of the commanded 5.410 m; slip 91.7% exceeds 25%
+  hauler_g30_up        FAIL: along-heading 0.075 m is under 70% of the commanded 5.410 m; slip 98.4% exceeds 25%
+  hauler_g30_dn        FAIL: world displacement 9.091 m exceeds 115% of command -- sliding, not driving; slip -74.8% exceeds 25%
+  hauler_g35_up        FAIL: along-heading 0.080 m is under 70% of the commanded 5.456 m; slip 89.5% exceeds 25%
+  hauler_g35_dn        FAIL: world displacement 16.440 m exceeds 115% of command -- sliding, not driving; slip -218.0% exceeds 25%
+  hauler_g40_up        NO_SITE: as above
+  hauler_g40_dn        FAIL: along-heading -1.377 m is under 70% of the commanded 5.514 m; slip 57.0% exceeds 25%
+  hauler_g45_up        NO_SITE: as above
+  hauler_g45_dn        NO_SITE: as above
+
+==============================================================================
+VERDICT -- steepest grade still achieving 70% of command at under 25% slip
+==============================================================================
+  excavator/ascent       passed up to     20 deg   first failure at     10 deg
+                         NOT MEASURED at: 40, 45 deg -- absent from the sweep, not passed
+                         *** NON-MONOTONIC: a steeper grade passed than one that failed. Treat the FIRST failure as the limit.
+  excavator/descent      passed up to     25 deg   first failure at     30 deg
+                         NOT MEASURED at: 40, 45 deg -- absent from the sweep, not passed
+  hauler/ascent          passed up to     20 deg   first failure at     10 deg
+                         NOT MEASURED at: 40, 45 deg -- absent from the sweep, not passed
+                         *** NON-MONOTONIC: a steeper grade passed than one that failed. Treat the FIRST failure as the limit.
+  hauler/descent         passed up to     25 deg   first failure at     30 deg
+                         NOT MEASURED at: 45 deg -- absent from the sweep, not passed
+  scout/ascent           passed up to     35 deg   first failure at  none seen
+                         NOT MEASURED at: 15, 40, 45 deg -- absent from the sweep, not passed
+  scout/descent          passed up to     25 deg   first failure at  none seen
+                         NOT MEASURED at: 15, 30, 35, 40, 45 deg -- absent from the sweep, not passed
+
+  worst case across the measured vehicles, ascent: 20 deg
+  worst case across the measured vehicles, descent: 25 deg
+
+  A MISSION THAT NEEDS ROUND TRIPS IS GOVERNED BY THE MORE
+  RESTRICTIVE OF THE TWO DIRECTIONS: 20 deg.
+  Ascent and descent are not the same experiment -- a vehicle that
+  climbs a grade under power can still lose it coming down, and the
+  crater the mission has to enter must also be left.
+
+  The gentlest exit from the PSR crater is 34.03 deg (72 azimuths).
+  THE MEASURED CAPABILITY IS BELOW THAT. A limit of 20 deg refuses every route between the plain and
+  the crater basin, which is where the depot and all four ice
+  deposits are. Enforcing this measurement would break the mission:
+  the fix is the terrain or the depot, NOT a larger constant.
+
+WHAT THIS CAMPAIGN DID NOT MEASURE
+  - The spawned model is a SENSOR-STRIPPED copy: every <sensor> element is removed before spawning, because gz sim -s segfaults in Ogre2DepthCamera::CreateDepthTexture on a host without a real GL context (MEASURED on WSL2 / gz-sim 8.11.0, 2026-08-01). The sensors are massless, declare no <collision>, and have zero subscribers repo-wide, so this cannot affect wheel-terrain contact -- but the vehicle measured is not byte-identical to the vehicle the mission flies, and the stripped SDFs are kept in the work directory so the substitution can be diffed.
+  - One straight run from rest of about 4.8 m, with an EMPTY vehicle. Sustained climbing, restarting on the grade and climbing under load are not measured.
+  - Straight up or straight down the local gradient only. The side-slope rollover limit -- usually the binding one on a real vehicle -- is NOT measured.
+  - No turning on the slope. check_drive.sh's turn assertion is deliberately not reproduced: a skid-steer scrubs badly and its yaw response says nothing about climbing.
+  - gz-sim/ODE physics with the shipped models' own <surface> friction. The result transfers to this simulation and to nothing else.
+  - Sites are chosen on the 513-sample VISUAL heightmap; the robot contacts the 129-sample COLLISION decimation, which can only be smoother. The grade actually felt is therefore at most the grade reported.
+  - Spawn height is computed from the collision PNG plus a 0.30 m clearance and a chassis-length slope allowance. selene_sim/config/spawn_positions.yaml:78-84 records that a bilinear PNG read under-predicts the probe-measured surface by 0.026 m on flat ground and 0.209 m on the steepest surveyed point; this campaign cannot run a probe and does not correct for it. A burial is reported as an APPARATUS failure, never as a grade the vehicle could not climb.
+  - Slope figures for site selection use terrain_slope's NATIVE sampling. The same points read up to 0.6 deg differently through the planning lattice, and up to 8.8 deg differently at the worst point on the map. A planner enforcing a limit acts on the lattice, not on these numbers.
+  - One trial per (robot, grade, direction). No repeats, so run-to-run spread is unmeasured and no confidence interval can be quoted.
+  - use_sim_time is set by nothing in SELENE. This script reads gz sim_time directly from /world/<world>/stats and does not depend on it.
+
+  artefact: /home/hoyer/selene_runs/slope_capability.json  (84962 bytes)
+  counts:   {'buried': 4, 'fail': 15, 'no_site': 9, 'pass': 24, 'tumbled': 2}
+
+Gazebo log:  /tmp/selene_slope_campaign.19452/gz_server.log
+Plan:        /tmp/selene_slope_campaign.19452/plan.json
+Raw records: /tmp/selene_slope_campaign.19452/records.tsv
+
+EXIT 1: at least one requested (robot, grade, direction) was NOT
+        measured. A measurement that was not taken is not a pass.

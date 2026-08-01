@@ -16,6 +16,29 @@
   <depend>builtin_interfaces</depend>
   <depend>lifecycle_msgs</depend>
 
+  <!--
+    RUNTIME DATA DEPENDENCY ON selene_sim, DELIBERATELY NOT DECLARED.
+
+    As of 2026-08-01 (deviation D-28) `agent_node` reads the committed lunar
+    heightmap at start-up: `OccupancyGrid.from_config` loads it through
+    `selene_agent/selene_agent/terrain_slope.py` so the planner can enforce
+    `navigation.max_traversable_slope_deg`. The data lives in
+    `share/selene_sim/models/lunar_terrain/heightmaps`.
+
+    It is NOT an <exec_depend> because the reverse edge already exists:
+    `selene_sim/launch/unified_sim.launch.py` resolves
+    `FindPackageShare('selene_agent')` to start this package's agents. Declaring
+    selene_agent -> selene_sim as well would make that pair a cycle. The data
+    dependency is one-way and real; the PACKAGE dependency would not be.
+
+    How it is resolved, most explicit first (see `terrain_slope.find_heightmap_dir`):
+    $SELENE_TERRAIN_HEIGHTMAPS, then selene_sim's ament index entry, then a walk
+    up from the source checkout. If none of them holds the data the agent raises
+    `TerrainDataUnavailable` and does not start — chosen over continuing on
+    assumed-flat ground, which is D-28 itself and is invisible until a hauler
+    pins on a wall.
+  -->
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

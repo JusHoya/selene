@@ -195,6 +195,67 @@ PLAN_TSV="$WORKDIR/plan.tsv"
 RECORDS="$WORKDIR/records.tsv"
 : > "$RECORDS"
 
+# ---------------------------------------------------------------------------
+# SENSOR-STRIPPED SPAWN MODELS, and why this campaign needs them.
+#
+# MEASURED on this host, 2026-08-01, ROS 2 Jazzy / gz-sim 8.11.0 on WSL2: a
+# server-only `gz sim -s` segfaulted partway through the first robot's trials,
+# every trial after it recording "no pose after spawn". The stack is entirely in
+# the RENDERING path and has nothing to do with locomotion or terrain:
+#
+#   Sensors::CreateSensor -> DepthCameraSensor::SetScene
+#     -> Ogre2DepthCamera::CreateDepthTexture -> CompositorManager2::addWorkspace
+#     -> Ogre2DepthCamera::CreateWorkspaceInstance
+#     -> Ogre::HlmsDatablock::_unlinkRenderable -> SIGSEGV
+#
+# `gz sim -s` still loads the sensors system, and each robot model declares a
+# `depth_camera` (models/<type>/model.sdf:46). Creating its depth texture needs a
+# real GL context; under WSL2's software rasteriser Ogre2 dies. This is NOT the
+# D-37 ODE abort -- that one aborts in dxHashSpace::collide with an assertion,
+# and this one segfaults in Ogre with no physics on the stack at all. Do not
+# conflate them in the register.
+#
+# So spawn a copy with every <sensor> element removed. This is safe for what this
+# campaign measures and the reasoning is worth stating rather than assuming:
+# the sensors are massless, they declare no <collision>, and neither is consumed
+# by anything -- `sensors/depth` and `sensors/imu` are bridged by
+# selene_sim/launch/spawn_robot.launch.py:58-59 and have ZERO subscribers
+# repo-wide, which is the register's own "Open items carried forward" item 11.
+# Removing them cannot change wheel-terrain contact, mass, inertia or friction,
+# which are the only things a slope measurement depends on.
+#
+# It is DISCLOSED in the limitations block and in the JSON artefact, because a
+# campaign that quietly measures a different model than the one the mission flies
+# is exactly the kind of undisclosed substitution this repository exists to
+# refuse. The stripped SDFs are kept in the work directory so the substitution
+# can be diffed after the fact.
+SPAWN_MODELS="$WORKDIR/models_nosensors"
+mkdir -p "$SPAWN_MODELS"
+strip_sensors() {
+    # $1 = model directory name (scout / excavator / hauler)
+    local src="$MODELS/$1/model.sdf"
+    local dst="$SPAWN_MODELS/$1.sdf"
+    python3 - "$src" "$dst" <<'PYSTRIP'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding='utf-8') as fh:
+    text = fh.read()
+stripped, n = re.subn(r'[ \t]*<sensor\b.*?</sensor>\s*', '', text, flags=re.S)
+with open(dst, 'w', encoding='utf-8', newline='') as fh:
+    fh.write(stripped)
+print(n)
+PYSTRIP
+}
+SENSORS_STRIPPED=0
+for _md in scout excavator hauler; do
+    if [ -f "$MODELS/$_md/model.sdf" ]; then
+        _n="$(strip_sensors "$_md")"
+        SENSORS_STRIPPED=$(( SENSORS_STRIPPED + _n ))
+    fi
+done
+echo "  spawn models: $SENSORS_STRIPPED <sensor> element(s) removed -> $SPAWN_MODELS"
+echo "                (rendering-only; see the SENSOR-STRIPPED note in this script)"
+
 GIT_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 GIT_DIRTY="clean"
 if [ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; then
@@ -690,7 +751,12 @@ while IFS=$'\t' read -r TID ROBOT MODEL_DIR TARGET DIRECTION STATUS SX SY SZ \
         CURRENT_ROBOT="$ROBOT"
     fi
 
-    MODEL_SDF="$MODELS/$MODEL_DIR/model.sdf"
+    # The sensor-stripped copy, not models/<type>/model.sdf -- see the
+    # SENSOR-STRIPPED note near the top. Falls back to the real model if the
+    # strip did not produce a file, so a stripping failure is loud (the Ogre
+    # segfault returns) rather than silently measuring nothing.
+    MODEL_SDF="$SPAWN_MODELS/$MODEL_DIR.sdf"
+    [ -f "$MODEL_SDF" ] || MODEL_SDF="$MODELS/$MODEL_DIR/model.sdf"
     ENTITY="probe_$TID"
     printf '[%s/%s] %s: target %s deg %s at (%s, %s) yaw %s\n' \
         "$TRIAL_N" "$TRIAL_TOTAL" "$TID" "$TARGET" "$DIRECTION" "$SX" "$SY" "$YAW"
@@ -1009,6 +1075,14 @@ elif governing:
 
 # ------------------------------------------------------------ disclosures
 limitations = [
+    'The spawned model is a SENSOR-STRIPPED copy: every <sensor> element is '
+    'removed before spawning, because gz sim -s segfaults in '
+    'Ogre2DepthCamera::CreateDepthTexture on a host without a real GL context '
+    '(MEASURED on WSL2 / gz-sim 8.11.0, 2026-08-01). The sensors are massless, '
+    'declare no <collision>, and have zero subscribers repo-wide, so this '
+    'cannot affect wheel-terrain contact -- but the vehicle measured is not '
+    'byte-identical to the vehicle the mission flies, and the stripped SDFs '
+    'are kept in the work directory so the substitution can be diffed.',
     'One straight run from rest of about '
     f'{params["commanded_distance_m"]:.1f} m, with an EMPTY vehicle. Sustained '
     'climbing, restarting on the grade and climbing under load are not '

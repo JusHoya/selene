@@ -108,6 +108,33 @@ def generate_launch_description():
             # and energy_recharge_target (0.90); agent_node validates that at
             # construction and says so in the log when it does not hold.
             'recharge_threshold': 0.30,
+            # THE RECHARGE STATION — DEVIATION D-32. Three coordinates
+            # disagreed and only one was read: this pair (defaulted at
+            # agent_node.py, and the value that actually reached the agent),
+            # `mission.recharge_position: [-75, -100]` in nav_params.yaml which
+            # nothing read and which sits on 33.91 deg ground, and
+            # RechargeSkill's (40, 40) constructor default. The nav_params key
+            # is deleted; these two are now in the dict every agent is handed,
+            # for the same reason as the bid weights above — a number only
+            # present as a constructor default is a number nobody can change.
+            #
+            # (-30, -100) is the physical `recharge_pad` <include> in
+            # selene_sim/worlds/lunar_psr.sdf and
+            # `world.recharge_station.position` in
+            # selene_sim/config/world_params.yaml. Identical to the node's own
+            # defaults, so this change moves nothing.
+            'recharge_x': -30.0,
+            'recharge_y': -100.0,
+            # READ ONLY BY THE STARTUP REACHABILITY AUDIT (D-28). The authority
+            # for the depot is depot_x/depot_y in
+            # selene_orchestrator/config/orchestrator_params.yaml — that is what
+            # rides on TaskAssignment.depot_location and directs a real haul.
+            # This copy exists so the audit can say "depot NOT REACHABLE" by
+            # name instead of reporting a component count, and
+            # selene_agent/test/test_startup_reachability_audit.py fails the
+            # build if the two stop agreeing.
+            'depot_x': -100.0,
+            'depot_y': -150.0,
         }],
     )
 
