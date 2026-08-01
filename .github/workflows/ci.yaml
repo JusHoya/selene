@@ -86,6 +86,67 @@ jobs:
         run: |
           python -m pytest selene_orchestrator/test/test_e2e_integration.py -v
 
+  # THE GATE LANE, run whole — deviation D-36's unclosed remainder.
+  #
+  # D-36 was: test_terrain_guard.py did a bare `from selene_agent.navigator import
+  # OccupancyGrid` inside a test body, so the two-package invocation that
+  # docs/phase5_deviation_register.md calls "THE GATE LANE" went
+  #     1 failed, 518 passed
+  # rather than skipping. The import is now an `importorskip` and the lane is
+  # 518 passed / 1 skipped. What D-36 could NOT close is why nothing noticed for
+  # two days, and that gap is this job.
+  #
+  # Every other Python lane in this file puts a DIFFERENT set of packages on
+  # PYTHONPATH, and none of them is this one:
+  #   e2e-integration      declares exactly this two-package path — and then names
+  #                        ONE FILE, so it exercises about 3 of the 518 tests and
+  #                        would not have touched test_terrain_guard.py at all;
+  #   cross-package-tests  puts all FIVE packages on the path, which makes the
+  #                        unguarded selene_agent import resolve, so the defect is
+  #                        invisible there by construction;
+  #   build-and-test       runs `colcon test`, which gives every package its own
+  #                        process and its own environment.
+  # So the exact command the register documents, and the one the operator runs by
+  # hand, had no machine reading it. This job is that reading.
+  #
+  # It is deliberately the SAME dependency set as cross-package-tests, so that the
+  # only variable between the two jobs is PYTHONPATH. If this lane goes red while
+  # cross-package-tests stays green, the difference is a cross-package import that
+  # is missing a guard — which is D-36's shape exactly, and the message below says
+  # so to whoever reads the failure.
+  #
+  # D-14's rule was "do not add a test lane without a cross-package lane". Its
+  # converse — a cross-package assertion needs a guard for the lanes that do not
+  # span those packages — is D-36. Both rules now have a job behind them.
+  gate-lane-tests:
+    name: Gate lane pytest (orchestrator + isru only)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install pytest numpy pyyaml pydantic pillow
+
+      - name: Run the orchestrator and isru suites on the two-package path
+        env:
+          PYTHONPATH: >-
+            ${{ github.workspace }}/selene_orchestrator:${{ github.workspace }}/selene_isru
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! python -m pytest selene_orchestrator/test selene_isru/test -q; then
+            echo "::error::The gate lane is red. If cross-package-tests is green, the"
+            echo "::error::likely cause is a cross-package import with no importorskip"
+            echo "::error::guard — that is deviation D-36. See docs/phase5_deviation_register.md."
+            exit 1
+          fi
+
   # The terrain datum, checked in pure Python — no Gazebo, no ROS, under a second.
   #
   # The relationship between a heightmap pixel and a world z is invisible from
