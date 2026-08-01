@@ -132,11 +132,42 @@ orchestrator_node:
     # fleet. Navigation failed fleet-wide as odom froze and the orchestrator
     # kept auctioning into a dead simulation with no alert anywhere.
     #
-    # Seconds a robot's pose may be unchanged before it counts as stalled. The
-    # CRITICAL alert fires only when EVERY online robot is stalled AND at least
-    # one is NAVIGATING or RETURNING, so an idle fleet at the depot does not
-    # trip it. <= 0 disables the check entirely.
-    sim_stall_timeout_sec: 20.0
+    # Seconds a robot may be stationary WHILE EXPECTED TO MOVE before it counts
+    # as stalled. "While expected to move" is D-30's repair: this used to be
+    # time since the pose last changed, a clock that runs while a robot is
+    # parked, so parked robots were stalled by construction and a robot that
+    # had sat in IDLE for 60 s was "stalled" the instant its FSM flipped to
+    # NAVIGATING -- with zero seconds of actual failure. It fired twice that
+    # way on 2026-07-31 and cleared one second later each time.
+    #
+    # 10.0, TIGHTENED from 20.0 on 2026-07-31. The tightening is not what
+    # removes the false positives; measuring the right quantity is. It is
+    # derived from the agent's own recovery budget:
+    #   > 5.0 s   one PathFollower stall-and-replan cycle
+    #             (selene_agent/navigator.py:478), so one legitimate recovery
+    #             never alerts. 10.0 is 2x it.
+    #   < 20.0 s  (MAX_REPLAN_ATTEMPTS 3 + 1) x 5.0 s (navigator.py:639, :478),
+    #             the point at which the skill fails, the FSM leaves the motion
+    #             state and the detector goes blind. The old 20.0 sat exactly
+    #             on that edge -- zero margin.
+    # A turn-in-place contributes ZERO stationary seconds: the follower never
+    # commands zero linear velocity while FOLLOWING, and D-35's measured
+    # 164.8 deg about-turn carried the body 3.745 m in ~10.2 s.
+    #
+    # Two alerts come off this. Per robot (ERROR) it names the robot, its
+    # state, how long it has been stationary and what its wheels report. Fleet
+    # (CRITICAL) fires only when every mover is stalled AND at least
+    # sim_stall_min_movers of them are, and the text reports the count rather
+    # than asserting a cause. <= 0 disables both.
+    sim_stall_timeout_sec: 10.0
+    # How many robots must be expected to move before a stall may be reported
+    # as a FLEET condition at all. Floored at 2 in code and not configurable
+    # below it: the shipped predicate was run on one wedged robot among a
+    # parked fleet and on a dead simulator and produced IDENTICAL output, so
+    # one witness cannot support a fleet-wide cause. Raising it trades
+    # sensitivity for confidence; nothing goes silent either way, because the
+    # per-robot ERROR still fires.
+    sim_stall_min_movers: 2
     # ---- FR-DASH-7 / FR-ISRU-2: the material ledger (D-06) -----------------
     # The ISRU PROCESSING DEPOT every haul delivers to, world metres. It is
     # published in TaskAssignment.depot_location, and it is NOT the recharge

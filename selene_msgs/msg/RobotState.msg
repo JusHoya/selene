@@ -23,3 +23,45 @@ builtin_interfaces/Time stamp
 # FleetMonitor falls back to DEFAULT_BATTERY_CAPACITY_WH (50.0) on a 0.0, so an
 # agent built before this field still reports plausible energy rather than zero.
 float32 battery_capacity_wh
+
+# ---- Added 2026-07-31 closing D-31 (the fabricated pose). ----
+
+# true iff `pose` above carries a real odometry reading.
+#
+# WHAT WAS WRONG. `GazeboOdometrySensor.read()` never raises; before the first
+# `/odom_world` message arrives it returns a cached `OdometryReading` built in
+# its constructor with an explicit `is_valid=False` and `x`/`y` left at the
+# dataclass default 0.0 (selene_hal/selene_hal/gazebo_hal.py:357-359, :385-387;
+# selene_hal/selene_hal/data_types.py:102-109). Note `is_valid` is NOT
+# false by default -- `SensorReading.is_valid` defaults to True
+# (data_types.py:39) and the odometry sensor passes False deliberately; the
+# fail-safe on that side is a decision, not a language default.
+# `AgentNode._publish_state`
+# copied `odom.x`/`odom.y` into `pose` with no validity test, so every robot
+# published a confident (0, 0) at 2 Hz from node start until its model existed
+# in Gazebo — and this message had no way to say so. The orchestrator's
+# FleetMonitor seeded its distance accumulator from that fabricated origin and
+# booked |spawn| — 90.050 m to 127.224 m per robot on the shipped ten-robot
+# fleet — as travelled distance the first time a real pose arrived. Launch
+# staggers spawns 2 s apart while every agent starts at t=12 s
+# (selene_sim/launch/simulation.launch.py:206-210,
+# selene_sim/launch/unified_sim.launch.py:177-178), so robots 7-10 fabricate
+# for 2-8 s each.
+#
+# `pose` IS STILL POPULATED when this is false — the flag, not the value,
+# carries the meaning, and the message keeps flowing because it is also the
+# heartbeat `FleetMonitor.check_heartbeats` reads. A consumer that integrates,
+# averages or renders `pose` must test this field first.
+#
+# THE COST OF THE FAIL-SAFE DEFAULT, stated rather than assumed. ROS 2
+# default-initialises bool to false and a subscriber cannot distinguish "the
+# publisher set it false" from "the publisher never set it", so any RobotState
+# built by code not updated in this same pass reports "no fix" and its robot
+# drops out of the distance total and out of the orchestrator's survey centroid
+# (`_survey_reference_position`). That direction is deliberate — a silent zero is what
+# caused D-31 — but it is not free. In practice the exposure is a partially
+# rebuilt workspace: appending a field changes the type hash, and a node built
+# against the old definition does not error, it simply never connects (the D-11
+# class). Rebuild all six packages in one `colcon build` and verify a message
+# actually arrives.
+bool pose_valid

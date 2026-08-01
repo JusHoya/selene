@@ -3,6 +3,8 @@ import { STATE_COLORS, STATE_LABELS, TYPE_COLORS, batteryColor } from '../utils/
 // A-stale: shared threshold so cards, map, RobotDetail and MissionProgress all
 // agree on what "stale" means.
 import { isStale as robotIsStale } from '../utils/staleness';
+// D-31: shared with FleetMap, RobotDetail and MissionProgress.
+import { hasPositionFix } from '../utils/poseFix';
 import './FleetCards.css';
 
 function FleetCard({ robot, selected, onSelect }) {
@@ -15,6 +17,11 @@ function FleetCard({ robot, selected, onSelect }) {
   } = robot;
 
   const isStale = robotIsStale(robot);
+  // D-31: this card is the operator's evidence that the robot EXISTS when the
+  // map is not drawing it. The card is never suppressed — losing the icon and
+  // the card together would be indistinguishable from a robot that had gone
+  // away — so it carries the reason instead.
+  const noPositionFix = !hasPositionFix(robot);
   const batteryPercent = Math.round((battery_level ?? 0) * 100);
   const typeColor = TYPE_COLORS[robot_type] || '#8892a8';
   const stateColor = STATE_COLORS[fsm_state] || '#556080';
@@ -25,6 +32,7 @@ function FleetCard({ robot, selected, onSelect }) {
   let className = 'fleet-card';
   if (selected) className += ' fleet-card--selected';
   if (isStale) className += ' fleet-card--stale';
+  if (noPositionFix) className += ' fleet-card--nofix';
 
   return (
     <div
@@ -40,12 +48,25 @@ function FleetCard({ robot, selected, onSelect }) {
         <span className="fleet-card__id">{robot_id}</span>
       </div>
 
-      <span
-        className="fleet-card__state"
-        style={{ background: stateColor }}
-      >
-        {stateLabel}
-      </span>
+      <div className="fleet-card__badges">
+        <span
+          className="fleet-card__state"
+          style={{ background: stateColor }}
+        >
+          {stateLabel}
+        </span>
+        {/* D-31: sits beside the FSM state rather than replacing it, because
+            the robot's state is still being reported truthfully — it is only
+            its position that is unknown. */}
+        {noPositionFix && (
+          <span
+            className="fleet-card__nofix"
+            title="No position fix — not drawn on the map (RobotState.pose_valid is false)"
+          >
+            NO FIX
+          </span>
+        )}
+      </div>
 
       <div className="fleet-card__battery">
         <div className="fleet-card__battery-track">

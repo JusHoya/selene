@@ -99,6 +99,20 @@ a single sentence covering both would be false about one of them.
   module's own urllib code, nothing else. Every note below that says "measured"
   belongs to that run and names it; no other measurement in this file was taken
   by running it.
+* **The D-34 and D-35 repairs — ``samples_since``, ``ProbeNode.states_since``,
+  ``freeing_receipt``, ``evaluate_idle_motion`` and the whole of check 11 —
+  were written on 2026-07-31 on that same Windows box and are IMPLEMENTED AND
+  NOT YET DEMONSTRATED.** Their pure halves are unit-tested in the ROS-free
+  lane by ``selene_orchestrator/test/test_pick_prospect_robot.py`` and
+  ``selene_orchestrator/test/test_phase5_probe_send_to_location.py``, and every
+  one of those tests was checked by mutation — each fix was reverted in a copy
+  of this file and the corresponding test confirmed to go red. But a green unit
+  test is not evidence that a gate measures a running system, which is the
+  lesson this whole register is built on. Nothing below has been run against
+  ROS, and the numbers the new window rests on (a 0.26 rad/s ACHIEVED yaw rate)
+  are n = 1, back-derived from one manoeuvre in one run. Until
+  ``scripts/validate_phase5.sh`` runs on WSL2 and checks 6, 9 and 11 report
+  PASS or FAIL rather than SKIP, D-34 and D-35 stay OPEN.
 
 OUTPUT PROTOCOL
 ---------------
@@ -122,6 +136,7 @@ it has still printed a line for every check so the report has no silent holes.
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -171,11 +186,44 @@ MIN_STATE_RATE_HZ = 1.8
 #: this system runs on Gazebo time and there is no clock-domain crossing here.
 MAX_STATE_AGE_SEC = 1.0
 
-#: Path length below which a robot counts as stationary, metres.
+#: Excursion below which a robot counts as stationary, metres.
 MOTION_EPS_M = 0.05
 
 #: Consecutive same-state samples required before a motion rule is applied.
 MOTION_MIN_SAMPLES = 3
+
+#: Wall-clock span a run of same-state samples must ALSO cover before the
+#: stationary rule is applied to it, seconds.
+#:
+#: MOTION_MIN_SAMPLES used to encode a DURATION. Samples arrived on a fixed
+#: 0.5 s timer, so "3 consecutive samples" meant "in this state for about a
+#: second". Since D-34 the agent publishes a RobotState at the instant of every
+#: FSM transition as well (``selene_agent/selene_agent/agent_node.py:1176``),
+#: so a sample count no longer measures a duration: a two-sample IDLE window
+#: with one transition sample dropped into it is promoted past the threshold
+#: without the robot having been IDLE any longer than before. 0.9 s restores
+#: the meaning the count used to carry -- (MOTION_MIN_SAMPLES - 1) x the 0.5 s
+#: publish period, less the same 10% jitter headroom MIN_STATE_RATE_HZ already
+#: allows against the same nominal rate.
+MOTION_MIN_SPAN_SEC = 0.9
+
+#: How long after an IDLE run starts the stationary rule waits before it begins
+#: measuring, seconds. One RobotState publish period.
+#:
+#: THIS IS NOT NEW TOLERANCE. It is the tolerance the 2 Hz sampler was already
+#: granting at random, made deterministic. A robot entering IDLE from a moving
+#: state is decelerating: ``operator_command.py:126-127`` zeroes the drive
+#: command, and the wheels obey it some unmeasured time later. Until D-34 the
+#: first sample LABELLED IDLE arrived uniformly 0-0.5 s after the transition,
+#: so that stopping transient was excluded from the run by whenever the timer
+#: happened to tick. Publishing on the transition puts a sample at the instant
+#: of the state change, which would silently make this rule STRICTER than it
+#: has ever been -- and strictly on a physical transient nobody in this
+#: repository has measured. Excluding one publish period keeps the assertion at
+#: the strength it was designed with; motion continuing beyond it is still a
+#: FAIL, and the unsettled excursion is reported either way so a genuine
+#: stopping defect is visible in the report rather than forgiven in silence.
+MOTION_SETTLE_SEC = 0.5
 
 #: PRD row 3: "Task queue reflects orchestrator state within 1 second".
 MAX_QUEUE_REACTION_SEC = 1.0
@@ -216,6 +264,101 @@ DEFAULT_ROSBRIDGE_MAX_MESSAGE_SIZE = 10000000
 #: 0.707 m from a commanded target that is not itself a cell centre. See
 #: run_send_to_location.
 NAV_GRID_RESOLUTION_M = 1.0
+
+# ---- Check 11's kinematics. The whole argument is in run_send_to_location. --
+#
+# D-35: check 11 used to command a target 6 m due EAST of the robot and give it
+# a flat 12.0 s to show a positive displacement dot product. The fleet spawns at
+# x = -45 and drives south-west, so "due east" was a ~165 deg about-turn every
+# run; the register measured the sign crossing at t ~= 10.2 s against that 12 s
+# window and the two gate runs landed either side of it, 33 cm apart. The window
+# was not widened. It was deleted, and replaced by a bearing chosen relative to
+# the robot's own heading plus a window derived from the vehicle's kinematics.
+
+#: How far from the robot the commanded target is placed, metres. Unchanged.
+GOTO_RANGE_M = 6.0
+
+#: Bearings tried, degrees RELATIVE TO THE ROBOT'S CURRENT HEADING, in order.
+#: Why not 0 and not 180: see goto_target().
+GOTO_BEARINGS_DEG = (45.0, -45.0, 90.0, -90.0)
+
+#: Range closure that counts as "drove toward the target", metres. One nav grid
+#: cell: below one cell the robot has not provably left the cell it started in,
+#: and assertion (4) already tolerates 0.707 m of cell-centre quantisation.
+#: This REPLACES a sign test on a dot product, which any favourable millimetre
+#: satisfied -- it is a strictly stronger assertion, not a relaxed one.
+GOTO_CLOSURE_M = NAV_GRID_RESOLUTION_M
+
+#: Yaw rate the vehicle ACHIEVES, rad/s. Not the 1.0 rad/s PathFollower
+#: commands (``selene_agent/selene_agent/navigator.py:477``); about 26% of it.
+#:
+#: DERIVED, by arithmetic EXECUTED on D-35's three measured figures rather than
+#: by a new measurement: a 164.8 deg sweep whose maximum excursion was 3.745 m
+#: at 0.5 m/s closes on one constant-curvature arc of radius
+#: 3.745 / (2 sin(164.8/2)) = 1.889 m, i.e. 0.5/1.889 = 0.2647 rad/s; the
+#: register's ~10.2 s crossing gives 1.953 m and 0.2560 rad/s the same way.
+#: n = 1: one scout, one manoeuvre, one run. GOTO_KINEMATIC_DERATE exists to
+#: cover exactly that, and the right permanent fix is to record the achieved
+#: yaw rate as measured data on every gate run and revisit this when n > 1.
+GOTO_MEASURED_YAW_RATE_RAD_S = 0.26
+
+#: One named safety factor on the whole kinematic model above, because every
+#: number in it is n = 1. Applied to the derived manoeuvre time, never to the
+#: distance the robot must actually cover.
+GOTO_KINEMATIC_DERATE = 2.0
+
+#: Dead time allowed before the derived manoeuvre time starts, seconds: the
+#: unconditional drive stop (``operator_command.py:126-127``), one 10 Hz agent
+#: tick, and one 2 Hz state sample.
+GOTO_SETTLE_S = 1.0
+
+#: Displacement from the baseline below which the robot has not moved at all,
+#: metres. Well below the 0.15 m even an excavator running at 10% of its
+#: nominal 0.3 m/s would cover in GOTO_STALL_S.
+GOTO_MOTION_EPS_M = 0.05
+
+#: How long a robot may show no motion at all before check 11 stops waiting,
+#: seconds. PathFollower's own ``stall_timeout`` default
+#: (``navigator.py:478``), so the probe gives up no sooner than the follower
+#: does. This does NOT false-fire during the turn: PathFollower scales linear
+#: speed by 0.3 at a heading error above 45 deg but the product is still
+#: clamped to max_speed at a 6 m goal (``navigator.py:542-549``), so the robot
+#: drives an arc from the first tick and never turns on the spot.
+GOTO_STALL_S = 5.0
+
+#: Total wall clock across all bearings, seconds. The same budget the old
+#: docstring already declared for its worst case, 4 x (15 s service timeout +
+#: 3 s to NAVIGATING + 12 s window); nothing here buys more gate time.
+GOTO_BUDGET_S = 120.0
+
+#: How long a bearing has to produce a NAVIGATING sample carrying an
+#: ``override_goto_`` task id before it is treated as unplannable, seconds.
+GOTO_NAVIGATING_S = 3.0
+
+#: How long after the override response a NAVIGATING sample may still carry a
+#: FOREIGN task id, seconds. Two 0.5 s publish periods, by which time both the
+#: on-transition publish (D-34) and the next timer publish must have carried
+#: the new id. Beyond it, the agent is navigating something that is not this
+#: override and that is a FAIL, not a retry.
+GOTO_TASK_ID_GRACE_S = 1.0
+
+#: Slowest RCDL max_speed in the fleet (``selene_hal/config/excavator.yaml:3``).
+#: Used ONLY when the RCDL cannot be read, and reported whenever it is used.
+GOTO_DEFAULT_MAX_SPEED_MPS = 0.3
+
+#: Distinct state samples required before check 11 will return any motion
+#: verdict. Fewer than this is a SKIP -- the D-34 rule: an instrument that
+#: cannot see must say so rather than blame the system.
+GOTO_MIN_SAMPLES = 4
+
+#: How often the motion loop re-evaluates, seconds.
+GOTO_POLL_INTERVAL_SEC = 0.25
+
+#: How long ``pick_prospect_robot`` looks for durable corroboration that the
+#: robot it cancelled really was freed, seconds. Unchanged in value from the
+#: settle loop it replaces; what changed is that its expiry is no longer a
+#: verdict. See freeing_receipt().
+FREE_CORROBORATION_SEC = 10.0
 
 #: visualization_msgs/Marker constants, spelled out so this file needs no
 #: message class to interpret a recorded marker.
@@ -690,6 +833,21 @@ def _parameter_value(value):
     return None
 
 
+def samples_since(samples, cut):
+    """Copies of every sample in *samples* with ``recv >= cut``, oldest first.
+
+    Pure, so the ROS-free lane can pin the property that matters: it returns
+    EVERY sample at or after the cut, not the newest one. Returning
+    ``[samples[-1]]`` here would restore D-34's aliasing exactly, which is the
+    mutation ``test_pick_prospect_robot.py`` runs against it.
+
+    The cut is inclusive because callers hand it a timestamp taken before the
+    stimulus; a sample that arrived in the same clock tick belongs to the
+    window being asked about.
+    """
+    return [dict(sample) for sample in samples if sample['recv'] >= cut]
+
+
 class ProbeNode:
     """Owns the single rclpy node, its subscriptions and its recording."""
 
@@ -786,6 +944,22 @@ class ProbeNode:
                 'capabilities': list(msg.capabilities),
                 'x': float(msg.pose.x),
                 'y': float(msg.pose.y),
+                # RobotState.pose is a geometry_msgs/Pose2D and the agent fills
+                # theta from the HAL odometry yaw (``RobotState.msg:4``,
+                # ``agent_node.py`` ``_build_state_msg``), so the heading check
+                # 11 needs to place a heading-relative bearing is already on
+                # the wire. Until D-35 this callback recorded x and y and threw
+                # the rest away -- a published field with no reader in the gate.
+                'theta': float(msg.pose.theta),
+                'speed': float(msg.velocity.linear.x),
+                # D-31's flag. ``getattr`` rather than a plain read because a
+                # workspace built before the field exists must degrade to the
+                # pre-D-31 behaviour (trust the pose) instead of killing this
+                # callback with an AttributeError for every sample, which would
+                # void every check that reads state. When the field IS present
+                # its false means "this pose is a placeholder", and check 11
+                # refuses to measure displacement from one.
+                'pose_valid': bool(getattr(msg, 'pose_valid', True)),
                 'stamp': _stamp_to_sec(msg.stamp),
             }
             with self.lock:
@@ -825,9 +999,30 @@ class ProbeNode:
     # -- reads -------------------------------------------------------------
 
     def latest_state(self, rid):
+        """The NEWEST recorded sample for *rid*, or None.
+
+        A LEVEL READ, and the reason D-34 cost two PRD rows. This returns
+        ``samples[-1]`` and nothing else, so any state the publisher held for
+        less than the gap between two samples is invisible to it however long
+        the caller polls. Callers that ask "was it ever X?" must use
+        ``states_since`` instead; this one answers only "is it X now?".
+        """
         with self.lock:
             samples = self.states.get(rid) or []
             return dict(samples[-1]) if samples else None
+
+    def states_since(self, rid, cut):
+        """Every recorded sample for *rid* with ``recv >= cut``, oldest first.
+
+        The history has always been recorded (``_make_state_cb`` appends every
+        sample); until D-34 nothing read it. This is the edge-preserving read:
+        a 0.247 s IDLE window between an operator cancel and the next bid is in
+        here whenever any sample landed in it, and no amount of polling
+        ``latest_state`` can recover it once the next sample has arrived.
+        """
+        with self.lock:
+            samples = self.states.get(rid) or []
+            return samples_since(samples, cut)
 
     def snapshot_states(self):
         with self.lock:
@@ -1001,8 +1196,60 @@ def _run_path_length(run):
     return total
 
 
+def _run_excursion(run):
+    """Largest distance between any two samples in *run*, metres.
+
+    THE RATE-INVARIANT REPLACEMENT FOR ``_run_path_length`` AS A VERDICT, and
+    the reasoning matters more than the code.
+
+    ``_run_path_length`` sums ``|dp|`` once per sample. Its value is therefore a
+    function of how often the publisher publishes: insert a sample between two
+    existing ones and the sum can only grow, and under per-sample position noise
+    it grows without bound in the sample count (EXECUTED against the real
+    ``FleetMonitor``, which has the same accumulator: a stationary robot with
+    1 cm noise books 1.729 m over 100 samples and 7.120 m over 400 -- see the
+    D-34 diagnosis). Since D-34 the agent publishes on FSM transition as well as
+    on its 0.5 s timer, so the sample rate is now variable BY DESIGN, and a
+    verdict that moves when the publisher's rate moves is a statement about the
+    instrument rather than about the robot.
+
+    The diameter of the sample set is invariant in the sense that matters: extra
+    samples can only refine it toward the true supremum of the excursion, never
+    inflate it without limit. It keeps the property ``_run_path_length`` was
+    chosen for -- a robot that drives out and back inside one run has zero net
+    displacement but a non-zero diameter, so it is still caught -- and it drops
+    the property that made it unusable, sensitivity to sampling.
+
+    STATED PLAINLY, BECAUSE IT IS A REAL NARROWING: diameter <= path length
+    always, so a robot that wanders forever inside a 5 cm ball now passes where
+    the old sum would eventually have failed it. That case is indistinguishable
+    from position noise at this threshold, and the path length is still computed
+    and REPORTED for every IDLE run, so wandering is visible in the report and
+    in --json-out; it just no longer decides a verdict it cannot decide
+    honestly.
+    """
+    worst = 0.0
+    for index, first in enumerate(run):
+        for second in run[index + 1:]:
+            worst = max(worst, math.hypot(second['x'] - first['x'],
+                                          second['y'] - first['y']))
+    return worst
+
+
+def _settled_tail(run, settle_sec):
+    """Samples of *run* at least *settle_sec* after the run's first sample."""
+    if not run:
+        return []
+    start = run[0]['recv']
+    return [sample for sample in run if sample['recv'] - start >= settle_sec]
+
+
 def _runs_in_state(samples, state):
-    """All maximal runs of >= MOTION_MIN_SAMPLES consecutive samples in state."""
+    """All maximal runs of >= MOTION_MIN_SAMPLES consecutive samples in state.
+
+    A SAMPLE COUNT IS NOT A DURATION any more; callers that need one must also
+    apply MOTION_MIN_SPAN_SEC to the run's wall-clock span. See that constant.
+    """
     runs = []
     run = []
     for sample in list(samples) + [None]:
@@ -1013,6 +1260,67 @@ def _runs_in_state(samples, state):
             runs.append(run)
         run = []
     return runs
+
+
+def evaluate_idle_motion(samples):
+    """The IDLE stationary rule for one robot. Returns (problems, reports).
+
+    ``problems`` are FAILures of check 4; ``reports`` is one dict per IDLE run
+    considered, recorded to --json-out whatever the verdict.
+
+    THREE CONDITIONS, and each is here because a sample count stopped meaning
+    what it used to mean when D-34 made the publish rate variable:
+
+    1. the run must hold >= MOTION_MIN_SAMPLES samples (unchanged), AND span
+       >= MOTION_MIN_SPAN_SEC of wall clock. Without the span, one extra sample
+       published at the instant of the transition into IDLE promotes a
+       two-sample window past the count threshold without the robot having been
+       IDLE for any longer.
+    2. the stopping transient is excluded -- see MOTION_SETTLE_SEC. It is the
+       allowance the 2 Hz sampler was already granting by accident.
+    3. what is measured is the excursion (``_run_excursion``), not the summed
+       path, so the number does not depend on how often the robot publishes.
+
+    A run that is too short after the settle allowance to hold two samples is
+    REPORTED AND NOT JUDGED. That is D-34's own rule applied to this file: an
+    instrument that cannot see must say so rather than return a verdict.
+    """
+    problems = []
+    reports = []
+    for run in _runs_in_state(samples, 'IDLE'):
+        span = run[-1]['recv'] - run[0]['recv']
+        report = {
+            'samples': len(run),
+            'span_sec': round(span, 2),
+            'path_length_m': round(_run_path_length(run), 3),
+            'excursion_all_m': round(_run_excursion(run), 3),
+        }
+        if span < MOTION_MIN_SPAN_SEC:
+            report['verdict'] = 'not judged: span < %.1fs' % (
+                MOTION_MIN_SPAN_SEC,)
+            reports.append(report)
+            continue
+        settled = _settled_tail(run, MOTION_SETTLE_SEC)
+        if len(settled) < 2:
+            report['verdict'] = ('not judged: %d samples after the %.1fs '
+                                 'settle allowance' % (len(settled),
+                                                       MOTION_SETTLE_SEC))
+            reports.append(report)
+            continue
+        excursion = _run_excursion(settled)
+        report['settled_samples'] = len(settled)
+        report['excursion_settled_m'] = round(excursion, 3)
+        if excursion >= MOTION_EPS_M:
+            report['verdict'] = 'FAIL'
+            problems.append(
+                'IDLE for %d samples over %.1fs but its settled samples span '
+                '%.3f m (>= %.2f m; whole run %.3f m, path %.3f m)'
+                % (len(run), span, excursion, MOTION_EPS_M,
+                   report['excursion_all_m'], report['path_length_m']))
+        else:
+            report['verdict'] = 'PASS'
+        reports.append(report)
+    return problems, reports
 
 
 def evaluate_state_checks(results, probe, fleet, samples_by_robot,
@@ -1027,19 +1335,35 @@ def evaluate_state_checks(results, probe, fleet, samples_by_robot,
     subscription is created; dividing by the nominal window folds that dead time
     into the measurement and understates a healthy publisher.
 
+    THE STATE RATE IS A MINIMUM AND HAS NO MAXIMUM, WHICH IS WHY D-34 COULD NOT
+    BREAK THIS CHECK'S RATE ASSERTION. Since D-34 the agent publishes on every
+    FSM transition as well as on its 0.5 s timer, so the measured rate is now
+    2 Hz plus an irregular transition term. MIN_STATE_RATE_HZ is a floor and
+    MAX_STATE_AGE_SEC is a max-age test; both only get easier. The motion rule
+    was the part that did NOT survive a variable rate unchanged -- see
+    ``evaluate_idle_motion``.
+
     MOTION COHERENCE IS SPLIT, DELIBERATELY, AND NOT AS FIRST DESIGNED.
 
-    * IDLE for >= 3 consecutive samples must move < 5 cm. This FAILS the gate.
-      It cannot be satisfied spuriously.
-    * NAVIGATING should move. REPORTED, NEVER FAILS, because ``RobotState.pose``
-      is still DEAD-RECKONED — it advances perfectly while a robot is buried in
-      terrain with its wheels spinning in solid rock, so a "pose changes"
-      assertion is satisfied by the exact defect it looks like it is testing.
-      Unchanged by the 2026-07-31 frame fix: that made the pose world-REFERENCED
-      (``selene_sim/selene_sim/world_odometry_node.py``, register D-08) by
-      composing the spawn SE(2) onto the same wheel-encoder integration. World
-      coordinates are not ground truth. ``scripts/check_drive.sh`` is the only
-      thing that asks Gazebo.
+    * IDLE for >= 3 samples spanning >= MOTION_MIN_SPAN_SEC must stay inside a
+      5 cm ball once it has had one publish period to stop. This FAILS the
+      gate. It cannot be satisfied spuriously. ``evaluate_idle_motion`` holds
+      the whole argument for why it is an excursion over a settled window and
+      no longer a per-sample path sum.
+    * NAVIGATING should move. REPORTED, NEVER FAILS, and the reason was
+      REWRITTEN on 2026-07-31 because the old one had gone false. It used to say
+      ``RobotState.pose`` is dead-reckoned, so it advances perfectly while a
+      robot is buried in terrain with its wheels spinning in solid rock and a
+      "pose changes" assertion is satisfied by the exact defect it looks like it
+      is testing. That is true only under ``pose_source: dead_reckoning``; under
+      the shipped default ``localisation`` the pose is the SIMULATOR'S TRUE
+      WORLD POSE (``selene_sim/selene_sim/world_odometry_node.py``, registers
+      D-24 and D-33), which the wheels cannot fake. This check does not read
+      that parameter — check 11 does, for the topic it measures — so it does not
+      know which mode produced the samples in front of it, and a rule whose
+      meaning depends on an unread parameter must not decide a verdict.
+      ``scripts/check_drive.sh`` is still the only thing here that asks Gazebo
+      directly.
     * RECHARGING IS EXCLUDED FROM THE STATIONARY RULE, and this gate is itself
       why. ``fsm.py:101-105`` maps ``OPERATOR_RECHARGE`` from every state except
       OFFLINE/ERROR straight to ``RECHARGING``, and ``operator_command.py:149-151``
@@ -1053,6 +1377,7 @@ def evaluate_state_checks(results, probe, fleet, samples_by_robot,
     """
     problems = []
     notes = []
+    idle_runs = {}
     now = time.time()
     legal = set(legal_states)
 
@@ -1106,12 +1431,11 @@ def evaluate_state_checks(results, probe, fleet, samples_by_robot,
                                 % (rid, sample['battery_level']))
                 break
 
-        for run in _runs_in_state(samples, 'IDLE'):
-            moved = _run_path_length(run)
-            if moved >= MOTION_EPS_M:
-                problems.append('%s: IDLE for %d samples but moved %.3f m'
-                                % (rid, len(run), moved))
-                break
+        idle_problems, idle_report = evaluate_idle_motion(samples)
+        if idle_report:
+            idle_runs[rid] = idle_report
+        for text in idle_problems[:1]:
+            problems.append('%s: %s' % (rid, text))
         navigating = _runs_in_state(samples, 'NAVIGATING')
         if navigating:
             longest = max(navigating, key=len)
@@ -1134,6 +1458,7 @@ def evaluate_state_checks(results, probe, fleet, samples_by_robot,
     results.measured(4, rates_hz=rates, legal_states=sorted(legal),
                      state_topics=sorted(live_topics),
                      expected_topics=sorted(expected_topics),
+                     idle_runs=idle_runs,
                      rosapi_topics=(sorted(ws_topics)
                                     if ws_topics is not None else None))
     if problems:
@@ -1718,7 +2043,78 @@ def evaluate_map_parity(results, probe, params, rviz_fixed_frame,
 # Stimulus timeline.
 # ==========================================================================
 
-def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing):
+def freeing_receipt(success, message, samples, assignments, robot_id, task_id):
+    """Did the operator cancel really free *robot_id*? -> (ok, kind, note).
+
+    ``ok`` is False only when the service itself gave no receipt. ``kind`` names
+    the DURABLE corroboration found, or '' when the receipt is the service
+    response alone. Pure, so the ROS-free lane can pin every branch.
+
+    THE SERVICE RESPONSE IS A CAUSAL RECEIPT, NOT A SAMPLE, and that is the
+    whole point of this function. ``/orchestrator/override_robot`` returns
+    ``bool(agent_resp.accepted)`` (``orchestrator_node.py:694``);
+    ``operator_command_logic`` sets ``accepted = True`` only after firing
+    OPERATOR_CANCEL (``operator_command.py:136-137,153-155``); and
+    ``OPERATOR_CANCEL`` maps unconditionally to IDLE from every state except
+    OFFLINE (``fsm.py``, the OPERATOR_CANCEL wildcard), with OFFLINE rejected by
+    the agent's own live check (``operator_command.py:81-85`` -- the
+    orchestrator's cached ``fsm_state`` guard is the weaker one, since it is fed
+    by the same sampler this deviation is about). So a success here means the
+    FSM WAS in IDLE, whether or not any sample carried it.
+
+    THE ONE HOLE, rejected explicitly: a duplicate ``sequence`` returns
+    accepted=True WITHOUT firing the event (``operator_command.py:74-77``) and
+    the orchestrator forwards that reason verbatim into ``response.message``
+    (``orchestrator_node.py:695-697``). The enumeration is complete: the only
+    other early returns set ``accepted = False`` (OFFLINE :81-85, ERROR :87-92,
+    unknown command :94-99).
+
+    WHY THIS IS NOT WIDENING A THRESHOLD TO GO GREEN. PRD row 4 is "Operator-
+    injected task enters auction and gets assigned" (``docs/PRD.md:1506``,
+    ROW_CHECKS[3] = "5 6"). Nothing in it concerns a robot being IDLE; the IDLE
+    wait is a PRECONDITION this gate invented for itself, and turning a
+    precondition's timeout into a SKIP verdict on the row is the category
+    error D-34 names. Nothing is asserted less: check 6 still has to correlate
+    the injected task_id through announcement AND assignment, and it can still
+    FAIL. What changes is that the gate now renders a verdict on rows 3 and 4
+    instead of declining to measure them.
+    """
+    if not success:
+        return False, '', ('cancel_task on %s was not accepted: %s'
+                           % (robot_id, message or 'no answer'))
+    if str(message).strip() == 'duplicate_sequence':
+        # Accepted without firing anything. Never a receipt.
+        return False, '', ('cancel_task on %s returned duplicate_sequence, '
+                           'which is accepted WITHOUT firing OPERATOR_CANCEL, '
+                           'so nothing proves the robot was freed' % (robot_id,))
+
+    receipt = ('the accepted cancel_task response is itself the receipt: the '
+               'agent returns accepted only after firing OPERATOR_CANCEL, '
+               'which is an unconditional transition to IDLE')
+    for sample in samples:
+        if sample['fsm_state'] == 'IDLE':
+            return True, 'idle_sample', (
+                '%s; corroborated by an IDLE state sample after the cancel'
+                % (receipt,))
+    for sample in samples:
+        if not str(sample['current_task_id']).strip():
+            return True, 'cleared_task_id', (
+                '%s; corroborated by a state sample with an empty '
+                'current_task_id, the durable post-cancel signature (the id is '
+                'cleared at operator_command.py:133 and re-set only on a new '
+                'assignment)' % (receipt,))
+    if task_id:
+        for record in assignments:
+            if record[1] == task_id and record[2] == robot_id:
+                return True, 'assignment', (
+                    '%s; corroborated by the injected task being assigned to '
+                    'it' % (receipt,))
+    return True, '', ('%s. NO durable corroboration arrived within %.0fs, so '
+                      'this row rests on the service response alone'
+                      % (receipt, FREE_CORROBORATION_SEC))
+
+
+def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing, task_id=''):
     """Wait for a prospect-capable robot to be IDLE. Returns (rid, note).
 
     WHY THIS WAIT EXISTS. ``_auction_tick`` returns immediately when no robot is
@@ -1741,8 +2137,25 @@ def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing):
     must not certify what it did not measure; it also must not be structurally
     unable to measure the thing it exists for. ``--no-free-robot`` turns the
     fallback off and takes the SKIP instead.
+
+    WHAT THE RETURNED ROBOT IS, AND IS NOT. It is a WITNESS that the fleet
+    presented an idle prospect-capable robot to the auction inside the wait --
+    nothing downstream measures it. ``correlate_injection`` follows the injected
+    ``task_id`` and never compares the auction winner to this robot (an earlier
+    draft of this fix claimed it did; it does not), and
+    ``evaluate_queue_latency`` follows the same id. So "was any prospect robot
+    IDLE at any instant since the injection?" is exactly the question, and it is
+    answered from the recorded HISTORY rather than by re-reading a level.
+
+    THAT IS D-34. ``latest_state`` returns ``samples[-1]``, so this loop used to
+    ask "is it IDLE right now?" every second about a state the FSM crosses in
+    0.247-0.301 s against a 0.5 s publish period. Both 2026-07-31 gate runs
+    missed it, both times SKIPped checks 6 and 9, and both times the system had
+    done exactly what the rows assert. ``states_since`` reads the same recording
+    the probe was already keeping and throwing away.
     """
-    end = time.time() + deadline_sec
+    wait_start = time.time()
+    end = wait_start + deadline_sec
     while time.time() < end:
         for rid in fleet:
             sample = probe.latest_state(rid)
@@ -1750,6 +2163,12 @@ def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing):
                 continue
             if sample['fsm_state'] == 'IDLE':
                 return rid, 'the robot was already idle'
+            for past in probe.states_since(rid, wait_start):
+                if past['fsm_state'] == 'IDLE':
+                    return rid, ('%s was IDLE %.2fs into the wait; the level '
+                                 'read this gate used until D-34 would have '
+                                 'missed it'
+                                 % (rid, past['recv'] - wait_start))
         time.sleep(1.0)
 
     if not allow_freeing:
@@ -1767,22 +2186,33 @@ def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing):
         return None, 'no prospect-capable robot is reachable'
 
     freed = candidates[0]
+    cut = time.time()
     response = probe.override(freed, 'cancel_task')
-    if response is None or not response.success:
-        return None, ('no prospect-capable robot became IDLE in %.0fs and '
-                      'cancel_task on %s did not succeed'
-                      % (deadline_sec, freed))
-    settle = time.time() + 10.0
-    while time.time() < settle:
-        sample = probe.latest_state(freed)
-        if sample is not None and sample['fsm_state'] == 'IDLE':
-            return freed, ('no robot became IDLE in %.0fs, so %s was freed '
-                           'with an operator cancel_task first — this row was '
-                           'measured on a robot the gate perturbed'
-                           % (deadline_sec, freed))
-        time.sleep(0.5)
-    return None, ('cancel_task on %s was accepted but it did not reach IDLE '
-                  'within 10s' % (freed,))
+    success = bool(response.success) if response is not None else False
+    message = str(response.message) if response is not None else ''
+    ok, kind, note = freeing_receipt(success, message, [], [], freed, task_id)
+    if not ok:
+        return None, ('no prospect-capable robot became IDLE in %.0fs and %s'
+                      % (deadline_sec, note))
+
+    # The verdict is already decided by the line above. This loop only looks
+    # for DURABLE corroboration to put in the report, and its expiry costs the
+    # row nothing -- which is the whole difference from the settle loop it
+    # replaces, whose 10 s expiry was a SKIP on two consecutive runs.
+    corroborate_by = time.time() + FREE_CORROBORATION_SEC
+    while time.time() < corroborate_by:
+        with probe.lock:
+            assignments = list(probe.assignments)
+        ok, kind, note = freeing_receipt(success, message,
+                                         probe.states_since(freed, cut),
+                                         assignments, freed, task_id)
+        if kind:
+            break
+        time.sleep(0.25)
+    return freed, ('no robot became IDLE in %.0fs, so %s was freed with an '
+                   'operator cancel_task first — this row was measured on a '
+                   'robot the gate perturbed. %s'
+                   % (deadline_sec, freed, note))
 
 
 def run_injection(results, probe, ws, target_xy):
@@ -1848,8 +2278,14 @@ def run_injection(results, probe, ws, target_xy):
 
 
 def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
-                        target_xy, note):
+                        target_xy, note, chosen=''):
     """Check 6 — the injected id, through announcement and assignment.
+
+    *chosen* is the robot ``pick_prospect_robot`` returned. IT IS REPORTED AND
+    NEVER ASSERTED. This function correlates a task_id; it does not compare the
+    auction winner to *chosen* and never has, so a report that implied the two
+    were the same would be claiming a correlation nobody measured. When they
+    differ the row says so.
 
     EXPECTED WALL CLOCK: ``auction_timeout_sec`` + 10 s (about 15 s at the
     shipped default of 5.0).
@@ -1891,10 +2327,22 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
         return
     announce_latency = announcement[0] - inject_time
     if assignment is None:
+        # NAME WHICH FAILURE THIS IS. "Never assigned" covers two different
+        # systems: an auction that never ran at all, and one that ran and gave
+        # this task to nobody. The recorded assignment traffic separates them
+        # and costs nothing to report.
+        with probe.lock:
+            others = [record for record in probe.assignments
+                      if record[1] != task_id]
         results.set(6, FAIL,
                     'task %s was announced %.2fs after injection but was never '
-                    'assigned within the following %.0fs'
-                    % (task_id, announce_latency, budget))
+                    'assigned within the following %.0fs. %d assignment(s) of '
+                    'OTHER tasks were seen in that window%s (%s)'
+                    % (task_id, announce_latency, budget, len(others),
+                       ' — the auction ran and this task did not win it'
+                       if others else
+                       ' — no auction resolved at all in that window',
+                       note))
         return
 
     assign_latency = assignment[0] - inject_time
@@ -1918,7 +2366,15 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
         problems.append('winner %s lacks the prospect capability (%s)'
                         % (winner, winner_state['capabilities']))
 
-    results.measured(6, task_id=task_id, winner=winner,
+    winner_note = ''
+    if chosen and winner != chosen:
+        winner_note = ('. The auction was won by %s, not by %s, which is the '
+                       'robot this gate observed idle — that is legal (row 4 '
+                       'is indifferent to which robot wins) and is stated '
+                       'because nothing here measured a link between them'
+                       % (winner, chosen))
+
+    results.measured(6, task_id=task_id, winner=winner, witness=chosen,
                      announce_latency_sec=round(announce_latency, 3),
                      assign_latency_sec=round(assign_latency, 3),
                      idle_wait_sec=round(idle_wait, 3))
@@ -1928,9 +2384,9 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
         results.set(6, PASS,
                     'task %s announced %.2fs and assigned to %s %.2fs after '
                     'injection, target matched to 1e-3; %.1fs of that was the '
-                    'gate waiting for an idle prospect-capable robot (%s)'
+                    'gate waiting for an idle prospect-capable robot (%s)%s'
                     % (task_id, announce_latency, winner, assign_latency,
-                       idle_wait, note))
+                       idle_wait, note, winner_note))
 
 
 def evaluate_queue_latency(results, probe, ws, task_id, queue_topic_available):
@@ -2119,29 +2575,307 @@ def run_force_recharge(results, probe, robot_id):
                 % (robot_id, seen or 'unknown'))
 
 
-def run_send_to_location(results, probe, robot_id):
+def goto_target(origin, bearing_deg, range_m=GOTO_RANGE_M):
+    """Target GOTO_RANGE_M ahead of *origin* at *bearing_deg* off ITS HEADING.
+
+    WHY THE BEARING IS HEADING-RELATIVE, WHICH IS D-35. The old code offered
+    four WORLD-axis targets, (+6,0) first, and committed to the first that
+    planned. The fleet spawns at x = -45 and drives south-west into the PSR, so
+    "+6 m east" was systematically about 165 deg behind the robot under test and
+    check 11 spent its window measuring how fast a differential drive can turn
+    around. The register measured that manoeuvre: a 164.8 deg sweep, 3.745 m of
+    excursion away from the target, and the old pass predicate first going true
+    at t ~= 10.2 s inside a 12.0 s window. Two identical runs landed either side
+    of it, 33 cm apart. ``pose.theta`` was on the wire the whole time.
+
+    WHY +/-45 AND +/-90 AND NOT 0 OR 180. EXECUTED here, by integrating this
+    repository's own steering law (heading-error P control at ang_kp = 1.5,
+    yaw capped at the ACHIEVED GOTO_MEASURED_YAW_RATE_RAD_S, linear speed at the
+    RCDL max_speed because ``navigator.py:542-549`` clamps it there for a 6 m
+    goal whatever the heading error) -- time to close the first
+    GOTO_CLOSURE_M = 1.0 m of range:
+
+        bearing      scout    hauler   excavator
+          0 deg       2.00 s   2.50 s    3.34 s
+         45 deg       2.36 s   2.85 s    3.68 s
+         90 deg       4.87 s   5.27 s    5.98 s
+        135 deg      10.58 s  10.56 s   10.91 s
+        180 deg      16.47 s  16.51 s   16.87 s
+
+    0 deg is excluded because a target dead ahead lets residual coast alone
+    supply the closure, and 180 deg is excluded because it is the manoeuvre this
+    deviation exists to stop measuring. +/-45 costs 2.4-3.7 s against a derived
+    window of 11.0-13.7 s; the sign alternates so a rock on one side does not
+    exhaust the list on one side of the robot.
+
+    A NOTE ON WHY EVERY BEARING IS ESSENTIALLY PLANNABLE, which is a currently
+    helpful accident resting on an OPEN defect: A* refuses a goal only for
+    occupancy or bounds, because ``navigation.max_traversable_slope_deg`` has no
+    reader anywhere in production (register D-28). If D-28 is fixed, a
+    heading-relative pick may start hitting slope refusals, and the retry loop
+    over the remaining bearings is what absorbs that.
+    """
+    phi = float(origin['theta']) + math.radians(bearing_deg)
+    return (float(origin['x']) + range_m * math.cos(phi),
+            float(origin['y']) + range_m * math.sin(phi))
+
+
+def goto_window_seconds(bearing_deg, max_speed_mps):
+    """Seconds allowed to close GOTO_CLOSURE_M at *bearing_deg*, DERIVED.
+
+    settle + derate x (time to swing the bearing off + time to cover one cell)
+
+    The 12.0 s literal this replaces was not derived from anything, and the
+    fix for a threshold that produced a coin flip is not a bigger threshold --
+    that is choosing a number from n = 1. It is a threshold that is a function
+    of the manoeuvre being asked for. Values: 11.0 s (scout) / 12.0 (hauler) /
+    13.7 (excavator) at 45 deg and 17.1 / 18.1 / 19.8 at 90 deg, against the
+    2.4-3.7 s and 4.9-6.0 s the table in ``goto_target`` measures. At the
+    164.8 deg the register recorded it yields 27.1 s against that manoeuvre's
+    measured ~10.2 s, i.e. the formula covers the very case that produced the
+    coin flip -- which is what ``test_phase5_probe_send_to_location.py`` pins.
+    """
+    speed = float(max_speed_mps)
+    if speed <= 0.0:
+        speed = GOTO_DEFAULT_MAX_SPEED_MPS
+    align_s = abs(math.radians(bearing_deg)) / GOTO_MEASURED_YAW_RATE_RAD_S
+    close_s = GOTO_CLOSURE_M / speed
+    return GOTO_SETTLE_S + GOTO_KINEMATIC_DERATE * (align_s + close_s)
+
+
+def read_rcdl_max_speed(rcdl_dir, robot_type, yaml_module):
+    """(max_speed, source) for *robot_type* from its RCDL. Degrades loudly.
+
+    The RCDL is the single source of truth for what a robot can do -- the same
+    rule D-06 established for ``capacity_kg`` -- so per-type speeds are never
+    hardcoded here. When the file cannot be read the slowest shipped RCDL is
+    used, which makes the derived window LONGER (more forgiving of the robot,
+    less forgiving of nothing), and the source string says so in the report.
+    """
+    fallback = 'default %.2f m/s; RCDL not readable' % (
+        GOTO_DEFAULT_MAX_SPEED_MPS,)
+    if not rcdl_dir or not robot_type:
+        return GOTO_DEFAULT_MAX_SPEED_MPS, '%s (no --rcdl-dir)' % (fallback,)
+    path = os.path.join(rcdl_dir, '%s.yaml' % (robot_type,))
+    try:
+        with open(path, 'r') as handle:
+            config = yaml_module.safe_load(handle) or {}
+        speed = float(config['max_speed'])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log('rcdl %s: %s' % (path, exc))
+        return GOTO_DEFAULT_MAX_SPEED_MPS, '%s at %s' % (fallback, path)
+    if speed <= 0.0:
+        return GOTO_DEFAULT_MAX_SPEED_MPS, '%s: %s declares %.2f' % (
+            fallback, path, speed)
+    return speed, path
+
+
+def evaluate_goto_acceptance(robot_id, samples, answered):
+    """Assertions (2) and (2b) over one scan of the state history.
+
+    -> ``(baseline, verdict, detail)``. ``baseline`` is the sample the motion
+    measurement must start from, or None while the answer is still undecided;
+    ``verdict`` is None unless the scan has proved a FAIL. Pure, so every branch
+    is reachable from the ROS-free lane.
+
+    WHY THIS IS A FUNCTION AND NOT SIX LINES INSIDE THE POLLING LOOP, which is
+    the only thing about it that changed on 2026-07-31. The
+    ``startswith('override_goto_')`` predicate below is the mechanism this
+    deviation's fix credits with killing the coin flip -- it is what makes the
+    motion baseline a sample the agent published AFTER it accepted the override,
+    instead of the up-to-0.5 s and ~0.25 m stale pre-call sample the old code
+    used off a 2 Hz topic, which is the same order as the 33 cm that separated
+    check 11's FAIL from its PASS. An adversarial review measured that the
+    predicate was UNPINNED: mutating it to ``if True:`` left all 45 tests green,
+    because it lived inside a loop no test could drive without a robot. The
+    behaviour here is byte-for-byte the behaviour that was inline; what the
+    extraction bought is that a test can now call it. That is the whole change.
+
+    THE PREFIX IS A LITERAL AND DELIBERATELY NOT A MODULE CONSTANT. It is the id
+    ``selene_agent/.../operator_command.py:143`` builds for this command and
+    nothing else sets. A shared constant would let a rename stay green on both
+    sides of a contract whose two halves live in different packages, and the
+    gate lane cannot import the agent to check (D-36). The test spells the same
+    literal out independently for that reason.
+
+    WHAT IS STILL UNKNOWN: whether a real agent can ever publish a NAVIGATING
+    sample with an EMPTY ``current_task_id``. Nothing observed one; the ``task
+    and`` guard treats it as undecided rather than as a foreign task, which is
+    the forgiving reading, and the test that pins it says it is characterising
+    the code rather than a measured behaviour.
+    """
+    baseline = None
+    verdict = None
+    detail = ''
+    for sample in samples:
+        if sample['fsm_state'] != 'NAVIGATING':
+            continue
+        task = str(sample['current_task_id'])
+        if task.startswith('override_goto_'):
+            baseline = sample
+            break
+        if task and sample['recv'] - answered >= GOTO_TASK_ID_GRACE_S:
+            # Navigating something that is not this override, a full grace
+            # period after the agent said it accepted it. Not a retry: the
+            # command was accepted and did not take effect.
+            verdict = FAIL
+            detail = ('%s: accepted send_to_location but %.1fs later was '
+                      'still NAVIGATING task %r rather than an '
+                      'override_goto_ pseudo-task'
+                      % (robot_id, sample['recv'] - answered,
+                         sample['current_task_id']))
+    return baseline, verdict, detail
+
+
+def evaluate_goto_progress(samples, baseline, target, window_s, elapsed_s):
+    """Did the robot close range on *target*? -> (verdict, detail, measured).
+
+    ``verdict`` is None while the answer is still undecided, so the caller can
+    poll this and stop the moment it is not. Pure: every branch is unit-tested
+    in the ROS-free lane.
+
+    WHAT IT MEASURES, AND WHY IT IS STRICTLY MORE THAN THE OLD PREDICATE. The
+    old rule was ``moved > 0.2 and dot > 0.0`` -- the SIGN of the displacement's
+    dot product with the bearing offset. A sign test is a knife edge by
+    construction: any favourable millimetre satisfies it, and 33 cm of wobble
+    on a 3.6 m arc is what flipped check 11 between two identical runs. This
+    asks for a metre of RANGE CLOSURE, one full nav cell, which no wobble
+    supplies.
+
+    THE MINIMUM RANGE OVER THE WINDOW IS USED, NOT THE FINAL RANGE. A robot
+    that closes a cell and then drives away still passes here. That is
+    deliberate and it is a NARROWING that must not be misread: assertion (3)
+    owns "the wheels executed the plan" and assertion (4) -- the planned path
+    ending at the commanded target -- owns "it went to the right place".
+    Neither one alone means the robot arrived.
+
+    SAMPLES CARRYING pose_valid = false ARE DROPPED, not counted and not
+    measured (register D-31: before its first ``/odom_world`` message a robot
+    publishes a confident (0, 0)). Dropping them can only push this toward the
+    SKIP branch below; it can never manufacture a PASS.
+    """
+    tx, ty = target
+    bx, by = float(baseline['x']), float(baseline['y'])
+    base_range = math.hypot(tx - bx, ty - by)
+
+    fresh = []
+    seen = set()
+    invalid = 0
+    for sample in samples:
+        if not sample.get('pose_valid', True):
+            invalid += 1
+            continue
+        if sample['recv'] in seen:
+            continue
+        seen.add(sample['recv'])
+        fresh.append(sample)
+
+    measured = {
+        'samples': len(fresh),
+        'invalid_pose_samples': invalid,
+        'baseline_range_m': round(base_range, 3),
+        'window_s': round(window_s, 2),
+        'elapsed_s': round(elapsed_s, 2),
+    }
+
+    if len(fresh) < GOTO_MIN_SAMPLES:
+        if elapsed_s >= window_s:
+            # D-34's rule. ``latest_state`` replays its cached sample forever,
+            # so a dead state topic used to report "moved only 0.000 m" and
+            # blame the robot for the gate's own blindness.
+            return (SKIP,
+                    'state stopped arriving: %d usable samples (%d with '
+                    'pose_valid=false) in %.1fs, so no motion measurement is '
+                    'possible' % (len(fresh), invalid, elapsed_s),
+                    measured)
+        return None, 'waiting for state samples', measured
+
+    min_range = min(math.hypot(tx - s['x'], ty - s['y']) for s in fresh)
+    moved = max(math.hypot(s['x'] - bx, s['y'] - by) for s in fresh)
+    closure = base_range - min_range
+    measured.update(closure_m=round(closure, 3),
+                    min_range_m=round(min_range, 3),
+                    moved_m=round(moved, 3))
+
+    if closure >= GOTO_CLOSURE_M:
+        return (PASS,
+                'closed %.2f m of the %.2f m range to the target in %.1fs '
+                '(needed %.2f m)'
+                % (closure, base_range, elapsed_s, GOTO_CLOSURE_M),
+                measured)
+    if elapsed_s >= GOTO_STALL_S and moved <= GOTO_MOTION_EPS_M:
+        return (FAIL,
+                'did not move: %.3f m from the baseline in %.1fs, below the '
+                '%.2f m floor, and PathFollower itself gives up at %.1fs'
+                % (moved, elapsed_s, GOTO_MOTION_EPS_M, GOTO_STALL_S),
+                measured)
+    if elapsed_s >= window_s:
+        return (FAIL,
+                'closed only %.2f m of the %.2f m range in %.1fs (moved %.2f m '
+                'from the baseline; the window is derived from the bearing and '
+                'the robot max speed, not a constant)'
+                % (closure, base_range, elapsed_s, moved),
+                measured)
+    return None, 'in progress', measured
+
+
+def goto_detail(robot_id, parts, path_note, path_recorded):
+    """Assemble check 11's report line. ``path_note`` rides on EVERY verdict.
+
+    REPORTING DEFECT, D-35(1): ``path_note`` used to be interpolated only into
+    the PASS branch, so the FAIL run withheld the one piece of evidence that
+    showed the override had actually worked -- the planned path ending 0.50 m
+    from the commanded target. A gate that reports less on the way down than on
+    the way up is worse than useless during a failure.
+
+    When no path was recorded the note is already inside *parts* as a problem,
+    and appending it again would print it twice; *path_recorded* is what tells
+    the two cases apart.
+    """
+    text = '; '.join(part for part in parts if part)
+    if path_recorded and path_note:
+        text = '%s; %s' % (text, path_note) if text else path_note
+    return '%s: %s' % (robot_id, text)
+
+
+def run_send_to_location(results, probe, robot_id, rcdl_dir, yaml_module):
     """Check 11 — PRD row 5, which names send-to-location.
 
-    EXPECTED WALL CLOCK: about 15 s when the first bearing plans successfully;
-    up to 4 x (15 s + 3 s + 12 s) if every bearing has to be tried and the
-    service call times out each time.
+    EXPECTED WALL CLOCK: about 20 s when the first bearing plans successfully;
+    GOTO_BUDGET_S (120 s) is the hard ceiling across all four bearings, the
+    same worst case the previous 4 x (15 + 3 + 12) s structure declared.
 
     Check 8 tests ``force_recharge``; PRD row 5 does not. This is the row's own
     command, on a DIFFERENT robot, so the two overrides cannot mask each other.
 
-    FOUR ASSERTIONS, ONE OF WHICH IS THE ONLY ONE IMMUNE TO DEAD RECKONING:
+    FIVE ASSERTIONS:
       1. the service returns success;
-      2. ``fsm_state`` reaches NAVIGATING within 3 s;
-      3. the reported pose moves > 0.2 m within 12 s AND the displacement's dot
-         product with the bearing to the target is positive — direction, not
-         merely motion;
+      2. ``fsm_state`` reaches NAVIGATING within GOTO_NAVIGATING_S;
+      2b. the sample that proves (2) carries a ``current_task_id`` beginning
+          ``override_goto_`` — the id ``operator_command.py:143`` sets for this
+          command and nothing else sets. This is what separates "the agent took
+          MY command" from "the agent happens to be navigating". Both (2) and
+          (2b) are decided by ``evaluate_goto_acceptance``, which is pure so
+          that the ROS-free lane can drive every branch of it;
+      3. the robot closes GOTO_CLOSURE_M of range on the commanded target
+         inside a window DERIVED from the bearing and the robot's own RCDL
+         max_speed (``goto_window_seconds``), measured from a baseline sampled
+         AFTER the override, not before it;
       4. the last pose of ``/<rid>/planned_path`` is the commanded target.
-    (4) is what actually proves the *target* was honoured: (2) and (3) are read
-    off a pose that is still dead-reckoned, and would look identical for a robot
-    whose wheels are turning in solid rock. Until 2026-07-31 they were also in a
-    per-robot odom frame (register D-08), so they would have looked identical
-    for a robot driving the right way through the wrong part of the world too;
-    the frame half of that is fixed and the dead-reckoning half is not.
+
+    WHERE THE POSE COMES FROM, corrected 2026-07-31. Assertions (2b), (3) and
+    (4) are read off ``/<rid>/odom_world``. Under the shipped default
+    ``pose_source: localisation`` (``selene_sim/launch/simulation.launch.py``)
+    that topic carries the SIMULATOR'S TRUE WORLD POSE
+    (``world_odometry_node.py:368-373``), not dead reckoning, and the node falls
+    back to dead reckoning only with an ERROR log and a CRITICAL FleetAlert
+    (:374-376). This check now READS that parameter off the robot's own
+    ``/world_odom_<rid>`` node and prints what it found rather than asserting
+    either way. The previous docstring and the gate's row-5 coverage column both
+    asserted the displacement came off a pose that was not world-truth, which
+    has been false since D-24/D-33 and is exactly the kind of caveat that gets
+    copied forward forever. What (2b) and (3) still do NOT prove is that the
+    DASHBOARD issued the command; (4) is what proves the target was honoured.
 
     (4) IS A TOLERANCE, NOT AN EQUALITY, AND THAT IS NOT A WEAKENING.
     ``AStarPlanner.plan`` returns ``grid.grid_to_world(gx, gy)`` for the goal
@@ -2150,6 +2884,12 @@ def run_send_to_location(results, probe, robot_id):
     (``selene_agent/config/nav_params.yaml:2``) the last path pose is therefore
     up to 0.707 m from any commanded target that is not itself a cell centre;
     asserting exact equality would fail on correct behaviour.
+
+    RETRY POLICY, deliberately narrow: a bearing that fails to PLAN is retried
+    on the next bearing, because an unplannable pick is the probe's fault. A
+    bearing that plans and then fails to move is NOT retried. Re-rolling
+    stimuli until one passes is exactly "adjust the instrument until it stops
+    reporting a problem", which is the failure this register exists to name.
     """
     if robot_id is None:
         results.set(11, SKIP,
@@ -2160,67 +2900,109 @@ def run_send_to_location(results, probe, robot_id):
     if start is None:
         results.set(11, SKIP, '%s publishes no state' % (robot_id,))
         return
+    if start.get('theta') is None:
+        results.set(11, SKIP,
+                    '%s state samples carry no heading, so a heading-relative '
+                    'bearing cannot be chosen and a world-axis one is what '
+                    'D-35 exists to stop' % (robot_id,))
+        return
 
-    # Four bearings, 6 m out. The probe picks the target, so an unplannable pick
-    # is the probe's fault and not the system's: nav_params.yaml declares static
-    # rocks, and the A* goal cell must be free and in bounds.
+    max_speed, speed_source = read_rcdl_max_speed(
+        rcdl_dir, start.get('robot_type', ''), yaml_module)
+
+    # MEASURED, not asserted, and never a verdict: get_remote_parameters
+    # returns {} on a timeout, and a parameter read must not be able to fail a
+    # working override.
+    pose_source = 'unknown'
+    live = probe.get_remote_parameters('/world_odom_%s' % (robot_id,),
+                                       ['pose_source'], timeout_sec=5.0)
+    if live.get('pose_source'):
+        pose_source = str(live['pose_source'])
+
     attempts = []
-    for dx, dy in ((6.0, 0.0), (0.0, 6.0), (-6.0, 0.0), (0.0, -6.0)):
+    started = time.time()
+    for bearing in GOTO_BEARINGS_DEG:
+        if time.time() - started > GOTO_BUDGET_S:
+            attempts.append('%.0fs budget spent before bearing %+.0f deg'
+                            % (GOTO_BUDGET_S, bearing))
+            break
+
         origin = probe.latest_state(robot_id) or start
-        target_x = origin['x'] + dx
-        target_y = origin['y'] + dy
+        if origin.get('theta') is None:
+            origin = start
+        target_x, target_y = goto_target(origin, bearing)
         probe.forget_path(robot_id)
+        cut = time.time()
         response = probe.override(robot_id, 'send_to_location',
                                   target_x, target_y)
         if response is None:
-            attempts.append('bearing (%+.0f,%+.0f): no answer in 15s'
-                            % (dx, dy))
+            attempts.append('bearing %+.0f deg: no answer in 15s' % (bearing,))
             continue
         if not response.success:
-            attempts.append('bearing (%+.0f,%+.0f): rejected: %s'
-                            % (dx, dy, response.message))
+            attempts.append('bearing %+.0f deg: rejected: %s'
+                            % (bearing, response.message))
             continue
+        answered = time.time()
 
-        navigating = False
-        navigating_by = time.time() + 3.0
-        while time.time() < navigating_by:
-            sample = probe.latest_state(robot_id)
-            if sample is not None and sample['fsm_state'] == 'NAVIGATING':
-                navigating = True
-                break
-            time.sleep(0.2)
-        if not navigating:
+        # (2) and (2b), from the recorded HISTORY rather than by re-reading a
+        # level: NAVIGATING can be crossed quickly and D-34 is what happens to
+        # a gate that samples for a level it might miss.
+        # The verdict is STICKY across scans, as it was when this was inline:
+        # ``states_since`` returns a growing history and the grace comparison
+        # is against a fixed ``recv``, so a later scan can only re-find the
+        # same foreign sample -- but keeping it means an abandoned scan can
+        # never quietly discard a proof.
+        baseline = None
+        foreign_verdict = None
+        foreign_detail = ''
+        navigating_by = time.time() + GOTO_NAVIGATING_S
+        while baseline is None and time.time() < navigating_by:
+            baseline, seen_verdict, seen_detail = evaluate_goto_acceptance(
+                robot_id, probe.states_since(robot_id, cut), answered)
+            if seen_verdict is not None:
+                foreign_verdict, foreign_detail = seen_verdict, seen_detail
+            if baseline is None:
+                time.sleep(0.1)
+
+        if baseline is None and foreign_verdict is not None:
+            results.set(11, foreign_verdict, foreign_detail)
+            probe.override(robot_id, 'cancel_task')
+            return
+        if baseline is None:
             # _start_operator_navigation fires OPERATOR_CANCEL and returns to
-            # IDLE when plan_to fails (agent_node.py:792-804), so this is the
+            # IDLE when plan_to fails (agent_node.py), so this is the
             # observable signature of an unplannable target.
-            attempts.append('bearing (%+.0f,%+.0f): target (%.1f, %.1f) never '
-                            'reached NAVIGATING, likely unplannable'
-                            % (dx, dy, target_x, target_y))
+            attempts.append('bearing %+.0f deg: target (%.1f, %.1f) never '
+                            'reached NAVIGATING under an override_goto task '
+                            'id, likely unplannable'
+                            % (bearing, target_x, target_y))
             continue
 
-        problems = []
-        moved = 0.0
-        dot = 0.0
-        move_by = time.time() + 12.0
-        while time.time() < move_by:
-            sample = probe.latest_state(robot_id)
-            if sample is not None:
-                mx = sample['x'] - origin['x']
-                my = sample['y'] - origin['y']
-                moved = math.hypot(mx, my)
-                dot = mx * dx + my * dy
-                if moved > 0.2 and dot > 0.0:
-                    break
-            time.sleep(0.25)
-        if moved <= 0.2:
-            problems.append('moved only %.3f m in 12s' % (moved,))
-        elif dot <= 0.0:
-            problems.append('moved %.2f m but AWAY from the target (dot=%.3f)'
-                            % (moved, dot))
+        # (3). The baseline is the first post-override NAVIGATING sample, so
+        # the measurement starts from a robot the operator handler has already
+        # stopped (``operator_command.py:126-127`` zeroes the drive before
+        # :148 starts the new plan). The old code took its origin from a
+        # cached pre-call sample off a 2 Hz topic — up to 0.5 s and ~0.25 m
+        # stale on a moving robot, the same order as the 33 cm that separated
+        # this check's FAIL from its PASS.
+        window_s = goto_window_seconds(bearing, max_speed)
+        verdict = None
+        detail = ''
+        measured = {}
+        while verdict is None:
+            elapsed = time.time() - baseline['recv']
+            verdict, detail, measured = evaluate_goto_progress(
+                probe.states_since(robot_id, baseline['recv']), baseline,
+                (target_x, target_y), window_s, elapsed)
+            if verdict is None:
+                time.sleep(GOTO_POLL_INTERVAL_SEC)
 
+        # (4).
         with probe.lock:
             recorded = probe.paths.get(robot_id)
-        if recorded is not None and recorded[1]:
+        problems = []
+        path_recorded = bool(recorded is not None and recorded[1])
+        if path_recorded:
             last_x, last_y = recorded[1][-1]
             offset = math.hypot(last_x - target_x, last_y - target_y)
             path_note = ('planned_path ends (%.2f, %.2f), %.2f m from the '
@@ -2233,16 +3015,44 @@ def run_send_to_location(results, probe, robot_id):
             path_note = 'no planned_path was published after the override'
             problems.append(path_note)
 
-        results.measured(11, robot=robot_id, target=[target_x, target_y],
-                         moved_m=round(moved, 3), bearing_dot=round(dot, 3),
-                         attempts=attempts)
+        context = ('bearing %+.0f deg off heading %.3f rad, target (%.2f, '
+                   '%.2f), window %.1fs derived at %.2f m/s from %s, '
+                   'pose_source %s'
+                   % (bearing, float(origin['theta']), target_x, target_y,
+                      window_s, max_speed, speed_source, pose_source))
+        if attempts:
+            # Say which bearings were tried first and why they were abandoned.
+            # A verdict measured on the third bearing is not the same evidence
+            # as one measured on the first, and only the row can say so.
+            context = '%s; earlier attempts: %s' % (context,
+                                                    '; '.join(attempts))
+        results.measured(11, robot=robot_id, bearing_deg=bearing,
+                         target=[target_x, target_y],
+                         heading_rad=round(float(origin['theta']), 4),
+                         max_speed_mps=max_speed,
+                         max_speed_source=speed_source,
+                         pose_source=pose_source,
+                         baseline_speed_mps=round(
+                             float(baseline.get('speed', 0.0)), 3),
+                         attempts=attempts, **measured)
+
+        if verdict == FAIL:
+            problems.append(detail)
         if problems:
-            results.set(11, FAIL, '%s: %s' % (robot_id, '; '.join(problems)))
+            results.set(11, FAIL,
+                        goto_detail(robot_id, problems + [context], path_note,
+                                    path_recorded))
+        elif verdict == SKIP:
+            results.set(11, SKIP,
+                        goto_detail(robot_id, [detail, context], path_note,
+                                    path_recorded))
         else:
             results.set(11, PASS,
-                        '%s accepted send_to_location, reached NAVIGATING, '
-                        'moved %.2f m toward the target; %s'
-                        % (robot_id, moved, path_note))
+                        goto_detail(robot_id,
+                                    ['accepted send_to_location, reached '
+                                     'NAVIGATING under its own override_goto '
+                                     'task id, ' + detail, context],
+                                    path_note, path_recorded))
         # Leave the fleet as we found it. The pseudo-task has no orchestrator
         # queue entry, so only the agent needs telling.
         probe.override(robot_id, 'cancel_task')
@@ -2436,6 +3246,12 @@ def parse_args(argv):
     parser.add_argument('--inject-y', type=float, default=-100.0)
     parser.add_argument('--ice-config', default='')
     parser.add_argument('--rviz-config', default='')
+    parser.add_argument('--rcdl-dir', default='',
+                        help='directory holding the RCDL descriptors '
+                             '(<robot_type>.yaml). Check 11 reads max_speed '
+                             'from it to derive its motion window; without it '
+                             'the window uses the slowest shipped RCDL and the '
+                             'row says which')
     parser.add_argument('--json-out', default='/tmp/selene_phase5_probe.json')
     return parser.parse_args(argv)
 
@@ -2613,7 +3429,8 @@ def main(argv):
         task_id, inject_time = run_injection(
             results, probe, websocket, (args.inject_x, args.inject_y))
         chosen, note = pick_prospect_robot(
-            probe, fleet, args.idle_wait, allow_freeing=not args.no_free_robot)
+            probe, fleet, args.idle_wait,
+            allow_freeing=not args.no_free_robot, task_id=task_id)
         if not task_id:
             results.set(6, SKIP, 'no task was injected to correlate against')
             results.set(9, SKIP, 'no injected task to follow into the queue')
@@ -2623,7 +3440,8 @@ def main(argv):
         else:
             correlate_injection(results, probe, task_id, inject_time,
                                 auction_timeout,
-                                (args.inject_x, args.inject_y), note)
+                                (args.inject_x, args.inject_y), note,
+                                chosen=chosen)
             evaluate_queue_latency(results, probe, websocket, task_id,
                                    task_queue_type is not None)
 
@@ -2638,7 +3456,8 @@ def main(argv):
         goto_robot = next((rid for rid in eligible if rid != recharge_robot),
                           None)
         run_force_recharge(results, probe, recharge_robot)
-        run_send_to_location(results, probe, goto_robot)
+        run_send_to_location(results, probe, goto_robot, args.rcdl_dir,
+                             yaml_module)
 
         # ---- Close the window, then evaluate the recording. ----
         remaining = args.window - (time.time() - window_start)

@@ -463,6 +463,61 @@
   color: var(--text-secondary);
 }
 
+/* === D-31: no-position-fix banner ===
+   Same layout as the stale banner above so the two read as the same KIND of
+   statement, amber instead of red because this is degraded information rather
+   than a fault (FleetMap.css says the same thing about the map badge). Both can
+   be on screen at once, and they stack. */
+.robot-detail__nofix-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 16px;
+  background: rgba(255, 193, 7, 0.10);
+  border-bottom: 1px solid rgba(255, 193, 7, 0.45);
+  border-left: 3px solid var(--accent-amber, #ffc107);
+}
+
+.robot-detail__nofix-banner-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent-amber, #ffc107);
+}
+
+.robot-detail__nofix-banner-detail {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.robot-detail__nofix-banner-detail code,
+.robot-detail__fix-unreported code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-primary, #e0e6f0);
+}
+
+/* The withheld coordinate itself. Muted rather than amber: the banner above
+   carries the alarm once, and three shouting cells would out-weigh it. */
+.robot-detail__stat-value--nofix {
+  color: var(--text-muted, #8892a8);
+  font-style: italic;
+  letter-spacing: 0.5px;
+}
+
+/* D-31: the legacy-publisher note. Quieter still — nothing is wrong with this
+   robot; what is missing is our ability to check. */
+.robot-detail__fix-unreported {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--text-muted, #8892a8);
+}
+
 /* Dim the last-known values so they do not read as live */
 .robot-detail--stale .robot-detail__section {
   opacity: 0.6;

@@ -162,6 +162,21 @@ else
     echo "         the deposit layout and the RViz2 fixed-frame comparison." >&2
 fi
 
+# The RCDL descriptors, for the same reason and on the same terms. Check 11
+# derives its motion window from the robot's own max_speed (D-35: the window it
+# replaces was a bare 12.0 s literal), and the RCDL is the single source of
+# truth for what a robot can do — the rule D-06 established for capacity_kg.
+# Optional to the probe: without it the window is derived from the slowest
+# shipped RCDL, which is more forgiving, and the report row names the fallback.
+HAL_PREFIX=$(ros2 pkg prefix selene_hal 2>/dev/null) || HAL_PREFIX=""
+if [ -n "$HAL_PREFIX" ]; then
+    RCDL_DIR="$HAL_PREFIX/share/selene_hal/config"
+else
+    RCDL_DIR=""
+    echo "WARNING: ros2 pkg prefix selene_hal failed; check 11 will derive its" >&2
+    echo "         motion window from the slowest shipped max_speed and say so." >&2
+fi
+
 # --------------------------------------------------------------------------
 # Derived fleet, expected nodes and expected topics.
 #
@@ -296,7 +311,7 @@ ROW_COVERAGE_KIND=(
     "proxy: both renderers are proven to be functions of ONE snapshot through ONE colour law, and the hottest cell of the fused posterior is proven to decode row-major onto the ice. THE MAP IS SEEDED BY THE GATE to make that second half reachable: the probe publishes synthetic ResourceMapUpdate readings shaped like ice_deposits.yaml onto /orchestrator/map_update, so the fusion, sparse encoding and marker publishing are the system's own but the readings are not. That proves the map pipeline is correct on that input; it does NOT prove that robots autonomously survey the deposits, which is a slower property this gate does not measure. RViz2 is never launched and no image is compared; the recomputation uses selene_orchestrator.resource_map_viz, the same module the publisher used, so a defect inside that module is invisible to this check."
     "proxy: measured from the orchestrator's TaskAssignment to websocket arrival only. The 2 Hz snapshot carries up to 500 ms of quantisation and the React reducer and canvas draw are unmeasured, so this bounds the row from below — it can prove a violation, not conformance."
     "end-to-end: the injected task_id is correlated through announcement and assignment with the target matched to 1e-3. Check 5 names the transport actually used; it is the dashboard's own rosbridge call_service path unless it reports the rclpy fallback. No browser issues the call."
-    "proxy: the override is issued over the ROS service and verified through FSM state, planned path and odometry. The dashboard's transport and its UI are not exercised. The displacement is read off a pose that is world-referenced since 2026-07-31 (register D-08's open item; selene_sim world_odometry_node applies each robot's spawn SE(2) once) but STILL DEAD-RECKONED, so it advances whether or not the robot moved in the world — scripts/check_drive.sh is the only thing here that asks Gazebo. The planned-path assertion is what proves the target itself was honoured."
+    "proxy: the override is issued over the ROS service and verified through FSM state, the agent's own override_goto_ pseudo-task id, the planned path and odometry. The dashboard's transport and its UI are not exercised. The displacement is read off /<rid>/odom_world, which since 2026-07-31 carries the SIMULATOR'S TRUE WORLD POSE rather than dead reckoning whenever pose_source is localisation (register D-24/D-33) — the check reads that parameter off each world_odom node and prints what it found, and world_odometry_node falls back to dead reckoning only with an ERROR log and a CRITICAL FleetAlert. scripts/check_drive.sh is still the only thing here that asks Gazebo directly. The planned-path assertion is what proves the target itself was honoured."
     "end-to-end: one ros2 launch, then the derived node set, Gazebo stepping with every model present, and publisher counts on the orchestrator's topics. 'Full system' here means the ROS graph plus a served bundle — the dashboard half is check 2, which inspects the bundle and never executes it."
     "not covered"
 )
@@ -675,6 +690,7 @@ timeout 420 python3 "$PROBE" \
     --fleet "$FLEET_CSV" \
     --ice-config "$ICE_CONFIG" \
     --rviz-config "$RVIZ_CONFIG" \
+    --rcdl-dir "$RCDL_DIR" \
     --json-out "$PROBE_JSON" \
     > "$PROBE_OUT" 2> "$PROBE_LOG"
 PROBE_RC=$?

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { STATE_COLORS, STATE_LABELS, TYPE_COLORS, TYPE_LABELS, batteryColor } from '../utils/colors';
 import { SERVICES, SERVICE_TYPES } from '../utils/rosTopics';
 import { isStale, staleAgeSeconds } from '../utils/staleness';
+// D-31: shared with FleetMap, FleetCards and MissionProgress.
+import { hasPositionFix, poseValidityReported } from '../utils/poseFix';
 import BatteryGauge from './BatteryGauge';
 import './RobotDetail.css';
 
@@ -356,6 +358,18 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
   const telemetryStale = isStale(robot);
   const staleSeconds = staleAgeSeconds(robot);
 
+  // D-31: is `pose` a measurement? This panel is the only place in the
+  // dashboard that prints the robot's position as a NUMBER, which is the most
+  // credible form the fabricated (0, 0) could take — "X 0.0 m / Y 0.0 m" to one
+  // decimal reads as an instrument reading, not as a default. The map can drop
+  // an icon; a numeric field has to say what it is not showing.
+  const positionFix = hasPositionFix(robot);
+  // ...and is `positionFix` itself measured? False means the publisher carried
+  // no pose_valid field at all, so a fix is being ASSUMED under the legacy rule
+  // in utils/poseFix.js. The assumption is stated on screen rather than left to
+  // whoever reads the source later.
+  const fixReported = poseValidityReported(robot);
+
   return (
     <div className={'robot-detail animate-slide-in' + (telemetryStale ? ' robot-detail--stale' : '')}>
       {/* A-stale: explicit no-telemetry banner. Without this, a robot whose
@@ -366,6 +380,23 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
           <span className="robot-detail__stale-banner-detail">
             Last update {staleSeconds}s ago &mdash; values below are last known,
             not live
+          </span>
+        </div>
+      )}
+
+      {/* D-31: explicit no-position-fix banner, deliberately shaped like the
+          no-telemetry banner above and deliberately distinct from it. The two
+          are different faults and can occur separately: a robot with no fix is
+          talking normally (that is how we know it has no fix), and a stale
+          robot's last pose may have been perfectly good. Amber, not red — see
+          the note in FleetMap.css. */}
+      {!positionFix && (
+        <div className="robot-detail__nofix-banner">
+          <span className="robot-detail__nofix-banner-title">No position fix</span>
+          <span className="robot-detail__nofix-banner-detail">
+            This robot reports <code>pose_valid=false</code>: its odometry has
+            not produced a reading yet, so it is not drawn on the map and no
+            coordinates are shown. State and battery below are unaffected.
           </span>
         </div>
       )}
@@ -438,27 +469,69 @@ export default function RobotDetail({ robot, state, dispatch, callService }) {
       <div className="robot-detail__section">
         <div className="robot-detail__section-label">Position &amp; Motion</div>
         <div className="robot-detail__stats">
+          {/* D-31: X, Y and Heading all come out of the SAME OdometryReading,
+              so all three are withheld together. Withholding only the pair
+              would leave a heading that is really the sensor's default 0.0 rad
+              standing next to two dashes, which reads as "we know which way it
+              is pointing but not where it is" — a claim nothing supports. */}
           <div className="robot-detail__stat">
             <span className="robot-detail__stat-label">X</span>
-            <span className="robot-detail__stat-value">
-              {(pose?.x ?? 0).toFixed(1)} m
+            <span
+              className={'robot-detail__stat-value'
+                + (positionFix ? '' : ' robot-detail__stat-value--nofix')}
+            >
+              {positionFix ? `${(pose?.x ?? 0).toFixed(1)} m` : 'NO FIX'}
             </span>
           </div>
           <div className="robot-detail__stat">
             <span className="robot-detail__stat-label">Y</span>
-            <span className="robot-detail__stat-value">
-              {(pose?.y ?? 0).toFixed(1)} m
+            <span
+              className={'robot-detail__stat-value'
+                + (positionFix ? '' : ' robot-detail__stat-value--nofix')}
+            >
+              {positionFix ? `${(pose?.y ?? 0).toFixed(1)} m` : 'NO FIX'}
             </span>
           </div>
           <div className="robot-detail__stat">
             <span className="robot-detail__stat-label">Heading</span>
-            <span className="robot-detail__stat-value">{heading}&deg;</span>
+            <span
+              className={'robot-detail__stat-value'
+                + (positionFix ? '' : ' robot-detail__stat-value--nofix')}
+            >
+              {positionFix ? `${heading}°` : 'NO FIX'}
+            </span>
           </div>
+          {/* Speed is NOT withheld, and that is a judgement rather than an
+              oversight. It comes from RobotState.velocity — the encoder twist,
+              which the orchestrator now reads as "the only motion evidence it
+              can see" (D-30) — and not from the odometry pose. A robot with no
+              position fix can still truthfully report that its wheels are
+              turning, and that is exactly the case D-24/D-25 made expensive:
+              wheels at 100% slip while the position estimate said otherwise. */}
           <div className="robot-detail__stat">
             <span className="robot-detail__stat-label">Speed</span>
             <span className="robot-detail__stat-value">{speed} m/s</span>
           </div>
         </div>
+        {/* D-31: the legacy-publisher case, stated instead of assumed. The
+            coordinates above are being shown because no pose_valid arrived to
+            qualify them, not because one arrived saying they are good. See the
+            three-state decode in utils/poseFix.js — over rosbridge an absent
+            key is `undefined`, which is distinguishable from an explicit
+            false, unlike in ROS 2 itself. */}
+        {!fixReported && (
+          <div
+            className="robot-detail__fix-unreported"
+            title={
+              'This robot’s RobotState carries no pose_valid field, so the '
+              + 'dashboard cannot tell a real odometry reading from the '
+              + 'sensor’s (0, 0) default. Rebuild all six packages against '
+              + 'the current selene_msgs (D-31).'
+            }
+          >
+            Position unverified &mdash; publisher sends no <code>pose_valid</code>
+          </div>
+        )}
       </div>
 
       {/* Section 4: Current Task */}

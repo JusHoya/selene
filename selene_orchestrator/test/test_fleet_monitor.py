@@ -4,6 +4,7 @@ import pytest
 
 from selene_orchestrator.fleet_monitor import (
     DEFAULT_BATTERY_CAPACITY_WH,
+    WHEEL_MOTION_EPSILON_MPS,
     FleetMonitor,
 )
 
@@ -102,6 +103,78 @@ class TestFleetMonitor:
         timed_out = fm.check_heartbeats(current_time=106.0)
         assert 's1' in timed_out
         assert 's2' not in timed_out
+
+
+class TestPositionFix:
+    """D-31. A robot without odometry has no position, not (0, 0).
+
+    ``get_robot_position`` returned a confident origin for a robot that had
+    never received an odometry message, and ``_survey_reference_position`` (FR-MAP-3)
+    averages exactly this accessor over the prospect-capable robots -- so a
+    fleet still waiting for odometry dragged the adaptive survey target ~100 m
+    toward the world origin. Only the ACCESSOR is gated; the record itself
+    stays well-formed for ``get_robot``, which the operator-command paths read.
+    """
+
+    def test_get_robot_position_is_none_without_a_fix(self):
+        fm = FleetMonitor()
+        fm.update_robot('s1', 'scout', 'IDLE', 0.0, 0.0, 0.0, 0.9, '',
+                        timestamp=0.0, pose_valid=False)
+        assert fm.get_robot_position('s1') is None
+
+    def test_a_fix_restores_the_position(self):
+        fm = FleetMonitor()
+        fm.update_robot('s1', 'scout', 'IDLE', 0.0, 0.0, 0.0, 0.9, '',
+                        timestamp=0.0, pose_valid=False)
+        fm.update_robot('s1', 'scout', 'IDLE', -45.0, -92.0, 0.0, 0.9, '',
+                        timestamp=0.5, pose_valid=True)
+        assert fm.get_robot_position('s1') == (-45.0, -92.0)
+
+    def test_losing_the_fix_hides_the_stale_position(self):
+        """A pose from ten seconds ago is not a position fix now."""
+        fm = FleetMonitor()
+        fm.update_robot('s1', 'scout', 'IDLE', -45.0, -92.0, 0.0, 0.9, '',
+                        timestamp=0.0, pose_valid=True)
+        fm.update_robot('s1', 'scout', 'IDLE', -45.0, -92.0, 0.0, 0.9, '',
+                        timestamp=10.0, pose_valid=False)
+        assert fm.get_robot_position('s1') is None
+        # get_robot still answers, with the flag and the last pose it saw.
+        record = fm.get_robot('s1')
+        assert record['pose_valid'] is False
+        assert record['pose'] == (-45.0, -92.0, 0.0)
+
+    def test_the_default_is_a_fix_so_existing_callers_are_unchanged(self):
+        """~40 positional call sites predate the parameter and mean a pose.
+
+        The WIRE default is the opposite (ROS 2 default-initialises bool to
+        false, which is the fail-safe direction for a publisher that has not
+        been updated). The two defaults disagree deliberately.
+        """
+        fm = FleetMonitor()
+        fm.update_robot('s1', 'scout', 'IDLE', 1.0, 2.0, 0.0, 0.9, '',
+                        timestamp=0.0)
+        assert fm.get_robot_position('s1') == (1.0, 2.0)
+        assert fm.get_robot('s1')['pose_valid'] is True
+
+
+class TestWheelTwistOnTheRecord:
+    """D-30. The orchestrator dropped ``RobotState.velocity`` entirely."""
+
+    def test_the_twist_magnitudes_are_stored(self):
+        fm = FleetMonitor()
+        fm.update_robot('h1', 'hauler', 'WORKING', 0, 0, 0, 0.8, '',
+                        timestamp=0.0,
+                        velocity_linear=-0.395, velocity_angular=1.0)
+        record = fm.get_robot('h1')
+        assert record['wheel_speed_mps'] == pytest.approx(0.395)
+        assert record['wheel_yaw_rate'] == pytest.approx(1.0)
+
+    def test_the_default_is_stopped(self):
+        """Every existing call site omits the twist and means "not driven"."""
+        fm = FleetMonitor()
+        fm.update_robot('s1', 'scout', 'IDLE', 0, 0, 0, 0.9, '', timestamp=0.0)
+        assert fm.get_robot('s1')['wheel_speed_mps'] == 0.0
+        assert fm.get_robot('s1')['wheel_speed_mps'] < WHEEL_MOTION_EPSILON_MPS
 
 
 class TestPerRobotBatteryCapacity:

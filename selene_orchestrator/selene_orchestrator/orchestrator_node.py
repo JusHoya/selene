@@ -64,7 +64,13 @@ from geometry_msgs.msg import Point
 from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
-from selene_orchestrator.fleet_monitor import FleetMonitor
+from selene_orchestrator.fleet_monitor import (
+    MAX_PLAUSIBLE_POSE_JUMP_M,
+    POSE_MOTION_EPSILON_M,
+    WHEEL_MOTION_EPSILON_MPS,
+    FleetMonitor,
+    FleetMotionReport,
+)
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 from selene_orchestrator.task_auction import TaskAuction, Bid
 from selene_orchestrator.resource_map import ResourceMap
@@ -1064,16 +1070,64 @@ class OrchestratorNode(Node):
         # froze, three scouts went to ERROR, and the orchestrator carried on
         # auctioning into a dead simulation with NO alert anywhere.
         #
-        # Seconds a robot's pose may be unchanged before it counts as stalled.
-        # Fires only when EVERY non-OFFLINE robot is stalled and at least one
-        # of them is in a state that implies motion, so a fleet parked at the
-        # charger does not trip it -- see _check_simulation_stall.
+        # Seconds a robot may be stationary WHILE EXPECTED TO MOVE before it
+        # counts as stalled -- see FleetMonitor.assess_motion, and note that
+        # "while expected to move" is D-30's repair: this used to be time since
+        # the pose last changed, a clock that runs while a robot is parked.
         #
-        # 20 s: the navigator replans and creeps, so a robot working around an
-        # obstacle can be under POSE_MOTION_EPSILON_M for several seconds at a
-        # time, and the whole fleet doing that simultaneously is what this must
-        # not call a dead simulator. <= 0 disables the check.
-        self.declare_parameter('sim_stall_timeout_sec', 20.0)
+        # 10.0 s, TIGHTENED from 20.0 on 2026-07-31, and the tightening is not
+        # what removes D-30's false positives -- assess_motion and the mover
+        # quorum below do that. It is derived from the agent's own recovery
+        # budget, which is the real bound on how long a robot may legitimately
+        # sit still inside a motion state:
+        #
+        #   lower bound  > 5.0 s   one PathFollower stall-and-replan cycle
+        #                          (selene_agent/navigator.py:478). One
+        #                          legitimate recovery must never alert; 10.0
+        #                          is 2x it.
+        #   upper bound  < 20.0 s  (MAX_REPLAN_ATTEMPTS 3 + 1) x 5.0 s
+        #                          (navigator.py:639, :478) -- the point at
+        #                          which the skill fails, the FSM leaves the
+        #                          motion state and the detector goes blind.
+        #                          The old 20.0 sat exactly on that edge, i.e.
+        #                          zero margin. 10.0 leaves half the window.
+        #
+        # A TURN CONTRIBUTES ZERO STATIONARY SECONDS, which is the claim the
+        # old 20 s was really protecting and it did not need protecting.
+        # PathFollower never commands zero linear velocity while FOLLOWING
+        # (navigator.py:533-549): the worst-case speed_scale is 0.3 above 45
+        # deg of heading error, so the floor is 0.5 x 1.0 x 0.3 = 0.15 m/s =
+        # 7.5 cm per 0.5 s sample, 7.5x POSE_MOTION_EPSILON_M. Driving the real
+        # follower through a 180 deg reversal from rest measures a minimum
+        # per-sample displacement of 14.9x the epsilon on the slowest RCDL
+        # (test_simulation_stall.py pins this), and D-35's independently
+        # MEASURED about-turn -- 164.8 deg swept, carrying the body up to
+        # 3.745 m from where it started over ~10.2 s -- is ~0.37 m/s of mean
+        # body speed, 18x the epsilon per sample. Two measurements, one
+        # analytic and one from a live run, agreeing on the same conclusion.
+        #
+        # The stated rationale this replaces cited a code path that does not
+        # run: "a robot working around an obstacle can be under
+        # POSE_MOTION_EPSILON_M for several seconds". ObstacleAvoidance has
+        # zero production callers; the module is imported only by
+        # selene_agent/test/test_navigator.py.
+        #
+        # <= 0 disables the check.
+        self.declare_parameter('sim_stall_timeout_sec', 10.0)
+        # How many robots must be expected to move before a stall may be
+        # reported as a FLEET-level condition at all.
+        #
+        # 2, and it is a measurement rather than a taste. The shipped predicate
+        # was run on one wedged robot among a parked fleet and on a dead
+        # simulator: the output was IDENTICAL. One witness cannot support a
+        # fleet-wide cause because a parked fleet contributes no evidence
+        # either way; two can. FleetMotionReport.fleet_wide floors this at 2 so
+        # it cannot be configured back down to the n=1 claim D-30 was opened
+        # for. Raising it trades sensitivity for confidence: with 3, a genuine
+        # simulator death while only two robots are driving is reported as two
+        # per-robot ERRORs instead of one CRITICAL. Nothing goes silent either
+        # way -- only the cause attribution is gated.
+        self.declare_parameter('sim_stall_min_movers', 2)
         # ---- FR-DASH-7 / FR-ISRU-2: the material ledger ----
         # The ISRU processing depot every haul delivers to. NOT the recharge
         # station: see orchestrator_params.yaml for the three-way position
@@ -1145,6 +1199,8 @@ class OrchestratorNode(Node):
             self.get_parameter('auction_max_failed_rounds').value)
         self._sim_stall_timeout = float(
             self.get_parameter('sim_stall_timeout_sec').value)
+        self._sim_stall_min_movers = int(
+            self.get_parameter('sim_stall_min_movers').value)
         self._depot = (float(self.get_parameter('depot_x').value),
                        float(self.get_parameter('depot_y').value))
         dedupe_size = int(
@@ -1233,10 +1289,20 @@ class OrchestratorNode(Node):
         #: means a robot arrived in IDLE, which is the only new information
         #: that can make an abandoned task biddable.
         self._last_idle_arrivals = 0
-        #: D-22: True while the fleet-wide odometry freeze is being reported,
-        #: so the CRITICAL alert is raised once on entry and once on recovery
+        #: D-22: True while a fleet-level motion stall is being reported, so
+        #: the CRITICAL alert is raised once on entry and once on recovery
         #: rather than at 1 Hz for the rest of the mission.
         self._sim_stalled = False
+        #: D-30: robots currently reported stalled, so each episode produces
+        #: one ERROR and one matching INFO on recovery. Without this latch the
+        #: per-robot alert is a 1 Hz flood, which is the failure D-20 exists
+        #: to prevent arriving from a different direction.
+        self._stalled_robots: set[str] = set()
+        #: D-31: FleetMonitor.distance_rejections as of the last report. A
+        #: refused pose increment that nobody logs is how the phantom distance
+        #: survived a full run; this is compared each heartbeat so a rise gets
+        #: exactly one line carrying the MAGNITUDE, not just a count.
+        self._distance_rejections_reported = 0
 
         # ---- Tracking ----
         self._start_time = self.get_clock().now()
@@ -1440,6 +1506,21 @@ class OrchestratorNode(Node):
             # FR-DASH-7 energy clause: the robot's own RCDL capacity, so the
             # fleet energy total stops assuming every robot is a 50 Wh scout.
             battery_capacity_wh=float(getattr(msg, 'battery_capacity_wh', 0.0)),
+            # D-31. Read DIRECTLY, not through getattr with a default: a
+            # default of True would silently restore the fabricated-pose bug
+            # against a stale message class, and a default of False would drop
+            # every robot out of the distance total and the survey centroid.
+            # Appending the field changed the type hash, so a publisher that
+            # lacks it cannot connect at all -- an AttributeError here would
+            # mean this node is running against a stale generated package, and
+            # that should be loud.
+            pose_valid=bool(msg.pose_valid),
+            # D-30. The ENCODER twist, which is the only motion evidence the
+            # orchestrator can see -- it subscribes to no /<rid>/cmd_vel. Until
+            # now `_on_robot_state` dropped msg.velocity entirely and the only
+            # reader of it in the repository was the dashboard.
+            velocity_linear=float(msg.velocity.linear.x),
+            velocity_angular=float(msg.velocity.angular.z),
         )
 
         # FR-DASH-3: mirror the running skill's progress onto the queue entry
@@ -1738,89 +1819,252 @@ class OrchestratorNode(Node):
         # same question -- "is the fleet still alive" -- from opposite sides.
         # The heartbeat sees a process stop; this sees the WORLD stop while
         # every process keeps running.
-        self._check_simulation_stall()
+        self._check_motion_stalls()
+        # D-31. Same timer, same reason: a distance increment the accumulator
+        # refused is evidence about the position source, and it used to be
+        # discarded silently.
+        self._report_distance_rejections()
 
-    def _check_simulation_stall(self) -> None:
-        """Raise a CRITICAL alert when the whole fleet's odometry freezes.
+    def _check_motion_stalls(self) -> None:
+        """Report robots that are expected to be moving and are not — D-30.
 
-        WHAT THIS IS FOR (D-22). At 10 robots (4 scouts / 3 excavators / 3
-        haulers -- the fleet `selene_sim/config/spawn_positions.yaml` describes
-        for NFR-1.4) Gazebo hit an ODE assertion in `collide()` and exited 134
-        about five minutes into a run on 2026-07-31. `ros2 launch` survived.
-        Every agent process survived, kept ticking at 10 Hz and kept publishing
-        RobotState at 2 Hz, so `check_heartbeats` saw a completely healthy
-        fleet. Navigation then failed fleet-wide as odom froze, three scouts
-        went to ERROR, and the orchestrator kept auctioning into a dead
-        simulation. NOTHING IN THE SYSTEM NOTICED.
+        WHAT THIS IS FOR (D-22, originally). At 10 robots (4 scouts / 3
+        excavators / 3 haulers -- the fleet
+        `selene_sim/config/spawn_positions.yaml` describes for NFR-1.4) Gazebo
+        hit an ODE assertion in `collide()` and exited 134 about five minutes
+        into a run on 2026-07-31. `ros2 launch` survived. Every agent process
+        survived, kept ticking at 10 Hz and kept publishing RobotState, so
+        `check_heartbeats` saw a completely healthy fleet. Navigation then
+        failed fleet-wide as odom froze, three scouts went to ERROR, and the
+        orchestrator kept auctioning into a dead simulation. NOTHING IN THE
+        SYSTEM NOTICED.
 
         WHY HERE AND NOT IN THE AGENT. A single agent cannot tell "the
         simulator died" from "I am parked": it only sees its own odometry, and
         its own odometry standing still is the normal state of a robot that is
         idle, charging, drilling or stuck. The orchestrator is the only place
-        that sees every robot at once, and the discriminator is precisely that
-        the freeze is FLEET-WIDE. It also keeps the agent free of any
+        that sees every robot at once. It also keeps the agent free of any
         Gazebo-specific dependency: nothing here knows what a simulator is,
-        only that the poses on `/<robot>/state` stopped changing.
+        only that the poses on `/<robot>/state` stopped changing while the
+        robots that produced them were supposed to be driving.
 
-        THE TWO CONDITIONS, and both are needed:
+        WHAT CHANGED ON 2026-07-31, and why the method was renamed (D-30). The
+        previous version was called `_check_simulation_stall` and its alert
+        said "this is not a robot fault: the simulator, the physics step or the
+        odometry bridge has stopped". It could not support that claim. Its
+        input was "time since this robot last moved 1 cm", a clock that runs
+        while a robot is parked, so parked robots were stalled by construction
+        and its all-robots clause was satisfied for free by the nine parked
+        members of a ten-robot fleet. Running the shipped predicate on ONE
+        wedged scout among a parked fleet and on a DEAD SIMULATOR produced
+        identical output. It fired twice on run B of 2026-07-31, each time on a
+        robot that had just entered NAVIGATING carrying a 60 s-stale pose clock
+        -- zero seconds of actual failure -- and cleared one heartbeat later.
 
-        * every non-OFFLINE robot is stalled -- one robot stuck against a rock
-          is a navigation problem, not a simulation one, and it already
-          surfaces as that robot's own ERROR;
-        * at least one of them is in NAVIGATING or RETURNING -- a robot in
-          those states has a path and a velocity command and IS EXPECTED TO BE
-          MOVING. Without this clause a fleet that has finished its survey and
-          is sitting IDLE at the depot would raise a CRITICAL alert every
-          mission.
+        So this now emits TWO kinds of alert from one observation:
 
-        WHAT IT CANNOT SEE, stated because the alert must not be read as a
-        guarantee. Once every robot has given up and gone to ERROR or IDLE, no
-        robot is in a motion state and this stops firing -- so the alert dates
-        the failure, it does not track it. That is the right trade: a stale
-        CRITICAL repeating forever is how an alert log becomes wallpaper. It
-        also cannot distinguish a dead simulator from a wedged one, or from the
-        ros_gz odometry bridge dying while Gazebo lives; the message says
-        "odometry", which is what was actually observed, and lists the causes.
+        * PER ROBOT, ERROR, latched per episode. Names the robot, what state it
+          is in, how long it has been stationary while expected to move, and
+          what its wheels report. That is what would have named the wedged
+          scout on run A -- at ~10 s rather than at 408 s, and as the right
+          thing.
+        * FLEET, CRITICAL, latched, and only when the observation can support a
+          fleet-level statement at all: every mover stalled AND at least
+          `sim_stall_min_movers` (>= 2) of them. The text states the count and
+          WITHHOLDS the cause, because 4 simultaneously wedged robots and a
+          stopped physics step look identical from here and this code cannot
+          tell them apart. Saying which is which was the defect.
+
+        WHY THIS STILL CATCHES A DEAD SIMULATOR, and catches it sooner. At the
+        ODE abort at least three scouts were driving -- they subsequently
+        reported "Path blocked, no alternate route", which is reachable only
+        from the navigator's FOLLOWING path. Their poses freeze at the abort
+        while their FSM stays NAVIGATING, so each accumulates stationary time
+        from the freeze instant; all movers stalled and M = 3 >= 2, so the
+        CRITICAL fires at 10 s instead of 20 s.
+
+        WHAT IT STILL CANNOT SEE, stated because an alert must not be read as a
+        guarantee.
+
+        * A robot that has given up and gone to ERROR with its wheels stopped is
+          no longer expected to move, so once the whole fleet has given up this
+          goes quiet: the alert dates the failure, it does not track it. The
+          wheel-speed clause extends that window past the agent's give-up
+          whenever the frozen odometry sample retains a non-zero twist -- which
+          is READ from the HAL's caching behaviour (gazebo_hal.py:353-385), NOT
+          measured on a run, and should be treated as a hypothesis until one
+          confirms it.
+        * A ROBOT THAT NEVER ACQUIRES A POSITION FIX IS NOT WATCHED AT ALL, and
+          this is a deliberate coverage trade rather than an oversight. There is
+          no position measurement for it, so it cannot be called stationary; it
+          appears in `report.no_fix` and, if any other robot is driving, in the
+          fleet message's count. If the WHOLE fleet lost its fix, nothing here
+          would alert. In this system that is a startup-only state -- the HAL's
+          cached reading keeps `is_valid` true once the first message has
+          arrived, so a mid-run producer death shows up as a frozen VALID pose,
+          which is the case above -- but a real localisation stack would not
+          behave that way, and a "no fix for too long" alert would need a
+          threshold nothing in this repository can currently derive.
         """
         if not (self._sim_stall_timeout > 0.0):
             return
 
-        frozen, live, expected_to_move = self._fleet.is_fleet_frozen(
-            self._sim_stall_timeout)
+        report = self._fleet.assess_motion(self._sim_stall_timeout)
+        self._report_per_robot_stalls(report)
+        self._report_fleet_motion_stall(report)
 
-        if frozen and not self._sim_stalled:
-            self._sim_stalled = True
+    def _report_per_robot_stalls(self, report: FleetMotionReport) -> None:
+        """One ERROR per stall episode, one INFO when it clears."""
+        stalled_now = {s.robot_id for s in report.stalled}
+
+        for stall in report.stalled:
+            if stall.robot_id in self._stalled_robots:
+                continue
+            self._stalled_robots.add(stall.robot_id)
+            # The yaw rate is included because it separates two failures the
+            # forward speed alone cannot: pushing into an obstacle (speed, no
+            # yaw) from pivoting against one (yaw, little speed).
+            twist = (f'{stall.wheel_speed_mps:.2f} m/s and '
+                     f'{stall.wheel_yaw_rate:.2f} rad/s')
+            if stall.wheel_speed_mps > WHEEL_MOTION_EPSILON_MPS:
+                wheels = (
+                    f'its wheels report {twist}, so '
+                    f'the wheels are turning and the body is not: either it is '
+                    f'physically stuck (slip) or its position source has '
+                    f'frozen')
+            else:
+                wheels = (
+                    f'its wheels report {twist}, so it '
+                    f'is not being driven either')
             self.get_logger().error(
-                'FLEET-WIDE ODOMETRY FREEZE: none of %d robot(s) has moved in '
-                '%.0fs and %d of them should be driving (%s).'
-                % (len(live), self._sim_stall_timeout, len(expected_to_move),
-                   ', '.join(sorted(expected_to_move))))
+                'MOTION STALL %s: %.0fs stationary in %s, wheels %.2f m/s '
+                '%.2f rad/s'
+                % (stall.robot_id, stall.stationary_sec, stall.fsm_state,
+                   stall.wheel_speed_mps, stall.wheel_yaw_rate))
+            self._publish_alert(
+                'ERROR', stall.robot_id,
+                f'{stall.robot_id} has not moved in '
+                f'{stall.stationary_sec:.0f}s. Its state is {stall.fsm_state} '
+                f'and {wheels}. Position unchanged to within '
+                f'{POSE_MOTION_EPSILON_M * 100:.0f} cm. '
+                f'{len(report.stalled)} of {len(report.movers)} robot(s) '
+                f'expected to be moving are in this condition.')
+
+        for rid in sorted(self._stalled_robots - stalled_now):
+            self._stalled_robots.discard(rid)
+            # Only announce recovery for a robot we can still see. One that has
+            # gone OFFLINE or stopped being a mover has not been observed to
+            # resume; saying it did would be the same class of unsupported
+            # claim this method was rewritten to remove.
+            if rid in report.movers:
+                self._publish_alert(
+                    'INFO', rid,
+                    f'{rid} is moving again. Anything it reported while it was '
+                    f'stationary -- distance, map readings, task progress -- '
+                    f'was produced without its position changing.')
+
+    def _report_fleet_motion_stall(self, report: FleetMotionReport) -> None:
+        """The fleet-level claim, gated behind a quorum of witnesses."""
+        fleet_wide = report.fleet_wide(self._sim_stall_min_movers)
+
+        if fleet_wide and not self._sim_stalled:
+            self._sim_stalled = True
+            driven = [s for s in report.stalled
+                      if s.wheel_speed_mps > WHEEL_MOTION_EPSILON_MPS]
+            fastest = max((s.wheel_speed_mps for s in report.stalled),
+                          default=0.0)
+            parked = len(report.online) - len(report.movers) - len(
+                report.no_fix)
+            self.get_logger().error(
+                'MOTION STALL, fleet: %d of %d mover(s) stationary for up to '
+                '%.0fs (%s)'
+                % (len(report.stalled), len(report.movers),
+                   report.longest_stationary_sec,
+                   ', '.join(sorted(report.stalled_ids))))
+            no_fix_note = (
+                f' {len(report.no_fix)} online robot(s) have no position fix '
+                f'at all and are not evidence either way.'
+                if report.no_fix else '')
             self._publish_alert(
                 'CRITICAL', '',
-                f'The whole fleet has stopped moving. None of the '
-                f'{len(live)} online robot(s) has reported a pose change in '
-                f'{self._sim_stall_timeout:.0f}s, and '
-                f'{len(expected_to_move)} of them '
-                f'({", ".join(sorted(expected_to_move))}) are in a state that '
-                f'requires motion. Every robot is still publishing state, so '
-                f'this is not a robot fault: the simulator, the physics step '
-                f'or the odometry bridge has stopped. Check whether the '
-                f'gazebo process is still alive -- an ODE assertion in '
-                f'collide() killed it at 10 robots on 2026-07-31 while '
-                f'ros2 launch survived. Nothing the fleet does from here is '
-                f'meaningful until it is restarted.')
+                f'MOTION STALL: {len(report.stalled)} of '
+                f'{len(report.movers)} robot(s) expected to be moving '
+                f'({", ".join(sorted(report.stalled_ids))}) have reported no '
+                f'position change for up to '
+                f'{report.longest_stationary_sec:.0f}s; {len(driven)} of them '
+                f'report wheels turning at up to {fastest:.2f} m/s. '
+                f'{parked} other online robot(s) are in states that require no '
+                f'motion and are not evidence either way.{no_fix_note} '
+                f'OBSERVED, NOT DIAGNOSED: this is what a stopped physics '
+                f'step, a dead odometry bridge or a frozen pose source looks '
+                f'like from here, and it is also what '
+                f'{len(report.stalled)} simultaneously wedged robots look '
+                f'like. Check whether the gazebo process is alive first -- an '
+                f'ODE assertion in collide() killed it at 10 robots on '
+                f'2026-07-31 while ros2 launch survived.')
             return
 
-        if self._sim_stalled and not frozen:
+        if self._sim_stalled and not fleet_wide:
             self._sim_stalled = False
+            resumed = sorted(set(report.movers) - set(report.stalled_ids))
             self.get_logger().info(
-                'Fleet motion resumed; the odometry freeze has cleared.')
+                'Fleet motion stall cleared; %d mover(s) reporting motion again'
+                % (len(resumed),))
             self._publish_alert(
                 'INFO', '',
-                'Fleet motion has resumed after a fleet-wide odometry freeze. '
-                'Anything the fleet reported during the freeze -- distances, '
-                'map readings, task outcomes -- was produced against a world '
-                'that was not stepping and should not be trusted.')
+                f'The fleet-wide motion stall has cleared. '
+                f'{len(resumed)} robot(s) '
+                f'({", ".join(resumed) if resumed else "none"}) are reporting '
+                f'position changes again. Anything THOSE robots reported '
+                f'during the stall -- distances, map readings, task outcomes '
+                f'-- was produced while their position was not changing and '
+                f'should not be trusted.')
+
+    def _report_distance_rejections(self) -> None:
+        """Log pose increments the distance accumulator refused — D-31.
+
+        A filter whose rejects are silent is how the phantom fleet distance
+        survived a full run: `fleet_distance_total` read 1665.37 m against a
+        ~753 m ground-truth path integral, and the 500 m guard in FleetMonitor
+        discarded whatever it discarded without telling anybody.
+
+        The MAGNITUDE is what matters and is why this logs records rather than
+        a count. Eight rejections could be eight small simulator hiccups or
+        four ~166 m localisation flips, and the second of those is the
+        un-eliminated candidate mechanism for the rest of D-31's excess. The
+        per-robot accumulated distance goes on the same line because it is the
+        number a reader will want next, and because `get_robot_distance` had
+        zero callers anywhere in the repository until this one.
+
+        On CHANGE only. At 1 Hz an unconditional line would be wallpaper.
+        """
+        total = self._fleet.distance_rejections
+        if total <= self._distance_rejections_reported:
+            return
+        first_unreported = self._distance_rejections_reported
+        self._distance_rejections_reported = total
+
+        for rid in self._fleet.get_all_robots():
+            for record in self._fleet.get_distance_rejections(rid):
+                if record['seq'] <= first_unreported:
+                    continue
+                self.get_logger().warn(
+                    'Rejected a %.1f m pose increment for %s: (%.2f, %.2f) -> '
+                    '(%.2f, %.2f). It is above the %.0f m implausible-jump '
+                    'guard, so it was NOT added to that robot\'s %.1f m of '
+                    'travelled distance. OBSERVED, NOT DIAGNOSED: a respawn, a '
+                    'position-source flip and a teleport all look like this '
+                    'from here. No robot in this fleet can cover that in one '
+                    'sample -- the fastest RCDL max_speed is 0.5 m/s.'
+                    % (record['increment_m'], rid,
+                       record['prev_pose'][0], record['prev_pose'][1],
+                       record['new_pose'][0], record['new_pose'][1],
+                       MAX_PLAUSIBLE_POSE_JUMP_M,
+                       self._fleet.get_robot_distance(rid)))
+        self.get_logger().warn(
+            'Fleet distance accumulator has now refused %d pose increment(s) '
+            'in total. fleet_distance_total is a lower bound on the distance '
+            'actually travelled, not a measurement of it.' % (total,))
 
     def _auction_tick(self) -> None:
         """Run the auction state machine: start or resolve auctions."""

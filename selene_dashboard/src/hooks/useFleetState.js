@@ -1,4 +1,9 @@
 import { useReducer } from 'react';
+// D-31: the wire rule for RobotState.pose_valid, defined once beside the
+// readers that consume it. See utils/poseFix.js for why an ABSENT key and an
+// explicit `false` are decoded differently here when ROS 2 cannot tell them
+// apart at all.
+import { decodePoseValidity } from '../utils/poseFix';
 
 const MAX_HISTORY = 20;
 const MAX_ALERTS = 50;
@@ -14,6 +19,19 @@ const MAX_TASK_EVENTS = 200;
 export const initialState = {
   robots: {},
   resourceReadings: [],
+  // Monotonic identity key minted per ACCEPTED reading. Same role, and the same
+  // hard-won reason, as resourceMapRevision below: ResourceGraph used to
+  // identify a reading by its POSITION in this array, and this array prepends,
+  // so every arrival silently moved the operator's selection, the hover ring and
+  // every node's association with its own sample onto a different reading. See
+  // the note on `case 'RESET'` for why this one is carried across a reconnect.
+  resourceReadingSeq: 0,
+  // Readings rejected by the projector below. Counted rather than logged so the
+  // view can SAY the feed is being rejected: a reading that fails validation and
+  // is silently dropped is indistinguishable on screen from a scout that never
+  // published, and "No resource data yet" is the wrong story to tell in that
+  // case. ResourceGraph reads this in both its empty state and its stats panel.
+  resourceReadingsDropped: 0,
   alerts: [],
   missionProgress: null,
   tasksById: {},           // task_id -> projection of one TaskQueueState.tasks row
@@ -103,6 +121,52 @@ function projectTaskRow(row) {
   };
 }
 
+// One ResourceMapUpdate -> the record ResourceGraph renders, or null if the
+// message is unusable.
+//
+// WHY THIS VALIDATES AT ALL, when the sibling case for this topic used to
+// project inline in App.jsx's roslib callback with no checks whatsoever.
+// UPDATE_RESOURCE_MAP already rejects degenerate geometry, and its comment gives
+// the reason in one line: "a canvas draws NaN as nothing at all". Exactly the
+// same is true here and worse, because these values also reach a TEXT panel: a
+// single non-finite ice_concentration makes `Peak` and `Avg` read "NaN wt%" for
+// the rest of the session, since both are reductions over the whole array and
+// nothing ever evicts a bad sample except the 500-cap.
+//
+// The three rules mirror the PRODUCER's own contract rather than inventing one.
+// ProspectSkill averages the sigmas its HAL sensor reports and agent_node drops
+// any reading whose sigma is non-finite or <= 0 (selene_agent/selene_agent/
+// agent_node.py:1349-1369), so a sigma of 0 on the wire means something upstream
+// of the agent's own filter is wrong and the sample is not trustworthy.
+// `location` is required because ResourceGraph's edge computation is a distance
+// between two locations and a missing one is a TypeError inside a 30 fps loop.
+//
+// NOT VALIDATED: the RANGE of ice_concentration. The 0-10 wt% figure the node
+// radius and the colour law assume is a display convention, not a wire contract
+// (ResourceMapUpdate.msg declares a bare float32), and clamping is the
+// renderer's job. A 40 wt% reading should draw at the top of the scale and be
+// visible, not be thrown away by the reducer.
+function projectResourceReading(msg, seq) {
+  if (!msg) return null;
+  const loc = msg.location;
+  if (!loc) return null;
+  const x = loc.x;
+  const y = loc.y;
+  const conc = msg.ice_concentration;
+  const sigma = msg.sensor_uncertainty;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (!Number.isFinite(conc)) return null;
+  if (!Number.isFinite(sigma) || sigma <= 0) return null;
+  return {
+    scout_id: typeof msg.scout_id === 'string' ? msg.scout_id : '',
+    location: { x, y },
+    ice_concentration: conc,
+    sensor_uncertainty: sigma,
+    // Identity, not data. Never sent to a backend, never compared across tabs.
+    clientSeq: seq,
+  };
+}
+
 // One TaskQueueState.events element -> the record the history lists render.
 function projectTaskEvent(ev) {
   const target = ev.target || {};
@@ -145,6 +209,21 @@ export function fleetReducer(state, action) {
         if (stateHistory.length > MAX_HISTORY) stateHistory.pop();
       }
 
+      // D-31: does `pose` below carry a measurement, or the odometry sensor's
+      // pre-first-message default of (0, 0)?
+      //
+      // THE POSE IS STORED EITHER WAY, and that is the deliberate half of this.
+      // The obvious alternative — store `pose: null` when the fix is missing —
+      // would be absorbed silently by guards that already exist all over the
+      // consumers (`if (!robot.pose) return;` in planRobotMarks and
+      // drawPlannedPaths, `pose?.x ?? 0` in RobotDetail): the robot would
+      // vanish from the map with no trace and the detail panel would print a
+      // confident 0.0 m. RobotState.msg is explicit that "`pose` IS STILL
+      // POPULATED when this is false ... the flag, not the value, carries the
+      // meaning", so the flag is what the reducer carries, and every consumer
+      // is made to test it and to SAY what it found.
+      const poseValidity = decodePoseValidity(msg);
+
       // D-03: the task-lifecycle inference that used to live here is GONE.
       //
       // It watched current_task_id appear and disappear and wrote PENDING /
@@ -164,6 +243,13 @@ export function fleetReducer(state, action) {
             robot_type: msg.robot_type,
             fsm_state: msg.fsm_state,
             pose: msg.pose || { x: 0, y: 0, theta: 0 },
+            // D-31: false means `pose` above is NOT a position. Snake_case
+            // because it is a wire field; `poseValidReported` beside it is
+            // camelCase because it is client-derived — it says whether the
+            // publisher carried the field at all, which distinguishes a
+            // measured "there is a fix" from the legacy assumption of one.
+            pose_valid: poseValidity.poseValid,
+            poseValidReported: poseValidity.poseValidReported,
             velocity: msg.velocity || { linear: { x: 0 }, angular: { z: 0 } },
             battery_level: msg.battery_level,
             // D-06: Wh, from the robot's own RCDL. 0 (or absent) means the
@@ -180,10 +266,22 @@ export function fleetReducer(state, action) {
       };
     }
 
+    // The payload is the RAW ResourceMapUpdate off the wire. It used to be
+    // projected inside App.jsx's roslib callback, which dereferenced
+    // `msg.location.x` with no guard — a malformed message threw inside the
+    // websocket handler rather than being counted and dropped here.
     case 'ADD_RESOURCE_READING': {
-      const readings = [action.payload, ...state.resourceReadings];
+      const seq = state.resourceReadingSeq + 1;
+      const projected = projectResourceReading(action.payload, seq);
+      if (!projected) {
+        // A rejected reading does NOT consume a clientSeq. The counter is an
+        // identity supply for things that exist; burning numbers on messages
+        // that never entered the array would make gaps in it mean nothing.
+        return { ...state, resourceReadingsDropped: state.resourceReadingsDropped + 1 };
+      }
+      const readings = [projected, ...state.resourceReadings];
       if (readings.length > MAX_READINGS) readings.pop();
-      return { ...state, resourceReadings: readings };
+      return { ...state, resourceReadings: readings, resourceReadingSeq: seq };
     }
 
     case 'ADD_ALERT': {
@@ -378,6 +476,19 @@ export function fleetReducer(state, action) {
         // (src/__tests__/fleetState.resourceMapRevision.test.js) asserts that
         // no revision value is ever issued twice in a tab's lifetime.
         resourceMapRevision: state.resourceMapRevision,
+        // NOT reset, for exactly the D-15 reason above. This is the key
+        // ResourceGraph's node table and the operator's selection are joined on.
+        // `resourceReadings` itself IS cleared — those samples belong to the
+        // dead session — but re-issuing clientSeq 1 for a new session's first
+        // reading is the same collision D-15 was opened for: any node, hover or
+        // selection still holding key 1 from the previous session would silently
+        // re-bind to an unrelated sample instead of resolving to nothing.
+        //
+        // resourceReadingsDropped is deliberately NOT carried forward: it is a
+        // per-session diagnostic like resourceMapDropped, and a count that
+        // spanned sessions could not answer "is the CURRENT backend sending me
+        // garbage".
+        resourceReadingSeq: state.resourceReadingSeq,
       };
 
     case 'SELECT_TASK':

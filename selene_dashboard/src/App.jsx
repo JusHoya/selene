@@ -89,12 +89,53 @@ function App() {
     const listeners = [];
 
     ids.forEach((id) => {
-      // RobotState
+      // RobotState.
+      //
+      // D-34: NO throttle_rate, and the removal of `throttle_rate: 500` is the
+      // point rather than a tidy-up.
+      //
+      // WHAT IT WAS DOING. `throttle_rate` is a rosbridge SERVER-SIDE minimum
+      // interval, applied per subscription before anything reaches this browser,
+      // and `queue_length` was unset — which in the rosbridge protocol means
+      // DROP, not delay. With the agent publishing RobotState only from its
+      // 0.5 s timer the two rates coincided and the throttle was invisible. It
+      // stopped being invisible when the agent started publishing on FSM
+      // TRANSITION as well (D-34 Part A): a transition sample is an EDGE, it
+      // carries information no later sample can reproduce, and a 500 ms drop
+      // window re-aliases the topic at exactly 2 Hz no matter what the publisher
+      // does. The register's measured case is an IDLE window held for 0.247 s
+      // between a cancel and the next auction — shorter than the throttle, so
+      // the hand-off would never appear in RobotDetail's state history however
+      // often the agent published it.
+      //
+      // WHY ZERO RATHER THAN A SMALLER NUMBER, from the traffic rather than from
+      // taste. Any non-zero throttle is a drop window, so the only question is
+      // whether the resulting volume is affordable — and it plainly is.
+      // RobotState is a small fixed-shape message (four short strings, a Pose2D,
+      // a Twist, three float32s, a Time, a bool and a short capabilities list —
+      // a few hundred bytes of JSON over the bridge). The publisher is already
+      // the rate limiter at 2 Hz per robot, which is 20 Hz for the shipped
+      // ten-robot fleet, and D-34 bounds the transition traffic it adds at under
+      // 3% of that. Compare what this dashboard ALREADY accepts unthrottled on
+      // the same socket: /orchestrator/task_queue at 2 Hz, each message a
+      // complete task table plus a 32-entry event ring, and
+      // /orchestrator/resource_map at 0.5 Hz carrying up to 20k cells across
+      // four parallel arrays. Unthrottled RobotState is far cheaper than either.
+      //
+      // The reducer already de-duplicates the level signal: `stateHistory` is
+      // appended only when `prev.fsm_state !== msg.fsm_state`
+      // (hooks/useFleetState.js), so the extra samples cannot double-count.
+      //
+      // NOT A MEASUREMENT. The drop-vs-delay semantics above is read from the
+      // rosbridge protocol contract, not executed here. If throttle_rate turned
+      // out to queue rather than drop, removing it would be a latency
+      // improvement rather than a correctness fix — either way this direction is
+      // safe. The live re-run has to confirm the IDLE hand-off actually appears
+      // in RobotDetail's state history.
       const stateTopic = new ROSLIB.Topic({
         ros,
         name: TOPICS.ROBOT_STATE(id),
         messageType: MSG_TYPES.ROBOT_STATE,
-        throttle_rate: 500,
       });
       stateTopic.subscribe((msg) => {
         dispatch({ type: 'UPDATE_ROBOT', payload: msg });
@@ -144,16 +185,18 @@ function App() {
       name: TOPICS.MAP_UPDATE,
       messageType: MSG_TYPES.RESOURCE_MAP_UPDATE,
     });
+    // The RAW message goes to the reducer, which projects and validates it.
+    //
+    // This callback used to build the projection itself, and in doing so
+    // dereferenced `msg.location.x` with no guard: a ResourceMapUpdate with a
+    // missing location threw inside the roslib websocket handler rather than
+    // being rejected and counted. It also validated nothing at all, so a single
+    // non-finite ice_concentration made the graph's Peak/Avg panel read
+    // "NaN wt%" for the rest of the session. Projecting in the reducer puts this
+    // topic under the same contract UPDATE_RESOURCE_MAP has had since D-02, and
+    // makes the rejection testable without a browser.
     mapTopic.subscribe((msg) => {
-      dispatch({
-        type: 'ADD_RESOURCE_READING',
-        payload: {
-          scout_id: msg.scout_id,
-          location: { x: msg.location.x, y: msg.location.y },
-          ice_concentration: msg.ice_concentration,
-          sensor_uncertainty: msg.sensor_uncertainty,
-        },
-      });
+      dispatch({ type: 'ADD_RESOURCE_READING', payload: msg });
     });
     listeners.push(mapTopic);
 
@@ -238,6 +281,11 @@ function App() {
         {showResourceGraph ? (
           <ResourceGraph
             readings={state.resourceReadings}
+            /* Readings the reducer refused. Surfaced so "nothing published yet"
+               and "everything published is malformed" are distinguishable on
+               screen — they look identical otherwise, and the second is the one
+               that needs someone to go and look. */
+            droppedReadings={state.resourceReadingsDropped}
             onClose={() => setShowResourceGraph(false)}
           />
         ) : (
@@ -248,8 +296,15 @@ function App() {
                per-reading ResourceMapUpdate blobs to rasterising the fused
                posterior below (D-02), and a prop that is passed but never
                destructured reads, wrongly, as though the map still builds from
-               raw readings. ResourceGraph still receives it above — a time
-               series is what per-reading data is actually right for. */
+               raw readings. ResourceGraph still receives it above, and what it
+               shows is the per-sample picture the posterior cannot: the
+               individual readings, their spatial proximity to each other and
+               their agreement. THIS IS NOT A TIME SERIES and this comment used
+               to claim it was. Nothing in the dashboard reads
+               ResourceMapUpdate.stamp — the reducer does not project it and no
+               consumer asks for it — so no view here can order samples in time
+               at all. Restoring that would mean carrying the stamp through the
+               reducer AND giving it a reader, not re-asserting the claim. */
             /* D-02: the fused posterior the heatmap now rasterises, already
                validated and converted to typed arrays by the reducer, plus the
                status the legend needs to distinguish "not connected" from

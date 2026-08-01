@@ -7,8 +7,21 @@
 // RobotDetail, and still counted as "active".
 
 // A robot is considered stale if we have not heard from it for this long.
-// Robot state is published well inside this window in the nominal case
-// (dashboard subscribes with throttle_rate: 500 ms).
+//
+// Robot state is published well inside this window in the nominal case: the
+// agent's own timer emits RobotState every 0.5 s, and since D-34 it ALSO emits
+// one on every FSM transition, so the observed interval is 0.5 s or shorter.
+//
+// This comment used to justify the window with "dashboard subscribes with
+// throttle_rate: 500 ms" — i.e. with a rosbridge server-side rate limit rather
+// than with the publisher. That premise is now false (App.jsx subscribes
+// unthrottled, deliberately: a throttle DROPS transition samples, which is the
+// aliasing D-34 exists to remove) and it was the wrong basis anyway. A throttle
+// can only ever make the observed interval LONGER, so quoting it as the reason a
+// 5 s max-age test is safe had the argument backwards.
+//
+// The 5000 ms value itself is unchanged and is unaffected by the rate: this is a
+// max-AGE test, so a higher publish rate can only move measured ages down.
 export const STALE_THRESHOLD_MS = 5000;
 
 /** Milliseconds since the last telemetry update, or null if never seen. */

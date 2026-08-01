@@ -248,6 +248,22 @@ class AgentNode(Node):
         self._state_pub = self.create_publisher(
             RobotState, f"/{self._robot_id}/state", 10
         )
+        # D-34. Publish a RobotState on every FSM transition as well as on the
+        # 0.5 s timer below, so a state shorter than the sampling period is on
+        # the wire at all.
+        #
+        # ATTACHED HERE AND NOT AT THE AgentFSM(...) CALL, which is ~40 lines
+        # above. _on_fsm_transition -> _build_state_msg reads self._state_pub
+        # (this line), self._current_skill and self._current_task_id (set in
+        # the skill-tracking block). Passing on_transition to the constructor
+        # would make AgentNode.__init__ order-sensitive: any transition fired
+        # between the FSM's construction and this line would raise
+        # AttributeError out of a constructor, and nothing in the class would
+        # say why. Attaching last means the observer cannot fire before
+        # everything it touches exists. The callback is defensive about
+        # _state_pub anyway; this ordering is what makes that check redundant
+        # rather than load-bearing.
+        self._fsm.set_transition_observer(self._on_fsm_transition)
         # NOTE: self._path_pub is created earlier, next to the Navigator it
         # is handed to (see the occupancy-grid/navigator block above).
         self._map_update_pub = self.create_publisher(
@@ -769,9 +785,25 @@ class AgentNode(Node):
         # I won
         self.get_logger().info(f"[{self._robot_id}] Assigned task {msg.task_id}")
 
-        if self._fsm.state == AgentState.BIDDING:
-            self._fsm.handle_event(FSMEvent.AUCTION_WON)
-        elif self._fsm.state != AgentState.ASSIGNED:
+        # D-34 FIELD FRESHNESS. The AUCTION_WON event used to be fired HERE,
+        # before the assignment fields below were stored. That was invisible
+        # while state was only sampled at 2 Hz; now that every transition
+        # publishes a RobotState, firing first would put an ASSIGNED sample on
+        # the wire carrying the PREVIOUS task's id (or '') for up to 0.5 s,
+        # until the timer corrected it. Downstream that is cosmetic --
+        # `apply_robot_progress` acts only on NAVIGATING/WORKING and the
+        # orchestrator's completion inference only on RETURNING/IDLE -- but
+        # the dashboard renders current_task_id, and a published message that
+        # is wrong for half a second is not worth shipping when the fix is to
+        # store the fields first.
+        #
+        # The guard is preserved exactly, and NOT by moving the test: the
+        # `elif` cannot simply follow the `if` any more, because the `if`
+        # branch mutates the state the `elif` reads. `won` captures the answer
+        # before anything changes, so the accepted/rejected decision is
+        # identical to the original for every state.
+        won = self._fsm.state == AgentState.BIDDING
+        if not won and self._fsm.state != AgentState.ASSIGNED:
             self.get_logger().warn(
                 f"[{self._robot_id}] Assignment in state {self._fsm.state.value}, ignoring")
             return
@@ -796,6 +828,11 @@ class AgentNode(Node):
             self._assigned_depot = None
         else:
             self._assigned_depot = (depot.x, depot.y)
+
+        # LAST, so the ASSIGNED sample this transition publishes carries the
+        # task it is about. See the D-34 note above the guard.
+        if won:
+            self._fsm.handle_event(FSMEvent.AUCTION_WON)
 
     def _handle_assigned(self):
         """Start navigation for the assigned task.
@@ -1049,10 +1086,17 @@ class AgentNode(Node):
         return operator_command_logic(ctx, request, response)
 
     # ===================================================================
-    # State publisher (2 Hz)
+    # State publisher (2 Hz timer + one message per FSM transition)
     # ===================================================================
 
-    def _publish_state(self):
+    def _build_state_msg(self) -> RobotState:
+        """Snapshot this robot into a ``RobotState``.
+
+        Split out of ``_publish_state`` for D-34 so the on-transition
+        publisher shares one definition of the message with the timer. It
+        deliberately does NOT publish and does NOT touch the navigator: see
+        ``_on_fsm_transition`` for why the planned path must not ride along.
+        """
         msg = RobotState()
         msg.robot_id = self._robot_id
         msg.robot_type = self._robot_type
@@ -1064,7 +1108,44 @@ class AgentNode(Node):
             msg.velocity = Twist()
             msg.velocity.linear.x = odom.linear_velocity
             msg.velocity.angular.z = odom.angular_velocity
+            # D-31. SAY WHETHER THAT POSE IS A MEASUREMENT.
+            #
+            # GazeboOdometrySensor.read() never raises and never blocks: until
+            # the first /odom_world message arrives it hands back the cached
+            # OdometryReading its constructor built with an explicit
+            # is_valid=False, x and y left at 0.0
+            # (selene_hal/selene_hal/gazebo_hal.py:357-359, :385-387;
+            # data_types.py:102-109 -- and note SensorReading.is_valid
+            # DEFAULTS TO TRUE at data_types.py:39, so that False is a
+            # decision the sensor makes, not something the dataclass gives
+            # you). So the try/except above catches nothing
+            # on the startup path, and every robot published a confident
+            # (0, 0) at 2 Hz from the moment this node came up. The
+            # orchestrator's FleetMonitor seeded its distance accumulator from
+            # that origin and booked |spawn| -- 90.050 m to 127.224 m per
+            # robot on the shipped ten-robot fleet -- the first time a real
+            # pose arrived.
+            #
+            # This node already guarded its two other DECISION-MAKING
+            # odometry reads on exactly this flag -- _handle_idle (:424) and
+            # _recharge_reason (:945) -- so the invalid window was known.
+            # The read that fed the whole fleet was the one left unguarded.
+            # (_on_task_announced does NOT guard, and that one is deliberate
+            # and documented there: a stale pose only perturbs a bid score,
+            # and navigation is gated by _handle_assigned.)
+            #
+            # pose IS STILL POPULATED, deliberately. The flag carries the
+            # meaning and the consumer decides; blanking the pose would only
+            # move the fabrication from "wrong coordinates" to "coordinates
+            # that look like the origin", which is the same defect. And the
+            # message must keep flowing regardless, because it is also the
+            # heartbeat FleetMonitor.check_heartbeats reads -- withholding it
+            # would mark every robot OFFLINE during startup.
+            msg.pose_valid = bool(odom.is_valid)
         except Exception:
+            # Reached only if the HAL itself is missing the sensor or the
+            # backend raises. pose_valid is left at its default False, which
+            # is the fail-safe direction; nothing here sets it True.
             pass
 
         msg.battery_level = float(self._energy_manager.get_charge_fraction())
@@ -1091,10 +1172,101 @@ class AgentNode(Node):
         except Exception:
             pass
 
-        self._state_pub.publish(msg)
+        return msg
+
+    def _publish_state(self):
+        """0.5 s timer: the level signal, plus the planned path for RViz2."""
+        self._state_pub.publish(self._build_state_msg())
 
         # Also publish path for RViz2 visualization
         self._navigator.publish_path()
+
+    def _on_fsm_transition(self, prev_state, event, new_state):
+        """Publish one extra RobotState at the instant the FSM moves (D-34).
+
+        WHY. ``/{robot_id}/state`` was a level signal sampled at 2 Hz, so any
+        state shorter than 0.5 s was structurally unrepresentable on the wire.
+        Measured from the two exit-gate runs' launch logs, the IDLE window
+        between an operator cancel and the next bid lasted 0.247 s and 0.301 s
+        -- half a sampling period -- and neither run's probe ever saw it, so
+        checks 6 and 9 SKIPped and PRD rows 3 and 4 went unmeasured on a
+        system that had done exactly what they assert. Sampling faster is the
+        same defect at higher cost; publishing the edge is the fix.
+
+        WHAT THIS COSTS, as a structural bound and NOT a measurement. Exactly
+        one extra message per successful transition. One orchestrated task
+        that ends in the field is six transitions (IDLE->BIDDING->ASSIGNED->
+        NAVIGATING->WORKING->RETURNING->IDLE), seven if it ends in a recharge
+        cycle, and every lost auction is two (IDLE->BIDDING->IDLE). Against a
+        2 Hz baseline of 3600 messages per robot per 1800 s run, a robot doing
+        a task every two minutes with three lost auctions between them adds
+        ~15 transitions/task * 15 tasks ~= 225 messages, about 6%. The hard
+        per-robot ceiling is set by what can fire an event: the 10 Hz tick
+        (at most a couple of transitions per tick), the orchestrator's 0.5 s
+        auction tick, and operator service calls -- call it ~20 Hz against the
+        2 Hz baseline, and a robot anywhere near it is in the IDLE/RETURNING/
+        RECHARGING busy loop that ``validated_recharge_threshold`` already
+        clamps rather than a robot doing work. **I have not measured the real
+        transition count; the register publishes none.** The FSM logs every
+        transition (``fsm.py``, the ``--(event)-->`` line), so
+        ``grep -c -- '-->'`` on the next launch log turns this bound into a
+        number, and the next live run must record it.
+
+        NO RATE LIMITER, deliberately. A limiter is a sampler, and a sampler
+        is the defect being fixed.
+
+        TWO CONSUMERS SEE A CHANGE, AND NEITHER IS FIXED HERE. Both are
+        recorded so they are not discovered as surprises on the next live run.
+
+        1. Any consumer that accumulates PER SAMPLE now gets more samples.
+           The gate's check-4 IDLE motion-coherence rule sums per-sample path
+           length over runs of IDLE samples (``scripts/phase5_probe.py``
+           ``_run_path_length`` / ``MOTION_EPS_M``), and the sample this hook
+           inserts lands at the INSTANT of the transition into IDLE -- before
+           a robot that was driving has physically stopped, since
+           ``stop_navigation`` zeroes the command but the DiffDrive odometry
+           the HAL caches still records the coast. An extra sample can both
+           lengthen an existing IDLE run and push a 2-sample run past the
+           3-sample minimum. The honest fix is to make that rule
+           rate-invariant, which is the probe's file and not this one;
+           suppressing the IDLE publish here would simply re-alias the exact
+           state D-34 exists to expose.
+
+        2. The orchestrator infers task completion from a RETURNING/IDLE
+           sample with an empty ``current_task_id``. ``_handle_working``
+           clears the id and then fires ``TASK_COMPLETE``, so this hook now
+           emits that message microseconds after the authoritative
+           ``TaskResult`` instead of 0-500 ms after it. The two are on
+           different topics with no cross-topic ordering guarantee. This is
+           NOT the "a FAILED task gets recorded COMPLETED" hazard it looks
+           like -- ``TaskQueue.mark_failed`` routes to ``set_status`` with no
+           guard on the previous status, so the TaskResult overwrites an
+           inferred completion whichever lands first, and the final recorded
+           status is FAILED either way. What remains is a spurious
+           COMPLETED->FAILED pair in the event log and operator event ring,
+           and a brief window in which a timer callback could read the
+           predecessor as COMPLETED. Both belong to the orchestrator.
+
+        WHAT DOES NOT RIDE ALONG. ``_publish_state`` also republishes the
+        planned path; that stays on the timer. A ``nav_msgs/Path`` is large,
+        carries no edge information, and multiplying it by the transition rate
+        buys nothing.
+
+        DEFENSIVE BY DESIGN. ``AgentFSM`` only calls this once the node has
+        installed it (below the publisher block in ``__init__``), but the
+        ``_state_pub`` check stays because the cost of being wrong is an
+        ``AttributeError`` raised inside a DDS or timer callback. ``AgentFSM``
+        catches and logs whatever escapes here rather than letting a state
+        publisher take a robot's FSM down with it.
+
+        The three arguments are the transition itself. They are unused today
+        -- the message carries the new state and nothing else about the edge
+        -- and they are in the signature because an observer that cannot see
+        which edge fired cannot ever be more selective than "all of them".
+        """
+        if getattr(self, '_state_pub', None) is None:
+            return
+        self._state_pub.publish(self._build_state_msg())
 
     # ===================================================================
     # Material ledger / task outcome publishers

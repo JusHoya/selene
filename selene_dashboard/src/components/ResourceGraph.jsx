@@ -49,7 +49,7 @@ function nodeRadius(concentration) {
 // 1. THE AXIS WAS INERT. `sensor_uncertainty` arrives from
 //    ResourceMapUpdate (App.jsx:154). ProspectSkill averages the sigmas its
 //    HAL sensor reports (prospect.py:136-143) and agent_node drops any
-//    reading whose sigma is non-finite or <= 0 (agent_node.py:997-1005), so
+//    reading whose sigma is non-finite or <= 0 (agent_node.py:1349-1369), so
 //    what reaches this function is the RCDL's noise_stddev — and
 //    `noise_stddev: 0.5` in selene_hal/config/scout.yaml:16 is the ONLY one
 //    declared on a scalar_field sensor anywhere in the tree. Every node
@@ -114,15 +114,84 @@ export function computeEdges(readings, maxEdges = MAX_DRAWN_EDGES) {
   return { edges: candidates.slice(0, maxEdges), totalCandidates };
 }
 
-/** Initialize simulation nodes from readings, scattered around canvas center */
-function initNodes(readings, centerX, centerY) {
+/**
+ * Rebuild the simulation node table from `readings`, BY IDENTITY.
+ *
+ * Exported so the invariant below can be exercised headlessly — there is no way
+ * to assert it through the rendered component, because it is a property of a
+ * ref the loop reads, not of anything in the DOM.
+ *
+ * THE INVARIANT, and it is CONSTRUCTED here rather than maintained elsewhere:
+ *   for every i,  result[i].reading === readings[i]
+ *
+ * WHAT THIS REPLACES, and why counting was not good enough. The previous version
+ * kept a `readingsCountRef` and reasoned about the DELTA in array length:
+ *
+ *     const newReadings = readings.slice(0, readings.length - prevCount);
+ *     nodesRef.current = [...added, ...existing];        // growth path
+ *     readings.forEach((r, i) => { nodes[i].reading = r; });  // unchanged path
+ *
+ * Both branches are wrong in a way no rendering test could see:
+ *
+ *   (a) AT THE CAP. `resourceReadings` is capped at MAX_READINGS = 500 and
+ *       prepends, so once it is full the LENGTH STOPS CHANGING while the
+ *       contents keep shifting by one on every arrival. The delta is 0, so the
+ *       "unchanged" branch ran and re-pointed node[i].reading by INDEX — every
+ *       node silently adopted a different reading while keeping its settled
+ *       position, size and colour. Tooltips, radii and hues stopped
+ *       corresponding to anything, permanently and silently. It needs 500
+ *       readings and the shipped survey produces about ten, so this was latent
+ *       — which is precisely how this repository's previous "wired but never
+ *       called" defects survived review.
+ *   (b) AT THE 499->500 TRANSITION with two readings landing in one commit, the
+ *       delta is 1 while two were prepended, so nodes[k].reading !== readings[k]
+ *       until the next arrival happened to re-sync it.
+ *   (c) IN THE NEGATIVE DIRECTION. If the array ever shrank to a non-zero
+ *       length, `slice(0, negative)` returns [] and the stale nodes were kept
+ *       while the count shrank. Unreachable today (the only shrink is RESET,
+ *       which goes to exactly 0) and deliberately not relied upon.
+ *
+ * `clientSeq` is minted by the reducer (hooks/useFleetState.js) and is the only
+ * stable name a reading has. A reading without one gets a fresh node every call
+ * rather than matching some other node's undefined key — that direction loses
+ * position stability, which is cosmetic, instead of mis-binding data, which is
+ * the defect above.
+ *
+ * `rand` is injectable so a test can pin placement deterministically.
+ */
+export function reconcileNodes(prevNodes, readings, centerX, centerY, rand = Math.random) {
+  const byKey = new Map();
+  (prevNodes || []).forEach((n) => {
+    const key = n && n.reading ? n.reading.clientSeq : undefined;
+    if (typeof key === 'number') byKey.set(key, n);
+  });
+  // Snapshot of the STARTING condition, not of the loop's progress: a cold start
+  // scatters the whole first batch on a ring, and every later arrival is placed
+  // near the existing cloud so it does not fly in from the far side of the view.
+  const cold = byKey.size === 0;
+
   return readings.map((r, idx) => {
-    // Scatter around center based on original world position, normalized
-    const angle = (idx / Math.max(readings.length, 1)) * Math.PI * 2;
-    const spread = 120 + Math.random() * 80;
+    const kept = typeof r.clientSeq === 'number' ? byKey.get(r.clientSeq) : undefined;
+    if (kept) {
+      // Position, velocity and therefore the settled layout survive. Only the
+      // payload pointer is refreshed, so a re-published reading updates in place.
+      kept.reading = r;
+      return kept;
+    }
+    if (cold) {
+      const angle = (idx / Math.max(readings.length, 1)) * Math.PI * 2;
+      const spread = 120 + rand() * 80;
+      return {
+        x: centerX + Math.cos(angle) * spread + (rand() - 0.5) * 40,
+        y: centerY + Math.sin(angle) * spread + (rand() - 0.5) * 40,
+        vx: 0,
+        vy: 0,
+        reading: r,
+      };
+    }
     return {
-      x: centerX + Math.cos(angle) * spread + (Math.random() - 0.5) * 40,
-      y: centerY + Math.sin(angle) * spread + (Math.random() - 0.5) * 40,
+      x: centerX + (rand() - 0.5) * 80,
+      y: centerY + (rand() - 0.5) * 80,
       vx: 0,
       vy: 0,
       reading: r,
@@ -132,7 +201,11 @@ function initNodes(readings, centerX, centerY) {
 
 // ---------- Canvas Drawing ----------
 
-function drawBackground(ctx, w, h, time) {
+// `time` was a parameter here and in drawCentralGlow's `w`/`h`: declared,
+// passed on every frame, read by neither. Removed rather than left, because
+// this repository tracks that species of dead declaration and a reader has no
+// way to tell an unused parameter from a forgotten animation.
+function drawBackground(ctx, w, h) {
   // Subtle radial gradient from center
   const grad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.6);
   grad.addColorStop(0, 'rgba(0, 20, 40, 0.15)');
@@ -150,18 +223,31 @@ function drawBackground(ctx, w, h, time) {
   }
 }
 
-function drawEdges(ctx, nodes, edges, time, offsetX, offsetY, scale, selectedIdx) {
+function drawEdges(ctx, nodes, edges, time, offsetX, offsetY, scale, selectedSeq) {
   ctx.save();
   edges.forEach((edge) => {
     const a = nodes[edge.i];
     const b = nodes[edge.j];
+    // `edges` and `nodes` are two views of one array and are now written
+    // together, in one effect, after both are rebuilt — so a missing entry
+    // should be impossible. The guard stays because the CONSEQUENCE of being
+    // wrong about that is not a bad frame, it is a permanently frozen canvas:
+    // an uncaught throw here used to skip the trailing requestAnimationFrame
+    // and nothing in the component could ever restart the loop. This is a
+    // genuine transient skip, not a widened tolerance — a dropped edge for one
+    // frame is invisible; a dead loop is the operator's whole complaint.
+    if (!a || !b) return;
     const ax = (a.x + offsetX) * scale;
     const ay = (a.y + offsetY) * scale;
     const bx = (b.x + offsetX) * scale;
     const by = (b.y + offsetY) * scale;
 
+    // Compared by IDENTITY, not by index. `selectedSeq` names a reading; the
+    // index it happens to sit at changes on every arrival, because
+    // resourceReadings prepends.
     const isConnectedToSelected =
-      selectedIdx !== null && (edge.i === selectedIdx || edge.j === selectedIdx);
+      selectedSeq !== null
+      && (a.reading.clientSeq === selectedSeq || b.reading.clientSeq === selectedSeq);
 
     // Base alpha from similarity
     let alpha = 0.05 + edge.similarity * 0.2;
@@ -188,7 +274,7 @@ function drawEdges(ctx, nodes, edges, time, offsetX, offsetY, scale, selectedIdx
   ctx.restore();
 }
 
-function drawCentralGlow(ctx, nodes, w, h, offsetX, offsetY, scale) {
+function drawCentralGlow(ctx, nodes, offsetX, offsetY, scale) {
   if (nodes.length === 0) return;
 
   // Find the highest-concentration cluster center (weighted centroid)
@@ -221,7 +307,7 @@ function drawCentralGlow(ctx, nodes, w, h, offsetX, offsetY, scale) {
   ctx.restore();
 }
 
-function drawNodes(ctx, nodes, time, offsetX, offsetY, scale, hoveredIdx, selectedIdx) {
+function drawNodes(ctx, nodes, time, offsetX, offsetY, scale, hoveredSeq, selectedSeq) {
   ctx.save();
   nodes.forEach((node, idx) => {
     const { reading } = node;
@@ -229,8 +315,11 @@ function drawNodes(ctx, nodes, time, offsetX, offsetY, scale, hoveredIdx, select
     const y = (node.y + offsetY) * scale;
     const r = nodeRadius(reading.ice_concentration) * scale;
     const alpha = NODE_ALPHA;
-    const isHovered = idx === hoveredIdx;
-    const isSelected = idx === selectedIdx;
+    // By identity — see the note in drawEdges. A null seq matches nothing,
+    // which is also the correct behaviour once a selected reading has aged out
+    // past the 500-cap: the ring disappears rather than jumping to a stranger.
+    const isHovered = hoveredSeq !== null && reading.clientSeq === hoveredSeq;
+    const isSelected = selectedSeq !== null && reading.clientSeq === selectedSeq;
     const isHighConcentration = reading.ice_concentration > 5;
 
     // Glow for high-concentration nodes
@@ -282,148 +371,176 @@ function drawNodes(ctx, nodes, time, offsetX, offsetY, scale, hoveredIdx, select
 
 // ---------- Component ----------
 
-function ResourceGraph({ readings, onClose }) {
-  const containerRef = useRef(null);
-  const canvasRef = useRef(null);
+function ResourceGraph({ readings, droppedReadings = 0, onClose }) {
+  // THE CANVAS AND ITS CONTAINER ARE STATE, NOT REFS, AND THAT IS THE WHOLE
+  // POINT OF THIS COMPONENT'S REPAIR.
+  //
+  // WHAT WAS BROKEN. These were `useRef(null)` and the three effects below keyed
+  // off `[updateCanvasSize]`, `[]` and `[handleWheel]` respectively — none of
+  // which can ever change again after the first commit. The empty-state early
+  // return at the bottom of this function renders NO <canvas> and attaches NO
+  // container ref, and `readings` is `[]` on every page load (the reducer's
+  // initial state). So on the commit the operator actually hits, all three
+  // effects ran, read a null ref, and returned. When readings finally arrived
+  // and the canvas mounted, NOTHING RE-RAN: the render loop was never scheduled,
+  // updateCanvasSize never ran, and the canvas kept its default 300x150 backing
+  // store while the header, legend and stats panel updated with real numbers
+  // over a black rectangle. That is the operator's report, exactly.
+  //
+  // The same defect fired a second way. A rosbridge reconnect dispatches RESET,
+  // resourceReadings goes back to [], this component unmounts its canvas, and
+  // when readings resume React mounts a NEW canvas element while the loop keeps
+  // drawing into the DETACHED one it captured on the first commit.
+  //
+  // FleetMap.jsx has the identical loop and no empty-state early return, which
+  // is exactly why the fleet map works and this view did not.
+  //
+  // WHY ELEMENT IDENTITY AND NOT `readings.length > 0` IN THE DEPS. Adding a
+  // readings guard fixes the empty-mount case and leaves the canvas-REPLACEMENT
+  // case broken, because it keys the loop on something merely correlated with
+  // the invariant. The invariant is "the loop is attached to the canvas that is
+  // in the DOM". React calls a callback ref with the element on attach and with
+  // null on detach, so these two state values ARE that invariant, and every
+  // effect that touches the canvas now lists the element it touches.
+  const [containerEl, setContainerEl] = useState(null);
+  const [canvasEl, setCanvasEl] = useState(null);
+
   const animFrameRef = useRef(null);
   const lastFrameRef = useRef(0);
 
   // Simulation state held in refs for the animation loop
   const nodesRef = useRef([]);
   const edgesRef = useRef([]);
-  const readingsCountRef = useRef(0);
+  // One-shot guard so a recurring throw inside the loop cannot flood the console
+  // at 30 Hz. Deliberately never reset: a second, different fault after the
+  // first would be silent, and that is the accepted cost of not shipping a
+  // console flood. The first message names the loop and carries the stack.
+  const loopErrorLoggedRef = useRef(false);
 
   // View transform
   const viewRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 });
-  const dragRef = useRef({ dragging: false, lastX: 0, lastY: 0, startX: 0, startY: 0, distance: 0 });
+  // `startX`/`startY` were written on every mousedown and read by nothing; the
+  // pan-vs-click decision uses the accumulated `distance` instead. Removed
+  // rather than left as two more declared-and-never-read fields.
+  const dragRef = useRef({ dragging: false, lastX: 0, lastY: 0, distance: 0 });
 
-  // Interactive state
-  const [hoveredIdx, setHoveredIdx] = useState(null);
-  const [selectedIdx, setSelectedIdx] = useState(null);
+  // Interactive state, keyed by the reading's stable clientSeq rather than by
+  // its position in `readings`. THE ARRAY PREPENDS: with positional indices the
+  // white selection ring, the cyan "connected to selected" edges and the hover
+  // ring all silently moved to a different reading every time any scout finished
+  // a waypoint, with no operator action.
+  const [hoveredSeq, setHoveredSeq] = useState(null);
+  const [selectedSeq, setSelectedSeq] = useState(null);
   const [tooltip, setTooltip] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
 
   const hoveredRef = useRef(null);
   const selectedRef = useRef(null);
-  hoveredRef.current = hoveredIdx;
-  selectedRef.current = selectedIdx;
+  hoveredRef.current = hoveredSeq;
+  selectedRef.current = selectedSeq;
 
   // ---------- Compute edges synchronously so stats are always current ----------
+  // The memo stays: the stats block below needs edges.length and
+  // totalCandidates during RENDER. What is gone is the assignment of
+  // `edgesRef.current` here — see the effect immediately below.
   const { edges, totalCandidates } = useMemo(
     () => (readings && readings.length > 0
       ? computeEdges(readings)
       : { edges: [], totalCandidates: 0 }),
     [readings]
   );
-  edgesRef.current = edges;
 
-  // ---------- Initialize / update simulation when readings change ----------
+  // ---------- Rebuild the two refs the loop reads, TOGETHER ----------
+  //
+  // `edgesRef.current = edges` used to be a bare assignment during RENDER while
+  // `nodesRef.current` was grown in this passive effect, which runs AFTER the
+  // commit. Any frame landing in that window saw an edge list indexing a node
+  // that did not exist yet and threw a TypeError inside the rAF callback — and
+  // because the re-schedule was the last statement of the loop body, ONE throw
+  // killed the loop permanently with nothing left to restart it. Driving the
+  // real reducer and the real computeEdges over the shipped ten-waypoint survey,
+  // 9 of the 10 arrivals published an edge set indexing a node the effect had
+  // not built yet; only the first arrival was safe.
+  //
+  // Writing both refs in one passive effect, nodes first, removes the window
+  // rather than tolerating it. The defensive guards in drawEdges and in the
+  // attraction loop are the second layer, not the fix.
   useEffect(() => {
     if (!readings || readings.length === 0) {
       nodesRef.current = [];
-      readingsCountRef.current = 0;
+      edgesRef.current = [];
       return;
     }
 
-    const prevCount = readingsCountRef.current;
+    // Fallbacks are for the commit BEFORE the callback ref has reported the
+    // element (React attaches refs during commit, but the state update that
+    // carries the element is a separate render). reconcileNodes is idempotent,
+    // so the follow-up run with the real canvas keeps every position it just
+    // chose — the fallback only affects where a cold start scatters.
+    const w = canvasEl ? canvasEl.clientWidth || 800 : 800;
+    const h = canvasEl ? canvasEl.clientHeight || 600 : 600;
 
-    if (readings.length !== prevCount) {
-      const canvas = canvasRef.current;
-      const w = canvas ? canvas.clientWidth : 800;
-      const h = canvas ? canvas.clientHeight : 600;
-
-      if (prevCount === 0) {
-        // First batch — full init
-        nodesRef.current = initNodes(readings, w / 2, h / 2);
-      } else {
-        // Append only new nodes, keep existing positions
-        const newReadings = readings.slice(0, readings.length - prevCount);
-        const existing = nodesRef.current;
-        const added = newReadings.map((r) => {
-          // Place new nodes near the centroid of existing nodes
-          let cx = w / 2;
-          let cy = h / 2;
-          if (existing.length > 0) {
-            cx = existing.reduce((s, n) => s + n.x, 0) / existing.length;
-            cy = existing.reduce((s, n) => s + n.y, 0) / existing.length;
-          }
-          return {
-            x: cx + (Math.random() - 0.5) * 80,
-            y: cy + (Math.random() - 0.5) * 80,
-            vx: 0,
-            vy: 0,
-            reading: r,
-          };
-        });
-        nodesRef.current = [...added, ...existing];
-      }
-      readingsCountRef.current = readings.length;
-    } else {
-      // Update reading data in existing nodes (concentration/uncertainty may change)
-      readings.forEach((r, i) => {
-        if (nodesRef.current[i]) {
-          nodesRef.current[i].reading = r;
-        }
-      });
+    const prev = nodesRef.current;
+    let cx = w / 2;
+    let cy = h / 2;
+    if (prev.length > 0) {
+      cx = prev.reduce((s, n) => s + n.x, 0) / prev.length;
+      cy = prev.reduce((s, n) => s + n.y, 0) / prev.length;
     }
-  }, [readings]);
+
+    nodesRef.current = reconcileNodes(prev, readings, cx, cy);
+    edgesRef.current = edges;
+  }, [readings, edges, canvasEl]);
 
   // ---------- Canvas sizing ----------
   const updateCanvasSize = useCallback(() => {
-    const container = containerRef.current;
-    const canvas = canvasRef.current;
-    if (!container || !canvas) return;
+    if (!containerEl || !canvasEl) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const rect = container.getBoundingClientRect();
+    const rect = containerEl.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
 
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-  }, []);
+    canvasEl.width = w * dpr;
+    canvasEl.height = h * dpr;
+    canvasEl.style.width = w + 'px';
+    canvasEl.style.height = h + 'px';
+  }, [containerEl, canvasEl]);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    if (!containerEl) return undefined;
 
     updateCanvasSize();
     const observer = new ResizeObserver(() => updateCanvasSize());
-    observer.observe(container);
+    observer.observe(containerEl);
     return () => observer.disconnect();
-  }, [updateCanvasSize]);
+  }, [containerEl, updateCanvasSize]);
 
   // ---------- Force simulation + render loop ----------
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvasEl) return undefined;
+    const canvas = canvasEl;
 
     let running = true;
 
-    function simulate(timestamp) {
-      if (!running) return;
-
+    // The body of one frame, minus the re-schedule. Split out from `simulate`
+    // so the re-schedule below can live in a `finally` and therefore cannot be
+    // skipped by ANY path through this code — including a throw.
+    function step(timestamp) {
       // Throttle to ~30fps
-      if (timestamp - lastFrameRef.current < FRAME_INTERVAL) {
-        animFrameRef.current = requestAnimationFrame(simulate);
-        return;
-      }
+      if (timestamp - lastFrameRef.current < FRAME_INTERVAL) return;
       lastFrameRef.current = timestamp;
 
       const ctx = canvas.getContext('2d');
+      if (!ctx) return;
       const dpr = window.devicePixelRatio || 1;
       const w = canvas.width / dpr;
       const h = canvas.height / dpr;
 
-      if (w === 0 || h === 0) {
-        animFrameRef.current = requestAnimationFrame(simulate);
-        return;
-      }
+      if (w === 0 || h === 0) return;
 
       const nodes = nodesRef.current;
-      const edges = edgesRef.current;
+      const edgeList = edgesRef.current;
       const centerX = w / 2;
       const centerY = h / 2;
       const now = Date.now();
@@ -447,10 +564,12 @@ function ResourceGraph({ readings, onClose }) {
           }
         }
 
-        // Attraction along edges
-        edges.forEach((edge) => {
+        // Attraction along edges. Same transient-skip guard, and the same
+        // reasoning, as drawEdges: see the comment there.
+        edgeList.forEach((edge) => {
           const ni = nodes[edge.i];
           const nj = nodes[edge.j];
+          if (!ni || !nj) return;
           let dx = nj.x - ni.x;
           let dy = nj.y - ni.y;
           let dist = Math.sqrt(dx * dx + dy * dy);
@@ -488,20 +607,47 @@ function ResourceGraph({ readings, onClose }) {
       ctx.clearRect(0, 0, w, h);
 
       // Background
-      drawBackground(ctx, w, h, now);
+      drawBackground(ctx, w, h);
 
       // Central glow
-      drawCentralGlow(ctx, nodes, w, h, offsetX, offsetY, scale);
+      drawCentralGlow(ctx, nodes, offsetX, offsetY, scale);
 
       // Edges
-      drawEdges(ctx, nodes, edges, now, offsetX, offsetY, scale, selectedRef.current);
+      drawEdges(ctx, nodes, edgeList, now, offsetX, offsetY, scale, selectedRef.current);
 
       // Nodes
       drawNodes(ctx, nodes, now, offsetX, offsetY, scale, hoveredRef.current, selectedRef.current);
-
-      animFrameRef.current = requestAnimationFrame(simulate);
     }
 
+    // MAKING A FAULT NON-FATAL AND LOUD, rather than making it impossible.
+    // The cause is removed above (both refs are now written together, nodes
+    // first) — this is the second layer, and it is here because the FAILURE MODE
+    // is disproportionate: a single uncaught throw used to skip the trailing
+    // requestAnimationFrame, and nothing in this component could restart it, so
+    // one transient TypeError froze the operator's picture for the rest of the
+    // session with no recovery short of a remount. `finally` means no path
+    // through this function can drop the re-schedule.
+    function simulate(timestamp) {
+      if (!running) return;
+      try {
+        step(timestamp);
+      } catch (err) {
+        if (!loopErrorLoggedRef.current) {
+          loopErrorLoggedRef.current = true;
+          // eslint-disable-next-line no-console
+          console.error('ResourceGraph render loop threw; recovering', err);
+        }
+      } finally {
+        if (running) {
+          animFrameRef.current = requestAnimationFrame(simulate);
+        }
+      }
+    }
+
+    // Reset the frame clock on every (re)start. Without this a restart on a new
+    // canvas is throttled against a timestamp left over from the previous
+    // element's last frame, so the first real frame can be skipped.
+    lastFrameRef.current = 0;
     animFrameRef.current = requestAnimationFrame(simulate);
 
     return () => {
@@ -510,7 +656,7 @@ function ResourceGraph({ readings, onClose }) {
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, []);
+  }, [canvasEl]);
 
   // ---------- Hit testing ----------
   const hitTest = useCallback((sx, sy) => {
@@ -535,28 +681,38 @@ function ResourceGraph({ readings, onClose }) {
     return closest;
   }, []);
 
+  // Resolve a hit-test index to the stable identity of the reading it landed on.
+  // Returns null when the index is null OR when the node has no clientSeq, which
+  // is the honest answer for a reading the reducer did not mint (there is no
+  // such reading today; the branch exists so a future producer cannot silently
+  // make every unkeyed node select as one).
+  const seqAt = useCallback((idx) => {
+    if (idx === null) return null;
+    const node = nodesRef.current[idx];
+    const key = node && node.reading ? node.reading.clientSeq : undefined;
+    return typeof key === 'number' ? key : null;
+  }, []);
+
   // ---------- Mouse interactions ----------
   const handleMouseDown = useCallback((e) => {
     if (e.button !== 0) return;
-    const rect = canvasRef.current.getBoundingClientRect();
+    if (!canvasEl) return;
+    const rect = canvasEl.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
     dragRef.current = {
       dragging: true,
       lastX: sx,
       lastY: sy,
-      startX: sx,
-      startY: sy,
       distance: 0,
     };
     setIsDragging(true);
-  }, []);
+  }, [canvasEl]);
 
   const handleMouseMove = useCallback(
     (e) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
+      if (!canvasEl) return;
+      const rect = canvasEl.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
 
@@ -572,13 +728,13 @@ function ResourceGraph({ readings, onClose }) {
         dragRef.current.distance += Math.abs(dx) + Math.abs(dy);
         // Hide tooltip while dragging
         setTooltip(null);
-        setHoveredIdx(null);
+        setHoveredSeq(null);
         return;
       }
 
       // Hover hit test
       const idx = hitTest(sx, sy);
-      setHoveredIdx(idx);
+      setHoveredSeq(seqAt(idx));
 
       if (idx !== null) {
         const node = nodesRef.current[idx];
@@ -595,7 +751,7 @@ function ResourceGraph({ readings, onClose }) {
         setTooltip(null);
       }
     },
-    [hitTest]
+    [canvasEl, hitTest, seqAt]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -606,7 +762,7 @@ function ResourceGraph({ readings, onClose }) {
   const handleMouseLeave = useCallback(() => {
     dragRef.current.dragging = false;
     setIsDragging(false);
-    setHoveredIdx(null);
+    setHoveredSeq(null);
     setTooltip(null);
   }, []);
 
@@ -614,20 +770,21 @@ function ResourceGraph({ readings, onClose }) {
     (e) => {
       // Ignore if we panned
       if (dragRef.current.distance > 5) return;
+      if (!canvasEl) return;
 
-      const rect = canvasRef.current.getBoundingClientRect();
+      const rect = canvasEl.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
-      const idx = hitTest(sx, sy);
-      setSelectedIdx((prev) => (prev === idx ? null : idx));
+      const seq = seqAt(hitTest(sx, sy));
+      setSelectedSeq((prev) => (prev === seq ? null : seq));
     },
-    [hitTest]
+    [canvasEl, hitTest, seqAt]
   );
 
   // ---------- Zoom ----------
   const handleWheel = useCallback((e) => {
     e.preventDefault();
-    const canvas = canvasRef.current;
+    const canvas = canvasEl;
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
@@ -642,14 +799,13 @@ function ResourceGraph({ readings, onClose }) {
     viewRef.current.offsetX = sx / newScale - (sx / oldScale - viewRef.current.offsetX);
     viewRef.current.offsetY = sy / newScale - (sy / oldScale - viewRef.current.offsetY);
     viewRef.current.scale = newScale;
-  }, []);
+  }, [canvasEl]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    canvas.addEventListener('wheel', handleWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', handleWheel);
-  }, [handleWheel]);
+    if (!canvasEl) return undefined;
+    canvasEl.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvasEl.removeEventListener('wheel', handleWheel);
+  }, [canvasEl, handleWheel]);
 
   // ---------- Stats ----------
   const stats = readings && readings.length > 0
@@ -667,6 +823,13 @@ function ResourceGraph({ readings, onClose }) {
     : null;
 
   // ---------- Empty state ----------
+  //
+  // THIS EARLY RETURN IS THE ONE THAT USED TO KILL THE VIEW, and it is kept
+  // deliberately. It is not the defect — the defect was that the effects below
+  // it could not observe the canvas appearing and disappearing. Now they key on
+  // element identity, so unmounting the canvas here tears the loop down cleanly
+  // and remounting it starts a new one attached to the new element. Read the
+  // long note at the top of this component before changing this back.
   if (!readings || readings.length === 0) {
     return (
       <div className="resource-graph">
@@ -677,6 +840,15 @@ function ResourceGraph({ readings, onClose }) {
           <div className="resource-graph__empty-sub">
             Scouts will populate this as they prospect
           </div>
+          {/* "Nothing published yet" and "everything published is being
+              rejected" look identical without this, and the second one is a
+              defect somewhere upstream that the operator would otherwise wait
+              out forever. */}
+          {droppedReadings > 0 && (
+            <div className="resource-graph__empty-sub">
+              {droppedReadings} malformed reading{droppedReadings === 1 ? '' : 's'} rejected
+            </div>
+          )}
           <button className="resource-graph__empty-close" onClick={onClose}>
             Back to Fleet Map
           </button>
@@ -687,9 +859,9 @@ function ResourceGraph({ readings, onClose }) {
 
   // ---------- Render ----------
   return (
-    <div ref={containerRef} className="resource-graph">
+    <div ref={setContainerEl} className="resource-graph">
       <canvas
-        ref={canvasRef}
+        ref={setCanvasEl}
         className={
           'resource-graph__canvas' +
           (isDragging ? ' resource-graph__canvas--dragging' : '')
@@ -805,6 +977,12 @@ function ResourceGraph({ readings, onClose }) {
               {stats.avgConcentration} wt%
             </span>
           </div>
+          {droppedReadings > 0 && (
+            <div className="resource-graph__stats-row">
+              <span className="resource-graph__stats-label">Rejected</span>
+              <span className="resource-graph__stats-value">{droppedReadings}</span>
+            </div>
+          )}
           {stats.edgesCapped && (
             <div className="resource-graph__stats-note">
               Showing the {stats.edgeCount} strongest-similarity links only

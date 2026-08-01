@@ -17,6 +17,9 @@ import {
   varianceToCertainty,
 } from '../utils/colors';
 import { isStale } from '../utils/staleness';
+// D-31: one definition of "this robot has a position fix", shared with
+// RobotDetail, FleetCards and MissionProgress.
+import { hasPositionFix, robotsWithoutFix } from '../utils/poseFix';
 import { generateLunarTerrain, drawCraterOutlines } from '../utils/lunarTerrain';
 import ResourceLegend from './ResourceLegend';
 import './FleetMap.css';
@@ -674,6 +677,23 @@ export function planRobotMarks(orderedEntries, scale, selectedRobotId, measureLa
   const items = [];
   orderedEntries.forEach((robot) => {
     if (!robot || !robot.pose) return;
+    // D-31: NO PLAN, THEREFORE NO MARKS, for a robot with no position fix.
+    //
+    // This is the single gate for the whole map, and it is placed here rather
+    // than in drawRobots because drawRobots already refuses to draw anything
+    // for a robot the plan does not describe (`const plan = plans.get(robot_id);
+    // if (!plan) return;`). Every mark in the stack — icon, heading triangle,
+    // selection ring, ERROR ring, state dot, battery gauge, label — is drawn
+    // inside that guard, so one omission here removes all of them and there is
+    // no second copy of the rule to drift out of step with this one.
+    //
+    // The robot is NOT dropped from the operator's view: it keeps its fleet
+    // card, its FSM state and its battery, and FleetMap renders a "No position
+    // fix" list naming it (see noFixIds below). What it loses is only the claim
+    // this component is not entitled to make — a location. Drawing it at the
+    // reported (0, 0) is the D-31 defect verbatim, and drawing it anywhere else
+    // would be an invention.
+    if (!hasPositionFix(robot)) return;
     const isSelected = robot.robot_id === selectedRobotId;
     const iconPx = isSelected ? ICON_SEL_PX : ICON_PX;
     const idText = `${robot.robot_id} `;
@@ -1042,13 +1062,27 @@ export function drawRobots(ctx, robots, selectedRobotId, scale, now) {
 
 // Wave2-A4: Draw per-robot planned paths from nav_msgs/Path subscriptions.
 // robotPaths is a map of robotId -> [{x, y}, ...] world coords.
-function drawPlannedPaths(ctx, robots, robotPaths, scale) {
+//
+// EXPORTED for the same reason drawRobots is: it consumes `robot.pose`, so the
+// only honest way to pin the D-31 guard below is to run the real function
+// against a recording context and assert it emitted nothing. Its production
+// caller is the render loop.
+export function drawPlannedPaths(ctx, robots, robotPaths, scale) {
   if (!robotPaths || !robots) return;
   ctx.save();
   Object.entries(robotPaths).forEach(([robotId, path]) => {
     if (!Array.isArray(path) || path.length === 0) return;
     const robot = robots[robotId];
     if (!robot || !robot.pose) return;
+    // D-31: the polyline's FIRST VERTEX is the robot's own pose, so without a
+    // fix this path would be drawn running out of world (0, 0) — a line that
+    // asserts a starting position rather than merely marking one, and over a
+    // longer stretch of screen than the icon does. The planned path itself is
+    // still valid (it comes from the planner's nav_msgs/Path, not from
+    // odometry), but it is not drawn: a path whose start is unknown cannot be
+    // joined to the robot, and floating it detached from any icon would leave
+    // the operator guessing which robot it belongs to.
+    if (!hasPositionFix(robot)) return;
     const color = TYPE_COLORS[robot.robot_type] || '#e0e6f0';
 
     ctx.beginPath();
@@ -1114,7 +1148,9 @@ function drawScaleBar(ctx, scale, canvasW, canvasH, dpr) {
 
 // ---------- Wave2-A3: Selected-task highlight ----------
 
-function drawSelectedTaskHighlight(ctx, robots, tasksById, selectedTaskId, scale, now) {
+// EXPORTED for the D-31 guard, as drawPlannedPaths above. Its production caller
+// is the render loop.
+export function drawSelectedTaskHighlight(ctx, robots, tasksById, selectedTaskId, scale, now) {
   if (!selectedTaskId || !tasksById) return;
   const task = tasksById[selectedTaskId];
   if (!task) return;
@@ -1127,7 +1163,15 @@ function drawSelectedTaskHighlight(ctx, robots, tasksById, selectedTaskId, scale
 
   ctx.save();
 
-  if (robot && robot.pose) {
+  // D-31: the pulsing ring and the robot-to-target leader line are both
+  // anchored at the robot's pose, so a robot with no fix gets neither. The
+  // target crosshair below is unaffected — the target is the ORCHESTRATOR's
+  // task row (tasksById), not an odometry reading, so it stays drawn and the
+  // operator still sees where the task is even when they cannot be shown where
+  // the robot is. A leader line to (0, 0) would be the worst of the three
+  // options: it draws a confident 100+ m segment across the map asserting a
+  // relationship between a real target and a fabricated origin.
+  if (robot && robot.pose && hasPositionFix(robot)) {
     const rx = robot.pose.x;
     const ry = robot.pose.y;
     const baseRadius = 14 / scale;
@@ -1176,6 +1220,57 @@ function drawSelectedTaskHighlight(ctx, robots, tasksById, selectedTaskId, scale
   }
 
   ctx.restore();
+}
+
+// ---------- D-31: the no-position-fix roster ----------
+
+// How many ids the badge spells out before it summarises. Four is the widest
+// list that fits the badge on one line at the 11 px mono the other map overlays
+// use, and the count that follows keeps the total honest — the operator is
+// never told about "some" robots without being told how many.
+const NOFIX_NAMES_SHOWN = 4;
+
+// The badge's text, as a pure function of the id list so it can be exercised
+// without a browser (jsdom renders no canvas, and this is the only part of the
+// no-fix treatment that produces characters rather than pixels).
+//
+// Returns null for an empty list — the badge is not rendered at all in the
+// nominal case, so a fleet with every robot localised sees no new chrome.
+// The robot under a world-space click, or null. Lifted out of handleClick so
+// the selection rule can be exercised without a canvas, a DOM event or a
+// viewport — the same reason planRobotMarks takes its measurer as an argument.
+// handleClick is the production caller and passes ROBOT_HIT_RADIUS / scale.
+//
+// D-31: A ROBOT WITH NO POSITION FIX PRESENTS NO HIT TARGET. It draws no icon
+// (planRobotMarks refuses to plan it), so leaving it in this loop would keep an
+// INVISIBLE 15 px selection disc sitting at world (0, 0): clicking bare terrain
+// mid-map would select a robot that is not drawn there, with nothing on screen
+// to explain it. The map's pointer behaviour has to match its ink. The operator
+// can still select the robot — from its fleet card, which is exactly why the
+// card is never suppressed.
+export function pickRobotAt(robots, wx, wy, hitRadiusWorld) {
+  if (!robots) return null;
+  let closest = null;
+  let closestDist = Infinity;
+  Object.values(robots).forEach((robot) => {
+    if (!robot || !robot.pose) return;
+    if (!hasPositionFix(robot)) return;
+    const dx = robot.pose.x - wx;
+    const dy = robot.pose.y - wy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < hitRadiusWorld && dist < closestDist) {
+      closest = robot.robot_id;
+      closestDist = dist;
+    }
+  });
+  return closest;
+}
+
+export function formatNoFixIds(ids, maxNames = NOFIX_NAMES_SHOWN) {
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  if (ids.length <= maxNames) return ids.join(' ');
+  const shown = ids.slice(0, maxNames).join(' ');
+  return `${shown} +${ids.length - maxNames} more`;
 }
 
 // ---------- FleetMap Component ----------
@@ -1315,6 +1410,28 @@ function FleetMap({
     }
     return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
   }, [resourceMap]);
+
+  // ---------- D-31: who is missing from the map, and why ----------
+  //
+  // The counterpart to the planner's `if (!hasPositionFix(robot)) return;`.
+  // Removing an icon without saying so would trade one silent lie for another:
+  // the operator would see nine icons for a ten-robot fleet and have nothing to
+  // read that from. This names them.
+  //
+  // React state, not the canvas. Everything else about a robot is painted in
+  // the 30 fps rAF loop off propsRef, but this is text, it changes a handful of
+  // times per mission (once per robot as its first odometry arrives), and it
+  // has to be selectable and legible at any zoom — so it is DOM, like the
+  // coordinate readout and the picker banner beside it.
+  //
+  // COST. O(n) over the fleet on every render of this component, which is every
+  // RobotState dispatch — 20 Hz for the shipped ten-robot fleet, over ten
+  // entries. The dependency is the `robots` prop and the reducer gives it a new
+  // identity on each of those dispatches, so the memo is a formality here; it
+  // is written as one anyway so the array identity is stable across the renders
+  // that DON'T touch the fleet (a hover, a zoom, a mapAgeSec tick).
+  const noFixIds = useMemo(() => robotsWithoutFix(robots), [robots]);
+  const noFixText = formatNoFixIds(noFixIds);
 
   // ---------- Canvas sizing ----------
   const updateCanvasSize = useCallback(() => {
@@ -1625,25 +1742,9 @@ function FleetMap({
     if (!robs) return;
 
     const { scale } = viewRef.current;
-    const hitRadiusWorld = ROBOT_HIT_RADIUS / scale;
-
-    let closest = null;
-    let closestDist = Infinity;
-
     const { wx, wy } = screenToWorld(sx, sy);
 
-    Object.values(robs).forEach((robot) => {
-      if (!robot.pose) return;
-      const dx = robot.pose.x - wx;
-      const dy = robot.pose.y - wy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < hitRadiusWorld && dist < closestDist) {
-        closest = robot.robot_id;
-        closestDist = dist;
-      }
-    });
-
-    onSelectRobot(closest);
+    onSelectRobot(pickRobotAt(robs, wx, wy, ROBOT_HIT_RADIUS / scale));
   }, [onSelectRobot, screenToWorld]);
 
   // Track drag distance to distinguish clicks from drags
@@ -1695,6 +1796,23 @@ function FleetMap({
       {mouseCoords && (
         <div className="fleet-map__coords">
           X: {mouseCoords.x} m &nbsp; Y: {mouseCoords.y} m
+        </div>
+      )}
+
+      {/* D-31: the robots this map is deliberately not drawing.
+          Placed bottom-left, clear of the coordinate readout (top-left), the
+          picker banner (top-centre) and the legend (right), and above the scale
+          bar's canvas row. `role="status"` so a screen reader announces the
+          change rather than requiring the operator to notice a missing icon. */}
+      {noFixText && (
+        <div className="fleet-map__nofix" role="status">
+          <span className="fleet-map__nofix-title">
+            No position fix &middot; {noFixIds.length}
+          </span>
+          <span className="fleet-map__nofix-ids">{noFixText}</span>
+          <span className="fleet-map__nofix-note">
+            not drawn &mdash; position unknown, not (0,&nbsp;0)
+          </span>
         </div>
       )}
 

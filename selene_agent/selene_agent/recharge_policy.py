@@ -107,9 +107,18 @@ def settle_after_task_logic(ctx: _RechargeContext) -> str:
       is what the node did unconditionally before D-19.
     * recharge not needed -> ``RECHARGE_NOT_NEEDED`` takes RETURNING to IDLE.
 
-    Fired in the SAME tick as the TASK_COMPLETE above it, so the agent's 2 Hz
-    state publisher never observes RETURNING and the orchestrator is never told
-    a robot is heading home when it is not.
+    Fired in the SAME tick as the TASK_COMPLETE above it.
+
+    THIS PARAGRAPH USED TO CLAIM the agent's 2 Hz state publisher "never
+    observes RETURNING", so the orchestrator was never told a robot is heading
+    home when it is not. Since D-34 that is false: ``AgentNode`` publishes a
+    ``RobotState`` on every FSM transition as well as on the 0.5 s timer, so a
+    RETURNING sample and an IDLE sample are both emitted, microseconds apart,
+    on this path. Nothing here changes -- the robot genuinely passes through
+    RETURNING and a consumer is better off seeing it than being protected from
+    it by an aliasing artefact -- but a consumer must read RETURNING as
+    "possibly transient" and take a RETURNING that survives to the next timer
+    tick as the durable "this robot is driving home" signal.
     """
     reason = ctx.recharge_reason()
     charge = ctx.get_charge_fraction()

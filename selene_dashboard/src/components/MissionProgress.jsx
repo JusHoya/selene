@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { isStale } from '../utils/staleness';
+// D-31: shared with FleetMap, RobotDetail and FleetCards.
+import { robotsWithoutFix } from '../utils/poseFix';
 import './MissionProgress.css';
 
 // A-stale: staleness is a function of wall-clock time, so this panel needs its
@@ -72,6 +74,21 @@ export default function MissionProgress({ progress, robots }) {
   );
   const onTask = onTaskRobots.length;
   const totalRobots = robotEntries.length;
+
+  // D-31: how many robots the fleet map is NOT drawing.
+  //
+  // Reported HERE as well as on the map because this panel is the fleet-level
+  // count an operator reads to answer "is everything accounted for", and the
+  // map badge is only visible while the map is on screen — the whole pane is
+  // swapped for ResourceGraph when the operator opens it (App.jsx renders one
+  // or the other, never both). Counted, not listed: the map badge names them,
+  // and this row is a census.
+  //
+  // A robot with no fix is NOT excluded from onTask/idle above. It is genuinely
+  // on task or genuinely idle; what is unknown is where. That is the opposite
+  // of the staleness case, where the fsm_state itself is the thing that can no
+  // longer be trusted.
+  const noFixRobots = robotsWithoutFix(robotMap);
 
   // Progress topic fields (graceful fallback if undefined)
   const p = progress || {};
@@ -317,6 +334,21 @@ export default function MissionProgress({ progress, robots }) {
               {staleRobots.length > 0 && (
                 <span className="mission-progress__stat-sub--alert">
                   {' · '}{staleRobots.length} no telemetry
+                </span>
+              )}
+              {/* D-31: kept separate from "no telemetry" — they are different
+                  faults with different causes and a robot can be either
+                  without being the other. */}
+              {noFixRobots.length > 0 && (
+                <span
+                  className="mission-progress__stat-sub--alert"
+                  title={
+                    'Robots reporting pose_valid=false: their position is '
+                    + 'unknown and they are not drawn on the fleet map. '
+                    + noFixRobots.join(', ')
+                  }
+                >
+                  {' · '}{noFixRobots.length} no position fix
                 </span>
               )}
             </span>

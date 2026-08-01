@@ -81,9 +81,20 @@ _EXPLICIT_TRANSITIONS: dict[tuple[AgentState, FSMEvent], AgentState] = {
     (AgentState.RETURNING, FSMEvent.AT_BASE_NEED_CHARGE): AgentState.RECHARGING,
     (AgentState.RETURNING, FSMEvent.AT_BASE_CHARGED): AgentState.IDLE,
     # D-19. The robot finished a task, does NOT need to charge, and stays in
-    # the field. Fired in the same tick as the TASK_COMPLETE above it, so
-    # RETURNING is never observed by the 2 Hz state publisher and the
-    # orchestrator never sees a robot that is not actually returning.
+    # the field. Fired in the same tick as the TASK_COMPLETE above it.
+    #
+    # THIS COMMENT USED TO SAY "so RETURNING is never observed by the 2 Hz
+    # state publisher and the orchestrator never sees a robot that is not
+    # actually returning". That is no longer true and was never a good thing to
+    # rely on. Since D-34, ``AgentNode`` publishes a ``RobotState`` from
+    # ``on_transition`` as well as from its 0.5 s timer, so BOTH edges are on
+    # the wire: a RETURNING sample and, microseconds later, an IDLE one. The
+    # design that depended on the aliasing is unchanged and still correct --
+    # the robot really is in RETURNING for that interval, and saying so out
+    # loud is more honest than a state no consumer could see. What changed is
+    # that a consumer must now treat RETURNING as possibly transient rather
+    # than as "this robot is driving home"; the durable signal for that is a
+    # RETURNING sample that is still there on the next 2 Hz tick.
     #
     # RETURNING -> IDLE rather than a second WORKING -> IDLE event: the
     # WORKING/TASK_COMPLETE cell is already taken, and a parallel event out of
@@ -153,6 +164,10 @@ _TRANSITION_TABLE: dict[tuple[AgentState, FSMEvent], AgentState] = _build_full_t
 _FAULT_ESCALATION_THRESHOLD = 3
 
 
+#: Signature of the transition observer: ``(prev_state, event, new_state)``.
+TransitionObserver = Callable[[AgentState, FSMEvent, AgentState], None]
+
+
 class AgentFSM:
     """Event-driven finite state machine for a single lunar robot.
 
@@ -162,14 +177,38 @@ class AgentFSM:
         Unique identifier for the robot this FSM belongs to.
     logger:
         Optional callable(str) for logging.  Defaults to ``print``.
+    on_transition:
+        Optional ``callable(prev_state, event, new_state)`` invoked once per
+        successful transition.  See :meth:`set_transition_observer` for the
+        contract; passing it here and setting it later are equivalent, and
+        the setter exists because the production caller cannot supply it at
+        construction time.
+
+        NO PRODUCTION CALLER USES THIS PARAMETER, and that is not an
+        oversight -- it is the direct consequence of the sentence above.
+        ``AgentNode`` wires the observer through
+        :meth:`set_transition_observer` (agent_node.py:266), after
+        ``self._state_pub`` exists, and
+        ``test_agent_state_publish_wiring.py`` actively FORBIDS it from
+        using this argument. Recorded here because a grep for orphaned
+        surfaces will find this parameter with one test-only caller, and
+        this repository has been bitten five times by exactly that shape;
+        the answer is that it is an optional convenience for a caller that
+        can supply the observer up front, not a mission parameter that is
+        silently doing nothing.
     """
 
-    def __init__(self, robot_id: str, logger: Optional[Callable[[str], None]] = None):
+    def __init__(self, robot_id: str, logger: Optional[Callable[[str], None]] = None,
+                 on_transition: Optional[TransitionObserver] = None):
         self._robot_id = robot_id
         self._logger = logger if logger is not None else print
         self._state = AgentState.IDLE
         self._error_count = 0
         self._transition_log: list[dict] = []
+        self._on_transition: Optional[TransitionObserver] = on_transition
+        # See _notify_transition for exactly what this guards -- it is NOT a
+        # lock and it is NOT thread safety.
+        self._notifying = False
 
     # -- Properties -----------------------------------------------------------
 
@@ -179,6 +218,40 @@ class AgentFSM:
         return self._state
 
     # -- Public API -----------------------------------------------------------
+
+    def set_transition_observer(
+        self, callback: Optional[TransitionObserver],
+    ) -> None:
+        """Install (or clear, with ``None``) the per-transition observer.
+
+        WHY A SETTER AND NOT JUST THE CONSTRUCTOR ARGUMENT. ``AgentNode``
+        builds its FSM at ``agent_node.py:210`` but does not create
+        ``self._state_pub`` until ``:248`` and does not set
+        ``self._current_skill`` / ``self._current_task_id`` until ``:222-223``
+        -- all of which the observer reads. Wiring at construction makes
+        ``AgentNode.__init__`` order-sensitive: any transition fired between
+        those lines would raise ``AttributeError`` out of a constructor. The
+        setter lets the node attach the observer only once everything the
+        callback touches exists, which it does at ``agent_node.py:266``,
+        immediately below the publisher. (The node's callback is defensive too;
+        belt and braces, because this is the exact shape of failure the
+        constructor ordering would produce and it would surface at runtime,
+        not in a test.)
+
+        CONTRACT FOR THE CALLBACK:
+
+        * it is called AFTER ``self._state``, the transition log and the log
+          line are all updated, so ``fsm.state is new_state`` when it runs;
+        * it is NOT called when the transition is rejected -- an
+          ``InvalidTransitionError`` propagates with no notification;
+        * it MUST NOT raise. One that does is caught and logged here rather
+          than allowed to escape, because ``handle_event`` is called from
+          timer and DDS callbacks and an exception there kills the node;
+        * it SHOULD NOT fire further events. One that does still transitions
+          the FSM, but emits no nested notification (see
+          ``_notify_transition``).
+        """
+        self._on_transition = callback
 
     def handle_event(self, event: FSMEvent, **context) -> AgentState:
         """Process *event* and transition if the move is legal.
@@ -241,7 +314,58 @@ class AgentFSM:
             f"{new_state.value}"
         )
 
+        # LAST, deliberately: everything the observer can read is already
+        # settled, so a publisher hanging off this hook reports the state the
+        # FSM is actually in and the transition log it can actually see.
+        self._notify_transition(prev_state, event, new_state)
+
         return new_state
+
+    # -- Internals ------------------------------------------------------------
+
+    def _notify_transition(self, prev_state: AgentState, event: FSMEvent,
+                           new_state: AgentState) -> None:
+        """Call the transition observer, swallowing anything it throws.
+
+        WHAT ``_notifying`` GUARDS, STATED HONESTLY. It is a LOGICAL
+        re-entrancy guard and nothing more: it stops an observer that itself
+        fires an event from producing a nested notification (and, with a
+        careless observer, unbounded recursion). The nested ``handle_event``
+        still transitions normally -- the FSM is not frozen, only the
+        notification is suppressed -- so the observer sees the first edge of
+        such a chain and not the ones it caused.
+
+        IT IS NOT THREAD SAFETY, and must not be read as any. ``main()`` calls
+        ``rclpy.spin(node)`` (``agent_node.py:1390``), i.e. a
+        SingleThreadedExecutor, and there is not one ``callback_group=``
+        argument anywhere in ``agent_node.py``, so every timer, subscription
+        and service on the agent runs in the node's default
+        MutuallyExclusiveCallbackGroup and cannot overlap. A plain boolean is
+        sufficient exactly while that stays true. **If the agent ever gains a
+        MultiThreadedExecutor or a second callback group, this needs a real
+        lock and this paragraph is the trigger to add one.**
+
+        The try/except is not defensive decoration. ``handle_event`` is called
+        from timer callbacks, DDS subscription callbacks and a service
+        handler; an exception escaping any of those takes the node down, and a
+        state publisher failing to serialise is not a reason to stop a robot's
+        FSM. The failure is logged, not hidden.
+        """
+        callback = self._on_transition
+        if callback is None or self._notifying:
+            return
+
+        self._notifying = True
+        try:
+            callback(prev_state, event, new_state)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            self._logger(
+                f"[{self._robot_id}] transition observer raised on "
+                f"{prev_state.value} --({event.value})--> {new_state.value}: "
+                f"{exc!r}"
+            )
+        finally:
+            self._notifying = False
 
     def get_transition_log(self) -> list[dict]:
         """Return a copy of the full transition history."""

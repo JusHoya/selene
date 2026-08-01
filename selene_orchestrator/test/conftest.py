@@ -450,6 +450,26 @@ def _stub_std_and_viz_msgs() -> None:
         _ensure_stub_parent('visualization_msgs', ('visualization_msgs.msg',))
 
 
+class _Twist:
+    """``geometry_msgs/Twist``-shaped stand-in for ``RobotState.velocity``.
+
+    A ``MagicMock`` until 2026-07-31, which was fine only while nothing read
+    it. The orchestrator now does: ``_on_robot_state`` passes
+    ``msg.velocity.linear.x`` and ``msg.velocity.angular.z`` into
+    ``FleetMonitor.update_robot`` for D-30's wheels-turning-body-not clause,
+    and ``float(MagicMock())`` raises ``TypeError``. Real floats here mean a
+    test that drives that path fails on its assertion rather than on the stub.
+    """
+
+    class _Vec3:
+        def __init__(self):
+            self.x = self.y = self.z = 0.0
+
+    def __init__(self):
+        self.linear = _Twist._Vec3()
+        self.angular = _Twist._Vec3()
+
+
 def _stub_selene_msgs(point_cls: type) -> None:
     smsgs_msg = _stub_module('selene_msgs.msg', probe='BidResponse')
     if smsgs_msg is not None:
@@ -495,12 +515,23 @@ def _stub_selene_msgs(point_cls: type) -> None:
             }),
             ('RobotState', {
                 'robot_id': '', 'robot_type': '', 'fsm_state': '',
-                'pose': point_cls, 'velocity': lambda: MagicMock(),
+                'pose': point_cls, 'velocity': _Twist,
                 'battery_level': 1.0, 'current_task_id': '',
                 'task_progress': 0.0, 'capabilities': list,
                 'stamp': lambda: MagicMock(),
                 # Appended 2026-07-30 closing D-06 (FR-DASH-7 energy clause).
                 'battery_capacity_wh': 0.0,
+                # Appended 2026-07-31 closing D-31. TRUE HERE, FALSE ON THE
+                # WIRE, and the disagreement is deliberate. ROS 2
+                # default-initialises bool to false, which is the fail-safe
+                # direction for a real publisher that has not set it. This stub
+                # is used to BUILD messages inside tests, where every existing
+                # construction means "a robot with a pose"; defaulting it false
+                # here would silently drop those robots out of the distance
+                # total and the survey centroid and every affected test would
+                # go green on the wrong reason. A test that wants the no-fix
+                # case sets it explicitly.
+                'pose_valid': True,
             }),
             ('TaskAnnouncement', {
                 'task_id': '', 'task_type': '', 'target_location': point_cls,

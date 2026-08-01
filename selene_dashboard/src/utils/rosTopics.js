@@ -20,9 +20,16 @@ export const TOPICS = {
   BATTERY_STATE: (id) => `/${id}/battery_state`,
   PLANNED_PATH: (id) => `/${id}/planned_path`,
   NEUTRON_SPEC: (id) => `/${id}/sensors/neutron_spec`,
-  // Raw per-reading updates from each scout. Still consumed by ResourceGraph
-  // (the concentration-vs-time trace), which needs individual samples; the map
-  // heatmap no longer builds from these — see RESOURCE_MAP below.
+  // Raw per-reading updates from each scout. Still consumed by ResourceGraph,
+  // which needs individual samples; the map heatmap no longer builds from these
+  // — see RESOURCE_MAP below.
+  //
+  // This used to describe ResourceGraph as "the concentration-vs-time trace".
+  // There is no such trace and there never has been: ResourceMapUpdate.stamp is
+  // published on every message (selene_msgs/msg/ResourceMapUpdate.msg) and read
+  // by nothing in this dashboard — the reducer's projector does not carry it —
+  // so no view here can order readings in time. ResourceGraph is a SPATIAL
+  // proximity graph over individual samples. Fix the comment, not the claim.
   MAP_UPDATE: '/orchestrator/map_update',
   // D-02: the orchestrator's FUSED POSTERIOR grid, published since D-09 at
   // resource_map_publish_rate (0.5 Hz). This is what the map heatmap renders,

@@ -78,6 +78,40 @@
   text-overflow: ellipsis;
 }
 
+/* === D-31: state badge + no-fix chip share one row ===
+   The state span used to be a direct child of the card with align-self:
+   flex-start; it keeps that property inside this row, so a card with a fix
+   renders identically to before. */
+.fleet-card__badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* Amber outline rather than a filled badge, so it cannot be mistaken for
+   another FSM state — the filled pill beside it is the state. Same amber as
+   the map roster and the RobotDetail banner. */
+.fleet-card__nofix {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  line-height: 1.5;
+  color: var(--accent-amber, #ffc107);
+  border: 1px solid var(--accent-amber, #ffc107);
+  align-self: flex-start;
+}
+
+/* Not dimmed the way --stale is: this robot IS talking to us, and dimming it
+   would say the opposite. The chip is the whole treatment. */
+.fleet-card--nofix {
+  box-shadow: inset 2px 0 0 rgba(255, 193, 7, 0.55);
+}
+
 /* === STATE BADGE === */
 .fleet-card__state {
   display: inline-block;

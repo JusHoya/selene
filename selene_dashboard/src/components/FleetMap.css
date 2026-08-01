@@ -45,6 +45,49 @@
   display: block;
 }
 
+/* D-31: the no-position-fix roster.
+   Amber rather than red, and matching .mission-progress__stat-sub--alert: a
+   robot without a fix is DEGRADED information, not a fault — it is usually a
+   robot that simply has not received its first odometry message yet. Red is
+   reserved here for the ERROR ring and the no-telemetry banner, which is a
+   robot that has stopped talking. Bottom-left, so it cannot collide with the
+   coords readout (top-left), the picker banner (top-centre) or the legend
+   (right). pointer-events: none so it never eats a map click. */
+.fleet-map__nofix {
+  position: absolute;
+  bottom: 44px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 320px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  background: rgba(10, 14, 26, 0.88);
+  border-left: 3px solid var(--accent-amber, #ffc107);
+  padding: 5px 9px;
+  border-radius: var(--radius-sm, 4px);
+  pointer-events: none;
+}
+
+.fleet-map__nofix-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--accent-amber, #ffc107);
+}
+
+.fleet-map__nofix-ids {
+  font-size: 11px;
+  color: var(--text-primary, #e0e6f0);
+  word-break: break-all;
+}
+
+.fleet-map__nofix-note {
+  font-size: 9px;
+  color: var(--text-muted, #8892a8);
+}
+
 .fleet-map__coords {
   position: absolute;
   top: 8px;
