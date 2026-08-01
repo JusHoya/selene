@@ -3546,7 +3546,77 @@ whole orchestrator suite on the two-package path is still missing.
 > robots stop driving exactly when the exposure would start to count. Any
 > campaign design has to solve that first, and none has.
 >
-> **Cause unknown. Not reproduced. Not fixed. The campaign has NOT been run.**
+> ### THE CAMPAIGN HAS NOW BEEN RUN, 2026-08-01. BOTH HAZARD MODELS ARE REJECTED AT p<0.01.
+>
+> `scripts/d37_drive_campaign.sh` + `.py`, 45 minutes, a 4/3/3 fleet held driving
+> at the simulator layer with no agents and no orchestrator. **The battery
+> blocker dissolved rather than being worked around**: nothing in the physics
+> consumes `BatteryState` — no `<battery>` element and no `LinearBatteryPlugin`
+> anywhere in `selene_sim`, `battery_node` only publishes, and the only two
+> things that ACT on the value live in `agent_node`. The abort is raised inside
+> `dartsim WorldForwardStep → ConstraintSolver::solve → dxHashSpace::collide` and
+> not one line of `selene_agent` is on that stack, so removing the agents removes
+> nothing the hazard depends on and removes the one thing that made the
+> experiment impossible.
+>
+> **ACHIEVED, against the thresholds this entry derived:**
+>
+> | | achieved | p<0.05 | p<0.01 |
+> |---|---|---|---|
+> | fleet-metres | **7,569.9** | 3,817 | 5,867 |
+> | robot-seconds | **26,970** | 15,098 | 23,210 |
+> | survival, per-robot-second model | **0.0047** | | |
+> | survival, per-fleet-metre model | **0.0026** | | |
+>
+> **AND IT RAN AT 0.281 m PER ROBOT-SECOND — INSIDE the crash runs' 0.174–0.368
+> band.** That is the point. The two clean runs this entry already had ran at
+> **0.053**, i.e. 3.3× to 6.9× less driving per robot-second, which is exactly
+> why their exposure argument was weak: under a per-metre hazard that alone
+> explained them. This run is the first clean exposure **at the operating point
+> where the crashes actually happened**.
+>
+> **NO ABORT. AND THE GREP THAT SAYS SO HAD TO BE READ CAREFULLY**, which is
+> itself worth recording. `grep -c "ODE INTERNAL ERROR"` returns **1** — and that
+> match is D-26's own explanatory banner, which `_diagnose_simulator_exit` prints
+> on ANY simulator exit and which quotes the assertion text verbatim. The
+> simulator's actual return code was **−9 (SIGKILL), from this script's own
+> teardown**, not 134/SIGABRT. A naive reading of that grep would have reported
+> an abort that did not occur. The three strings, correctly read:
+>
+>     ODE INTERNAL ERROR (real abort)   0   (1 match, and it is the banner)
+>     "have invalid poses" (NaN guard)  0
+>     exit code 134 / -6                0
+>
+> **The upstream NaN guard never fired either**, so this run says nothing either
+> way about the post-step inference above; that question needs an abort to
+> settle and this run did not produce one.
+>
+> ### WHAT THIS DOES AND DOES NOT ESTABLISH
+>
+> * **It rejects both hazard models at p<0.01** at the right operating point. It
+>   does NOT distinguish them — a single driving arm accrues metres and
+>   robot-seconds together, and only an abort or a second parked arm can separate
+>   them. Rejecting both is the stronger practical outcome and the weaker
+>   scientific one.
+> * **THE CONFIGURATION IS NOT THE ONE THAT CRASHED.** This fleet drove circles
+>   under direct `cmd_vel` with no agents, no orchestrator, no skills, no
+>   actuators and no excavate/haul interactions. The three aborts happened under
+>   the full stack. If the hazard depends on something an agent does — a
+>   particular velocity profile, a drill or transfer actuator, a robot pinned
+>   against terrain under a controller that keeps commanding — this campaign does
+>   not cover it. **That is the largest caveat and it is not small.**
+> * One robot did hit a genuine stress case and it still did not abort:
+>   `scout_01: WHEELS TURNING, BODY NOT MOVING. 7.0 m of wheel travel over 20 s,
+>   2.03 m covered (71% slip)` — the D-25 detector firing correctly. scout_01
+>   covered 20.9 m against ~950 m for every other robot.
+> * Pose extremes stayed on the heightfield: max |x| or |y| over all ten robots
+>   **205.245 m** against the 248.062 m half-extent, min z **−14.73 m**.
+>   Consistent with the 174.700 m from the earlier instrumented run and with the
+>   arithmetic showing a fall cannot reach the assertion's bound in these times.
+>
+> **Cause still unknown. Still not reproduced. Still not fixed.** What changed is
+> that the exposure argument is now made at the right operating point, and the
+> instrument to make it exists and is committed.
 
 ---
 

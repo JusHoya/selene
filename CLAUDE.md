@@ -151,7 +151,21 @@ Caveats a reader should know:
   explain is the **fingerprint**: net solar for a stationary scout outside the PSR is
   exactly 40 − 10 = 30 W into 50 Wh, so `.1%` formatting prints "0.1%" for t ∈ [3.0, 9.0] s
   from empty. **One deviation is still open and its cause is still unknown: D-37**, and the
-  rule about not inventing a cause for it stands.
+  rule about not inventing a cause for it stands. **D-37's campaign HAS now been run**
+  (`scripts/d37_drive_campaign.sh`, 45 min, 4/3/3): **7,569.9 fleet-metres and 26,970
+  robot-seconds with no abort, at 0.281 m per robot-second — INSIDE the crash runs'
+  0.174–0.368 band**, where the two clean runs the register already had sat at 0.053.
+  Both hazard models are rejected at **p<0.01** (survival 0.0047 per-second, 0.0026
+  per-metre). The blocker dissolved rather than being worked around: nothing in the
+  physics consumes `BatteryState`, so a fleet driven at the simulator layer with no
+  agents cannot be stopped by a flat battery, and no line of `selene_agent` is on the
+  aborting stack. **THE LARGEST CAVEAT IS THAT THIS IS NOT THE CONFIGURATION THAT
+  CRASHED** — circles under direct `cmd_vel`, no skills, no actuators, no excavate or
+  haul — so a hazard depending on something an agent does is not covered. Note also the
+  grep trap this run exposed: `grep -c "ODE INTERNAL ERROR"` returns **1 on a clean
+  run**, because D-26's diagnostic banner quotes the assertion verbatim on ANY simulator
+  exit. The real signature is `exit code 134`, which was 0; the actual return code was
+  −9, from the campaign's own teardown.
 - **Four of the five new deviations came from running the CHECKING APPARATUS, not the
   system.** D-38: CI's `dashboard-tests` job had never fired on this branch (SELENE CI
   triggers only on main/develop/PR/dispatch), and when dispatched it could not `npm ci` at
