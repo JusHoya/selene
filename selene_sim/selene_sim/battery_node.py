@@ -33,6 +33,7 @@ import yaml
 import os
 
 from selene_sim.world_frame import WORLD_ODOM_TOPIC
+from selene_sim.battery_model import BatteryModel
 
 
 class BatteryNode(Node):
@@ -80,11 +81,11 @@ class BatteryNode(Node):
         self.loco_draw_w = params['locomotion_draw_w_per_ms']
         self.solar_recharge_w = params['solar_recharge_w']
 
-        # State
+        # State. current_speed and current_position are LATCHED from the last
+        # message on each topic; nothing decays either. See _update.
         self.remaining_wh = self.capacity_wh
         self.current_speed = 0.0
         self.current_position = (0.0, 0.0, 0.0)
-        self.last_position = None
         self.actuator_draw_w = 0.0
         self.is_charging = False
 
@@ -96,6 +97,14 @@ class BatteryNode(Node):
                 world_config = yaml.safe_load(f)
             if 'world' in world_config and 'psr_zones' in world_config['world']:
                 self.psr_zones = world_config['world']['psr_zones']
+
+        self._model = BatteryModel(
+            capacity_wh=self.capacity_wh,
+            idle_draw_w=self.idle_draw_w,
+            locomotion_draw_w_per_ms=self.loco_draw_w,
+            solar_recharge_w=self.solar_recharge_w,
+            psr_zones=self.psr_zones,
+        )
 
         # Subscribers
         prefix = f'/{self.robot_id}'
@@ -132,66 +141,33 @@ class BatteryNode(Node):
         else:
             self.actuator_draw_w = 0.0
 
-    def _is_in_psr(self):
-        """Check if robot is in a permanently shadowed region."""
-        x, y = self.current_position[0], self.current_position[1]
-        for zone in self.psr_zones:
-            if zone.get('type') == 'circle':
-                cx, cy = zone['center']
-                r = zone['radius']
-                dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-                if dist <= r:
-                    return True
-        return False
-
-    def _compute_slope_factor(self):
-        """Estimate slope from consecutive positions."""
-        if self.last_position is None:
-            self.last_position = self.current_position
-            return 1.0
-
-        dx = self.current_position[0] - self.last_position[0]
-        dy = self.current_position[1] - self.last_position[1]
-        dz = self.current_position[2] - self.last_position[2]
-        horiz = math.sqrt(dx ** 2 + dy ** 2)
-
-        self.last_position = self.current_position
-
-        if horiz < 0.001:
-            return 1.0
-
-        slope_angle = math.atan2(dz, horiz)
-        factor = 1.0 + 2.0 * math.sin(slope_angle)
-        return max(factor, 0.3)
-
     def _update(self):
-        slope_factor = self._compute_slope_factor()
-
-        # Compute power draw
-        power_w = (self.idle_draw_w
-                   + self.loco_draw_w * self.current_speed * slope_factor
-                   + self.actuator_draw_w)
-
-        # Solar recharging: in solar zone and stationary
-        self.is_charging = False
-        if not self._is_in_psr() and self.current_speed < 0.05:
-            self.is_charging = True
-            power_w -= self.solar_recharge_w
-
-        # Update battery
-        delta_wh = power_w * self.dt / 3600.0
-        self.remaining_wh = max(
-            0.0, min(self.capacity_wh, self.remaining_wh - delta_wh)
+        # THE ARITHMETIC LIVES IN selene_sim.battery_model AND IS TESTED THERE.
+        # It used to be inline here, behind this file's module-level `import
+        # rclpy`, which meant it ran in one pytest lane out of five and in
+        # practice was covered by none of them: this node had zero tests of any
+        # kind until 2026-08-01. Register D-42 had to re-derive its arithmetic by
+        # hand as a result. See selene_sim/test/test_battery_model.py.
+        #
+        # `self.current_speed` is whatever cmd_vel last carried and nothing
+        # decays it -- see _cmd_vel_callback. That is the input the model
+        # integrates, and it is the reason an orphaned battery_node drains to the
+        # model's lower clamp and then publishes exactly 0.0 forever.
+        tick = self._model.step(
+            self.dt, self.current_speed, self.current_position,
+            self.actuator_draw_w,
         )
+        self.remaining_wh = tick.remaining_wh
+        self.is_charging = tick.is_charging
 
         # Publish BatteryState
         msg = BatteryState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.voltage = 48.0  # nominal
-        msg.current = power_w / 48.0
+        msg.current = tick.power_w / 48.0
         msg.charge = self.remaining_wh / 48.0  # Ah approximation
         msg.capacity = self.capacity_wh / 48.0
-        msg.percentage = self.remaining_wh / self.capacity_wh
+        msg.percentage = self._model.charge_fraction
         msg.power_supply_status = (
             BatteryState.POWER_SUPPLY_STATUS_CHARGING if self.is_charging
             else BatteryState.POWER_SUPPLY_STATUS_DISCHARGING

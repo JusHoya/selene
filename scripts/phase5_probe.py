@@ -354,6 +354,42 @@ GOTO_MIN_SAMPLES = 4
 #: How often the motion loop re-evaluates, seconds.
 GOTO_POLL_INTERVAL_SEC = 0.25
 
+#: Charge fraction check 11 requires ON TOP OF the agent's own
+#: ``energy_critical_threshold`` before it will command a robot.
+#:
+#: DERIVED, from arithmetic register entry D-42 already established for a scout:
+#: the largest draw that robot's own sim model can produce is about 235 W
+#: against a 50 Wh pack, i.e. about 4.7 percentage points per minute, and the
+#: longest window ``goto_window_seconds`` produces at the shipped bearings is
+#: 19.8 s (excavator at 90 deg) -- about 1.6 points. 5 points is roughly 3x
+#: that. n = 1 on the power model, which is why the margin is 3x rather than
+#: 1.1x, and why it is a named constant and not a bare number.
+GOTO_MIN_BATTERY_MARGIN = 0.05
+
+#: ``energy_critical_threshold``'s DECLARED DEFAULT in
+#: ``selene_agent/selene_agent/agent_node.py``. Used ONLY when ``/agent_<rid>``
+#: does not answer a parameter read, and named in the report whenever it is
+#: used -- the same rule ``read_rcdl_max_speed`` follows.
+GOTO_DEFAULT_CRITICAL_THRESHOLD = 0.15
+
+#: FSM states in which a robot is ALREADY under a rule that outranks the
+#: operator command check 11 issues, so commanding it would measure the rule and
+#: not the override.
+#:
+#: RETURNING and RECHARGING are what the energy rules produce. OFFLINE and ERROR
+#: are refused by ``operator_command_logic`` itself, so commanding them measures
+#: nothing. On 2026-08-01 the subject was in RETURNING at selection and this
+#: list did not exist; see register D-42.
+GOTO_UNFIT_STATES = ('OFFLINE', 'ERROR', 'RETURNING', 'RECHARGING')
+
+#: Rejection reasons that are ABOUT THE GATE rather than about the fleet.
+#: Spelled as constants because ``select_goto_robot`` writes them and
+#: ``goto_no_subject_verdict`` reads them to decide FAIL versus SKIP, and a
+#: drifting literal across that boundary would silently turn a system failure
+#: into a skipped measurement.
+GOTO_RESERVED_REASON = 'reserved for check 7 (force_recharge)'
+GOTO_NO_STATE_REASON = 'publishes no state'
+
 #: How long ``pick_prospect_robot`` looks for durable corroboration that the
 #: robot it cancelled really was freed, seconds. Unchanged in value from the
 #: settle loop it replaces; what changed is that its expiry is no longer a
@@ -2838,7 +2874,130 @@ def goto_detail(robot_id, parts, path_note, path_recorded):
     return '%s: %s' % (robot_id, text)
 
 
-def run_send_to_location(results, probe, robot_id, rcdl_dir, yaml_module):
+# ---- Check 11's SUBJECT. Three pure functions, added 2026-08-01 (D-42). ----
+
+
+def goto_subject_fitness(sample, critical_threshold):
+    """Can this robot be asked to perform check 11's manoeuvre? -> (ok, reason).
+
+    Pure, and every branch is reachable from the ROS-free lane. That is the
+    whole reason it is a function: the selection it replaces lived inline in
+    ``main`` where no test could drive it, and D-35's verifier established that
+    a mechanism with no test that fails without it is not fixed, it is asserted.
+
+    WHAT THIS IS NOT. It is not a health check on the fleet and it renders no
+    verdict on any robot. It answers one question -- *would commanding this
+    robot measure PRD row 5, or would it measure the rule that countermands the
+    operator?* -- from data this probe was ALREADY recording and throwing away.
+    On 2026-08-01 check 11 commanded a robot reporting 0.0% battery from
+    RETURNING; the energy-critical rule fired six milliseconds after the FSM
+    accepted the override, and the check reported that as a send_to_location
+    failure. ``battery_level`` was in every sample ``_make_state_cb`` built and
+    had exactly one reader in this file: a ``[0, 1]`` range assertion in check 4
+    that ``0.0`` satisfies. See register D-42.
+
+    THE THRESHOLD IS PASSED IN, NEVER HARDCODED. It is the agent's own
+    ``energy_critical_threshold``, read off ``/agent_<rid>`` by the caller. A
+    literal here would be this gate asserting its assumptions about a value the
+    running system owns, which is D-12.
+    """
+    if sample is None:
+        return False, GOTO_NO_STATE_REASON
+    state = str(sample.get('fsm_state', ''))
+    if state in GOTO_UNFIT_STATES:
+        return False, ('fsm_state %s -- already under a rule that outranks the '
+                       'operator command this check issues' % (state,))
+    if not sample.get('pose_valid', True):
+        return False, ('pose_valid=false, so assertion (3) could measure no '
+                       'displacement from it (register D-31)')
+    floor = float(critical_threshold) + GOTO_MIN_BATTERY_MARGIN
+    charge = float(sample.get('battery_level', 0.0))
+    if charge <= floor:
+        return False, ('battery_level %.1f%% at or below the %.1f%% floor '
+                       "(the agent's own energy_critical_threshold %.1f%% plus "
+                       'a %.1f%% margin for the drain of the manoeuvre)'
+                       % (charge * 100.0, floor * 100.0,
+                          float(critical_threshold) * 100.0,
+                          GOTO_MIN_BATTERY_MARGIN * 100.0))
+    return True, ''
+
+
+def select_goto_robot(fleet, samples, thresholds, exclude=()):
+    """Check 11's subject. -> ``(robot_id or None, rejections)``. Pure.
+
+    *samples* is ``{rid: latest_state_sample or None}``, *thresholds* is
+    ``{rid: energy_critical_threshold}``, *exclude* holds robots another check
+    has already claimed. ``rejections`` is ``[(rid, reason), ...]`` for every
+    robot examined and passed over, in fleet order, so the report can say what
+    was rejected and why on EVERY verdict -- including a PASS.
+
+    FIRST FIT WINS AND THE SCAN STOPS THERE, deliberately: robots after the
+    winner are not examined and get no entry. Ranking candidates by charge would
+    make the subject depend on a quantity that moves between runs and would make
+    two runs of the same commit incomparable, which is the property D-10 needs
+    from this gate above all others.
+
+    THIS IS A PRECONDITION, NOT A RETRY, and the distinction is the one D-35
+    drew. Re-rolling a stimulus AFTER a failure until one passes is forbidden --
+    that is adjusting the instrument until it stops reporting a problem, and
+    ``run_send_to_location`` still refuses to retry a bearing that planned and
+    then failed to move. Choosing a fit SUBJECT BEFORE issuing any stimulus is
+    the opposite move: it is what makes the stimulus mean something. PRD row 5
+    names no robot.
+    """
+    rejections = []
+    for rid in fleet:
+        if rid in exclude:
+            rejections.append((rid, GOTO_RESERVED_REASON))
+            continue
+        ok, reason = goto_subject_fitness(
+            samples.get(rid),
+            thresholds.get(rid, GOTO_DEFAULT_CRITICAL_THRESHOLD))
+        if ok:
+            return rid, rejections
+        rejections.append((rid, reason))
+    return None, rejections
+
+
+def goto_no_subject_verdict(rejections):
+    """Verdict when no robot was fit. -> ``(result, detail)``. Pure.
+
+    THE DEFAULT IS FAIL, AND THAT IS THE WHOLE DISPOSITION. A gate that SKIPped
+    here would be saying "this measurement could not be taken", which is a
+    statement about the instrument and sends the reader to this file. A fleet in
+    which no robot can accept an operator override is a statement about the
+    SYSTEM, and the reader needs to be sent there. Both block a green run
+    (exit 1 versus exit 2); only one of them points at the right place.
+
+    THE ONE EXCEPTION IS A BLIND INSTRUMENT. If every robot examined was
+    rejected for publishing no state at all, this probe could not see the fleet
+    and must say so rather than blame it -- the D-34 rule, that an instrument
+    which cannot see says so instead of rendering a verdict. Check 4 renders the
+    verdict on absent state topics; it is not this check's row.
+    """
+    examined = [(rid, why) for rid, why in rejections
+                if why != GOTO_RESERVED_REASON]
+    detail = '; '.join('%s: %s' % (rid, why) for rid, why in rejections)
+    if not examined:
+        return SKIP, ('no second robot was available; check 7 uses one and '
+                      'this check must not reuse it (%s)' % (detail or 'none',))
+    if all(why == GOTO_NO_STATE_REASON for _rid, why in examined):
+        return SKIP, ('no candidate robot published any state, so this gate '
+                      'could not see the fleet well enough to choose a '
+                      'subject -- an instrument failure, not a fleet one; '
+                      'check 4 is the row that renders a verdict on absent '
+                      'state topics. %s' % (detail,))
+    return FAIL, ('NO ROBOT WAS IN A STATE TO ACCEPT THE OVERRIDE, so PRD '
+                  'row 5 (send-to-location) was NOT demonstrated on this run. '
+                  'This gate will not command a robot it can already see '
+                  'cannot obey: that measures the autonomy rule which '
+                  'countermands the operator, not the override, and it is '
+                  'exactly what happened on 2026-08-01 (register D-42). Per '
+                  'robot: %s' % (detail,))
+
+
+def run_send_to_location(results, probe, robot_id, rcdl_dir, yaml_module,
+                         rejections=()):
     """Check 11 — PRD row 5, which names send-to-location.
 
     EXPECTED WALL CLOCK: about 20 s when the first bearing plans successfully;
@@ -2890,11 +3049,20 @@ def run_send_to_location(results, probe, robot_id, rcdl_dir, yaml_module):
     bearing that plans and then fails to move is NOT retried. Re-rolling
     stimuli until one passes is exactly "adjust the instrument until it stops
     reporting a problem", which is the failure this register exists to name.
+
+    THE SUBJECT IS A PRECONDITION OF THIS CHECK, NOT PART OF IT.
+    ``select_goto_robot`` chooses a robot whose own state says it can obey an
+    operator goto, and *rejections* carries every robot passed over with the
+    reason. When nothing is fit this check FAILS LOUDLY rather than commanding a
+    robot it can see cannot comply -- register D-42, where it did exactly that
+    and reported the energy-critical rule as a send_to_location failure. PRD
+    row 5 names no robot, so choosing a fit subject asserts nothing less;
+    commanding an unfit one asserts something else entirely.
     """
     if robot_id is None:
-        results.set(11, SKIP,
-                    'no second robot was available; check 7 uses one and this '
-                    'check must not reuse it')
+        results.measured(11, rejections=[list(pair) for pair in rejections])
+        verdict, detail = goto_no_subject_verdict(list(rejections))
+        results.set(11, verdict, detail)
         return
     start = probe.latest_state(robot_id)
     if start is None:
@@ -3446,18 +3614,57 @@ def main(argv):
                                    task_queue_type is not None)
 
         # ---- Two overrides, on two different robots. ----
-        eligible = []
+        #
+        # CHECK 7's SUBJECT IS STILL CHOSEN ON LIVENESS ALONE, and that is
+        # correct: OPERATOR_RECHARGE is mapped from every state except
+        # OFFLINE/ERROR, so any live robot can obey it and a fitness test there
+        # would assert something its row does not.
+        #
+        # CHECK 11's SUBJECT IS NOW CHOSEN ON FITNESS. This block used to take
+        # `eligible[1]` -- positionally, which at the default 2/1/1 fleet is
+        # always scout_02. On 2026-08-01 that robot was reporting 0.0% battery
+        # and was already in RETURNING under the energy-critical rule; the gate
+        # commanded it anyway, the FSM accepted OPERATOR_GOTO and the rule
+        # countermanded it six milliseconds later, and check 11 FAILed having
+        # measured the rule rather than the override. BOTH FACTS WERE IN THIS
+        # PROBE'S OWN RECORDING AT THE MOMENT IT CHOSE. See register D-42, and
+        # `select_goto_robot` for why a precondition is not a retry.
+        #
+        # THE THRESHOLD IS THE AGENT'S OWN, READ LIVE. A literal here would be
+        # the gate measuring its own assumptions -- D-12, and the same reason
+        # `auction_timeout_sec` and `max_message_size` are read off their nodes
+        # rather than spelled out here.
+        critical_thresholds = {}
         for rid in fleet:
-            sample = probe.latest_state(rid)
-            if sample is not None and sample['fsm_state'] not in ('OFFLINE',
-                                                                  'ERROR'):
-                eligible.append(rid)
+            live = probe.get_remote_parameters(
+                '/agent_%s' % (rid,), ['energy_critical_threshold'],
+                timeout_sec=5.0)
+            value = live.get('energy_critical_threshold')
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                critical_thresholds[rid] = GOTO_DEFAULT_CRITICAL_THRESHOLD
+                log('agent_%s did not answer for energy_critical_threshold; '
+                    'using the declared default %.2f'
+                    % (rid, GOTO_DEFAULT_CRITICAL_THRESHOLD))
+            else:
+                critical_thresholds[rid] = float(value)
+
+        states = {rid: probe.latest_state(rid) for rid in fleet}
+        eligible = [rid for rid in fleet
+                    if states[rid] is not None
+                    and states[rid]['fsm_state'] not in ('OFFLINE', 'ERROR')]
         recharge_robot = eligible[0] if eligible else None
-        goto_robot = next((rid for rid in eligible if rid != recharge_robot),
-                          None)
         run_force_recharge(results, probe, recharge_robot)
+
+        # RE-READ AFTER CHECK 7, NOT BEFORE IT. force_recharge moves its own
+        # subject into RECHARGING and starts it driving, so a fitness decision
+        # taken from a pre-check-7 snapshot would be reasoning about a fleet
+        # this gate has since perturbed.
+        states = {rid: probe.latest_state(rid) for rid in fleet}
+        goto_robot, goto_rejections = select_goto_robot(
+            fleet, states, critical_thresholds,
+            exclude=(recharge_robot,) if recharge_robot else ())
         run_send_to_location(results, probe, goto_robot, args.rcdl_dir,
-                             yaml_module)
+                             yaml_module, goto_rejections)
 
         # ---- Close the window, then evaluate the recording. ----
         remaining = args.window - (time.time() - window_start)

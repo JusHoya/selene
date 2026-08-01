@@ -1315,6 +1315,65 @@ time array would add ~1 MB per message for a field nothing reads.
 
 ## D-10 — the exit gate tests less than its report implies — RUN THREE TIMES. THE GATE DOES NOT PASS
 
+> **FOUR CHANGES TO THE GATE, 2026-08-01 (late), after D-42 was root-caused.**
+> None of them widens a threshold and none makes a failing measurement pass; two
+> of them make the gate refuse to run rather than report a number it should not
+> have taken.
+>
+> 1. **CHECK 11 NO LONGER COMMANDS A ROBOT IT CAN SEE CANNOT OBEY.** The subject
+>    was chosen positionally — `eligible[1]`, which at the default 2/1/1 fleet is
+>    always `scout_02` — filtered only on `fsm_state not in ('OFFLINE','ERROR')`.
+>    On the third run that robot was reporting **0.0 % battery** and was already
+>    in **RETURNING** under the energy-critical rule; the gate commanded it, the
+>    FSM accepted `OPERATOR_GOTO`, the rule countermanded it 6 ms later, and
+>    check 11 reported that as a `send_to_location` failure. It measured the
+>    autonomy rule, not the override.
+>    **Both facts were in the probe's own recording at the moment it chose.**
+>    `select_goto_robot` now picks the first robot in fleet order whose own state
+>    says it can obey, against **the agent's own `energy_critical_threshold` read
+>    live off `/agent_<rid>`** plus a derived 5-point margin — never a literal,
+>    which would be the gate asserting its assumptions (D-12).
+>    **THIS IS A PRECONDITION, NOT A RETRY**, and the distinction is D-35's:
+>    re-rolling a stimulus after a failure until one passes is forbidden and
+>    `run_send_to_location` still refuses to retry a bearing that planned and
+>    then failed to move. Choosing a fit subject *before* issuing any stimulus is
+>    the opposite move. **PRD row 5 names no robot.**
+>    When nothing is fit the check **FAILS LOUDLY** — "NO ROBOT WAS IN A STATE TO
+>    ACCEPT THE OVERRIDE" — rather than SKIPping, because a fleet that cannot
+>    accept an override is a statement about the system and sends the reader
+>    there; the one exception is a probe that can see no state at all, which is a
+>    blind instrument and says so (the D-34 rule). 26 ROS-free tests pin all of
+>    it, including a replay of the 2026-08-01 fleet that now selects
+>    `excavator_01` instead of `scout_02`.
+> 2. **THE SEVENTH "WIRED BUT NEVER CALLED", AND THE FIRST INSIDE THE
+>    APPARATUS.** `_make_state_cb` captures `battery_level` on every RobotState
+>    sample. Its only reader in the entire probe was a `0.0 <= x <= 1.0` range
+>    assertion in **check 4**, which `0.0` satisfies — so **check 4 PASSED on a
+>    robot reporting zero charge, on the same run whose check 11 that robot took
+>    down, and said nothing.** The datum was there the whole time.
+> 3. **PORT PRE-FLIGHT, exit 3.** `GZ_PARTITION` isolates this run's Gazebo
+>    transport; **nothing isolates TCP**. A rosbridge left behind on 9090 means
+>    this run's own bridge never binds — OBSERVED on this box on 2026-08-01,
+>    `Unable to start server: [Errno 98] Address already in use`, retrying
+>    forever — and checks 3, 5 and 9 then measure a bridge attached to a graph
+>    the gate did not start. `missing_nodes()` cannot see it: it tests only for
+>    the ABSENCE of expected nodes, so a stale `/rosbridge_websocket` satisfies
+>    check 1. That is D-07's "querying the wrong server" on the two transports
+>    the partition does not cover, and **it presents as a clean PASS** — the one
+>    outcome this entry exists to prevent. The gate now refuses to start, and
+>    separately warns (naming the processes) when SELENE nodes are already
+>    running, because an orphaned `battery_node` publishes a clamped 0.0 % for as
+>    long as it lives (D-42).
+> 4. **THE SHELL TIMEOUT WAS SMALLER THAN THE PROBE'S OWN WORST CASE.** Summing
+>    every declared ceiling inside the probe gives ~411 s against `timeout 420`,
+>    and check 11's 120 s budget was tested only at the TOP of its bearing loop,
+>    so one more full bearing could start at 119.9 s and add ~53 s. **There is no
+>    SIGTERM handler**, so `timeout` killed the process before the `finally:`
+>    that emits, and all ten probe-owned rows came back as "the probe did not
+>    report this check" — failing closed, correctly, while destroying the run's
+>    information. The budget is now tested again before each motion window and
+>    the ceiling is **540 s**.
+>
 > **Third run, 2026-08-01, and the shape of the failure changed.** Run against
 > `9c1a4d7` on ROS 2 Jazzy / Ubuntu 24.04.4 at `2/1/1`
 > (`num_scouts:=2 num_excavators:=1 num_haulers:=1`), on a workspace built by
@@ -3365,7 +3424,133 @@ whole orchestrator suite on the two-package path is still missing.
 
 ---
 
-## D-37 — the ODE abort: three reproducible crashes, cause UNKNOWN — OPEN
+## D-37 — the ODE abort: three reproducible crashes — STILL OPEN, but the MECHANISM is now identified and one candidate explanation is REFUTED BY MEASUREMENT
+
+> **AMENDED 2026-08-01 (late).** The entry below still stands on everything it
+> says. What is new is that the assertion's trigger condition is now known at
+> source level, the terrain-edge theory is refuted a **third** time by
+> independent arithmetic, and the most attractive new explanation — "the box was
+> running a gz-physics without the upstream fix" — **was checked and is false**.
+> The cause of the three aborts remains unknown. No cause is proposed here.
+>
+> ### THE ASSERTION FIRES ON NaN
+>
+> `dICHECK(aabbBound >= dMinIntExact && aabbBound < dMaxIntExact)` sits in ODE's
+> `collision_space.cpp` inside `dxHashSpace::collide`, where
+> `aabbBound = geom->aabb[i] * 2^-level`. It fails on exactly two inputs: a **NaN**
+> AABB coordinate — every comparison against NaN is false, so the check fails at
+> *any* magnitude — or a **finite-but-astronomical** one. It does **not** fail on
+> infinities: `findLevel()` returns `MAXINT` for an infinite AABB and the geom is
+> routed to `big_boxes`, which is how ODE handles infinite planes. There is no
+> plane in this world in any case (`grep -rn "<plane>" selene_sim/` → no match).
+>
+> **The finite bound, derived rather than guessed.** DART sets
+> `dHashSpaceSetLevels(mSpaceId, -2, 8)`, so `2^-level ≤ 4`; `dMaxIntExact` is
+> `2147483647` (double-precision ODE) or `16777215` (single). The tightest geom
+> in this fleet is a wheel (AABB ≈ 0.2–0.24 m → level −2 → factor 4), giving a
+> coordinate limit of **5.37 × 10⁸ m** (double) or **4.19 × 10⁶ m** (single).
+>
+> ### THE TERRAIN-EDGE THEORY IS REFUTED A THIRD TIME, INDEPENDENTLY
+>
+> Free fall at 1.62 m/s² reaches 4.19 × 10⁶ m in **37.9 minutes** and
+> 5.37 × 10⁸ m in **7.15 hours**. The three aborts were at **~5, ~21.5 and
+> ~29 minutes**. **A fall cannot produce this assertion in the observed times**
+> — whatever the robot did, and regardless of the SE(2) frame argument and the
+> 200,027-sample measurement that refuted it twice already. Three independent
+> refutations now agree, and this one needs no measurement at all.
+>
+> ### THE HEIGHTFIELD IS STRUCTURALLY EXEMPT, AND THE PRINT IS CONFIRMED AT SOURCE
+>
+> `Dbg ODE Heightfield AABB` is emitted by
+> `dart/collision/ode/detail/OdeHeightmap-impl.hpp` **inside the
+> `OdeHeightmap<S>::OdeHeightmap(...)` constructor**. It cannot be emitted from
+> inside `collide()`. Verification-limit item 22's "strongly supported and not
+> directly checked" inference is now checked from the other end. And the
+> heightfield's own AABB extent of 496.124 m gives `frexp` level 9, above DART's
+> `global_maxlevel = 8`, so it lands in `big_boxes` and **never reaches the
+> `dICHECK` at all**. The crashing geom is a robot geom, necessarily.
+>
+> ### UPSTREAM FIXED THIS, THE FIX IS ON THIS BOX, AND IT WAS ON THIS BOX WHEN THE ABORTS HAPPENED
+>
+> gz-physics **PR #706, "Prevent crash when objects move to invalid poses"**,
+> closes gz-physics issue #661 — the identical assertion — with the diagnosis:
+> *"DART seems to compute invalid poses for certain objects … with large
+> accelerations. The computed poses end up with `nan` values resulting in a
+> crash."* It adds a post-step `model->getPositions().hasNaN()` check to
+> `dartsim/src/SimulationFeatures.cc::WorldForwardStep` that rolls back to the
+> last good positions and logs `Some links in model '<X>' have invalid poses`.
+> Backported to `gz-physics7` as **PR #707, merged 2024-12-19**, first released
+> in **7.5.0**.
+>
+> **MEASURED ON THE OPERATOR'S BOX, 2026-08-01:**
+>
+>     libgz-physics7-dartsim:amd64   7.8.0-1~noble
+>     dpkg.log: 2026-07-29 17:44:10 status installed  (one entry, never upgraded)
+>     strings libgz-physics7-dartsim-plugin.so | grep "invalid pose"
+>       -> ' have invalid poses.'          GUARD PRESENT
+>
+> The three aborts were on **2026-07-30 and 2026-07-31**. The package was
+> installed on **2026-07-29** and has not been touched since. **So the upstream
+> NaN guard was present, in the loaded binary, for all three aborts.** The
+> tidiest available explanation is dead: this is not a stale-package bug, and
+> `apt upgrade` is not the remedy.
+>
+> **AN INFERENCE, LABELLED AS ONE, ABOUT WHY THE GUARD DOES NOT COVER THIS.**
+> The guard is a **post-step** check: it runs after `WorldForwardStep` returns.
+> The assertion fires **during** the step, inside
+> `WorldForwardStep → ConstraintSolver::solve → collide`. A NaN that first
+> reaches a geom's transform within step *N* is therefore presented to
+> `collide()` in step *N* and aborts before the end-of-step check ever executes;
+> the guard can only stop a NaN produced in step *N* from poisoning step *N+1*.
+> **This has NOT been verified** — it is read off the call order, not observed.
+> What would confirm it: the next abort should carry **no**
+> `Some links in model … have invalid poses` line before it. What would refute
+> it: that line appearing, and the run continuing.
+>
+> ### THE EXPOSURE ARITHMETIC THE ENTRY ASKED FOR, COMPLETED
+>
+> The entry names a per-metre alternative but does not quantify it.
+> λ = 3 / (522 + 1400 + 1900) = **1/1274 per fleet-metre**. Under it the
+> 1288.8 abort-free metres carry a **36 % survival probability** — they
+> establish nothing. Rejecting it needs **3,817 m** (p<0.05) or **5,867 m**
+> (p<0.01).
+>
+> **And the clean runs were not at the same operating point as the crash runs.**
+> 1288.8 m / 24,327 robot-seconds = **0.053 m per robot-second**, against
+> **0.174 / 0.201 / 0.368** for the three crash runs — 3.3× to 6.9× less driving
+> per robot-second. Under a per-metre hazard *that alone* explains the clean
+> runs, with no appeal to any of the four configuration changes the entry
+> credits. (Caveat, and it matters: the crash-run distances are this register's
+> own "~" figures and are probably **dead-reckoned**, which over-reads under
+> slip — the 126.7 m phantom. It is a ratio between two instruments, one known
+> to over-read. That is a reason to run the experiment, not evidence.)
+>
+> ### THE EXPERIMENT, COSTED — AND A BLOCKER NOBODY HAD FLAGGED
+>
+> A 4/3/3 fleet held driving accrues ~2.7 fleet-m/s at a realistic 75 % duty
+> cycle, so **~25 minutes clears both hazard models at p<0.05 and ~39 minutes at
+> p<0.01**, at 0.27 m/robot-second — inside the crash runs' 0.17–0.37 band,
+> which the clean runs never entered. Anything under 20 minutes rejects neither
+> model and is not worth the box time.
+>
+> **A single driving arm cannot DISTINGUISH the two models**, only reject both:
+> metres and robot-seconds accrue together. Distinguishing needs either an abort
+> (whose exposure ratio then discriminates) or a second **parked** arm — the same
+> ten agents alive and physics stepping, commanded to hold station, accruing
+> robot-seconds at ~0 m.
+>
+> **The blocker: the fleet cannot physically drive that long.**
+> `ENERGY_PARAMS` gives a scout 50 Wh against 10 + 150 × 0.39 = 68.5 W of driving
+> draw — **flat in 43.8 min**; hauler 42.9; excavator 53.3. A 45-minute driving
+> campaign runs the fleet into the recharge cycle it is trying to avoid, and the
+> robots stop driving exactly when the exposure would start to count. Any
+> campaign design has to solve that first, and none has.
+>
+> **Cause unknown. Not reproduced. Not fixed. The campaign has NOT been run.**
+
+---
+
+**Original entry:**
 
 **This is the largest unresolved item in the repository and nothing below
 identifies its cause.**
@@ -3706,7 +3891,146 @@ trial**; it explains the four it names.
 
 ---
 
-## D-42 — a scout reported "Battery critical (0.0%)" 6.15 s after startup, three times — OPEN, CAUSE UNKNOWN
+## D-42 — a scout reported "Battery critical (0.0%)" 6.15 s after startup, three times — CLOSED 2026-08-01, ROOT-CAUSED, REPRODUCED ON DEMAND, FIXED, AND THE FIX DEMONSTRATED
+
+> **STATUS AMENDED 2026-08-01 (later the same day).** Everything below the
+> horizontal rule was written while the cause was unknown and is kept verbatim,
+> because the entry's own instruction — *"NO CAUSE IS PROPOSED HERE. The
+> temptation to write one down is exactly what D-37's refuted terrain-edge
+> theory is a monument to"* — is the reason the answer came out right. The cause
+> is now known, it was found by doing what the entry asked for (a live probe of
+> `/scout_02/battery_state` and its **rate, publisher count and provenance**),
+> and none of the four hypotheses the entry ruled out needed reinstating.
+>
+> ### THE CAUSE: a second `battery_node` for the same robot, on a shared ROS domain
+>
+> **Every link below was measured on the operator's box on 2026-08-01. None is
+> inferred.**
+>
+> 1. **`ros2 launch` does not take its children with it.** Signalling the launch
+>    left a COMPLETE second SELENE stack alive — `gz sim`, four `battery_node`s,
+>    four `agent_node`s, four `world_odometry_node`s, an orchestrator and
+>    rosbridge. A second launch then ran alongside all of it: **50 nodes, every
+>    SELENE node duplicated**, and `rosbridge` logging
+>    `Unable to start server: [Errno 98] Address already in use` because
+>    `GZ_PARTITION` isolates Gazebo transport and **nothing isolates TCP or DDS**.
+>    `ROS_DOMAIN_ID` is set nowhere in this repository except
+>    `docker/docker-compose.yaml`.
+> 2. **An orphaned `battery_node` drains to exactly 0.0 and stays there.**
+>    `_cmd_vel_callback` assigns `current_speed` on message and **nothing decays
+>    it**. With the simulator gone no further `cmd_vel` arrives, so the node keeps
+>    integrating locomotion draw at the last commanded speed forever. Measured on
+>    an orphaned `battery_scout_02`: **85.0 W**, i.e. 1.417 % of 50 Wh per 30 s,
+>    steady for 28.5 minutes, at which point `max(0.0, ...)` clamped it to
+>    **exactly 0.0** — watched sample by sample, and it held 0.0 for the whole
+>    120 s observation afterwards.
+> 3. **That is the scout_02-only asymmetry.** In the same measurement
+>    `excavator_01` and `hauler_01` sat pinned at **exactly 1.0** for the entire
+>    run. Neither had ever left IDLE, so neither had ever been sent a `cmd_vel`,
+>    so their latched speed was 0 — and both spawn outside the PSR disc, where
+>    the solar branch is live. **Only robots that were moving when the simulator
+>    died drain.** The register's "one out of four is a legal subset but is not
+>    predicted" objection is answered: which robots go flat is decided by which
+>    ones were driving, not by chance.
+> 4. **The HAL cannot tell the two publishers apart, and neither can anything
+>    else.** `GazeboBattery._cb` overwrites its cache with whichever message
+>    arrived last; `sensor_msgs/BatteryState` carries no producer identity, and
+>    `battery_node` leaves `header.frame_id`, `location` and `serial_number`
+>    empty. On the wire the interleaved stream is indistinguishable from one node
+>    behaving erratically.
+>
+> **THE 0.1% WAS THE FINGERPRINT, AND IT IDENTIFIED THE PUBLISHER'S MODEL.**
+> For a stationary scout outside a PSR zone the net rate is exactly
+> `solar 40 W − idle 10 W = 30 W` into a 50 Wh cell, so from 0 Wh the charge
+> fraction is `t/6000`; `f"{x:.1%}"` prints `"0.1%"` for `t` in **[3.0 s, 9.0 s]**,
+> and the entry's own "~7.5 s after reaching RECHARGING" lands mid-window at
+> 0.00125. The recharge pad (−30, −100) is **86.0 m** from the PSR centre against
+> a 60 m radius, so the charging branch is live there. That rise cannot come from
+> a default-constructed cache (1.0), from NaN (`min(50.0, nan)` is 50.0, verified),
+> or from a frozen cache (a frozen value does not move). It can only come from a
+> live scout `BatteryNode` at exactly 0 Wh — which is what an orphan is.
+>
+> ### REPRODUCED ON DEMAND, then the fix demonstrated against it
+>
+> A stack was left running until its `battery_scout_01` and `battery_scout_02`
+> reached exactly 0.0 (28.5 minutes, no synthetic input, the repository's own
+> node doing its own arithmetic). A fresh, healthy 2/1/1 stack was then launched
+> on the same domain — which is what an operator does after an incomplete
+> teardown. Publisher count on `/scout_02/battery_state` went **1 → 2**:
+>
+>     [agent_scout_02] Battery critical (0.0%), returning to recharge
+>     [agent_scout_02] BIDDING --(ENERGY_CRITICAL)--> RETURNING
+>     [agent_scout_01] Battery critical (0.0%), returning to recharge
+>     [agent_scout_01] IDLE --(ENERGY_CRITICAL)--> RETURNING
+>     ... later:  Battery critical (0.3%) ...  Battery critical (0.4%)
+>
+> **That is D-42's log signature, on demand, including the small non-zero
+> percentages the original entry could not explain.** The probe measured
+> `max |agent − sim| = 0.97987` — the agent reading 0.00000 at the instant the
+> healthy publisher read 0.97987.
+>
+> The workspace was then rebuilt with the fixes below and **the identical
+> experiment re-run under worse contamination (3 publishers, not 2)**:
+>
+> | | pre-fix | post-fix |
+> |---|---|---|
+> | `Battery critical` firings | **4** | **0** |
+> | robots driven off-mission | both scouts | none |
+> | diagnostics emitted | none | **6 CRITICAL FleetAlerts**, naming topic, count, likely cause and this entry |
+>
+> ### WHAT WAS FIXED
+>
+> * **`BatteryState.is_valid`** (`selene_hal/data_types.py`). The HAL could not
+>   say "I have never received a reading"; it reported a confident 100%.
+>   Defaults **True**, exactly like `SensorReading.is_valid`, with the fail-safe
+>   at the one construction site that means "I have nothing".
+> * **The five-second wall-clock grace is deleted**, and this is the finding that
+>   should outlive the bug. Comments at four sites asserted the HAL "reports a
+>   phantom 0%" before its first message. **That mechanism has never existed in
+>   this repository.** `GazeboBattery.__init__` has built its cache from the RCDL
+>   capacity since the class was written (checked at `a17d6a4`, `5802925`,
+>   `4e20c20`, `b736b62`, `30403a8`); `charge_fraction` has defaulted to 1.0
+>   since the dataclass was defined; `StubBattery` does the same. The comment
+>   entered at **`940f6f7`**, whose message asserts "a cold-boot race on battery
+>   topic" and **names no observation**. The most likely reading is that its
+>   author hit *this same foreign-publisher problem three months earlier* and
+>   mis-attributed it to the HAL. A tick counter is inert against a persistent
+>   foreign publisher: it delays the first firing and nothing else — which is
+>   exactly the shape of the D-42 log, and why the robot fired 1.15 s past it.
+> * **`AgentNode._check_battery_health`** reports, at CRITICAL, on the operator's
+>   channel: more than one publisher, no reading ever, readings stopped.
+> * **The energy rule is SUSPENDED on an unattributable channel**, and that is a
+>   REFUSAL, not a filter. Nothing is discarded, smoothed or median-ed; every
+>   reading still reaches `EnergyManager`, `RobotState.battery_level` and the
+>   dashboard. What stops is the automatic action. The trade-off is stated in the
+>   code: a robot whose battery really is flat during contamination will not take
+>   itself to the charger. That is accepted, because the reading that would have
+>   triggered it is by construction not known to be about that robot.
+> * **`selene_sim/battery_model.py`** — the energy arithmetic extracted from
+>   behind `battery_node`'s module-level `import rclpy`, which is why it had
+>   **zero tests of any kind**. 14 tests now pin the clamp's exact 0.0, the
+>   latch, the 85.0 W drain reproduced from the shipped constants, the 1.0/1.0
+>   asymmetry, and the bound that let this entry rule the healthy node out.
+> * **`scripts/validate_phase5.sh`** refuses to start when 9090 or 3000 is
+>   already held (exit 3 — "the gate could not start"), and warns, naming the
+>   processes, when SELENE nodes are already running.
+> * **Check 11 no longer commands a robot it can see cannot obey** — see D-10.
+>
+> ### WHAT IS STILL NOT ESTABLISHED, and it is one thing
+>
+> **That this is what happened on 2026-08-01 is an inference, not a
+> measurement.** Those processes are gone and no publisher census was taken at
+> the time. What is measured is that the mechanism exists, that it produces this
+> exact signature on demand, that the environment permits it with no defence at
+> any layer, and that open item 22(a) independently records a duplicate stack
+> live on this box **on that same day**. The 0.1 % fingerprint is the strongest
+> single piece, because only a live scout `BatteryNode` at 0 Wh produces it.
+> **No alternative mechanism has been found that reproduces all three data
+> points, and four were tested adversarially and refuted.**
+
+---
+
+**Original entry, 2026-08-01, written while the cause was unknown:**
 
 **This is the second entry in this register whose cause is unknown, and it is
 the one that cost the 2026-08-01 gate run its green.**
@@ -4065,7 +4389,92 @@ Added 2026-07-31 (evening), from the live runs and the exit-gate runs:
     `deposited_quantity` systematically lags `extracted_quantity` and the
     FR-DASH-7 progress bar cannot reach its target from deliveries alone. Whether
     that matters is a product decision; that it accumulates is arithmetic.
-22. **The RViz2 overlay has never been rendered by RViz2, and no side-by-side
+22. **AMENDED AGAIN 2026-08-01 (late): (a), (c) and (d) ARE NOW DISCHARGED AND
+    MEASURED. (b) IS NOT, AND ONE NEW RESIDUAL IS RECORDED.** The item stays
+    open on (b) alone.
+
+    **(d) — THE FIXED FRAME. FIXED, AND CONFIRMED ON SCREEN.** A new
+    `selene_sim/launch/rviz.launch.py` starts the viewer TOGETHER WITH a
+    `tf2_ros/static_transform_publisher` publishing `map -> rviz_anchor`, and
+    both `unified_sim.launch.py` and `simulation.launch.py` now include it
+    behind the existing `rviz:=true` instead of starting a bare `rviz2` node.
+    Measured on the running system: `/tf_static` **Publisher count: 1**,
+    `frame_id: map`, `child_frame_id: rviz_anchor`, and RViz2's own panel
+    reading **`Global Status: Ok`** with **`Fixed Frame: OK`** and
+    `Resource Map — Status: Ok`. The `Warn — Frame [map] does not exist` that
+    made the overlay unusable as shipped is gone, **with nothing run by hand**.
+    The honest statement about this repository changes from "nothing publishes
+    TF" to **"nothing publishes TF except `rviz.launch.py`, and only when a
+    viewer is started"** — every headless run, every CI job and every exit-gate
+    run still has zero TF publishers. Three alternatives were rejected and the
+    reasons are in that file's docstring; `map -> odom` identity in particular
+    is rejected as a MEASURED FALSEHOOD, because the offset is a real ~133°
+    SE(2) (D-33).
+
+    **A DEFECT FOUND WHILE FIXING IT: `rviz:=true` STARTED TWO RViz2 PROCESSES.**
+    `unified_sim.launch.py` added its own delayed `rviz2` node AND forwarded the
+    launch context to `simulation.launch.py`, which declares its own `rviz`
+    argument and started another — a `DeclareLaunchArgument` in an included
+    description does not shadow a value already in the context. Measured
+    2026-08-01: one launch log carrying `[rviz2-19]: process started with pid
+    [1529]` at t=0 and `[rviz2-31]: process started with pid [2186]` at t=12,
+    **both alive, both subscribed to the same marker topic**. That is item
+    22(a)'s failure one layer down — a launch silently opening two windows on
+    one topic — and it is now pinned false by
+    `'rviz': 'false'` on the include. Verified after: **`rviz2 processes: 1`**.
+
+    **(a) — EXACTLY ONE STACK. DISCHARGED, AND ASSERTED RATHER THAN OBSERVED.**
+    On a box cleaned first and then measured:
+
+        /orchestrator/resource_map_markers   Publisher count: 1
+        /orchestrator/resource_map           Publisher count: 1
+        /tf_static                           Publisher count: 1
+        rviz2 processes: 1     orchestrators: 1
+
+    **(c) — FRAMING. THE OLD CONFIG COULD NOT SATISFY PRD:1504 AT ALL, AND THAT
+    IS A STRONGER STATEMENT THAN "IT WAS AIMED WRONG".** The committed camera was
+    an `Orbit` at `Yaw 0.785, Pitch 1.2` — an **oblique perspective** — while the
+    dashboard is an **orthographic north-up 2-D canvas**. Those projections
+    cannot be reconciled by tuning distance: under perspective, equal world
+    distances subtend different screen distances with depth, so a cell matched at
+    the near edge is wrong at the far one. The side-by-side was therefore not
+    merely un-performed, it was **not performable from the committed config**.
+    And the focal point (-100,-150) was the PSR/depot centre, **not the ice**:
+    `deposit_alpha` is centred (-80,-140) with sigma 12, so at 22.4 m its
+    Gaussian is 1.40 wt% — t = 0.140 on the 0..10 ramp, the blue end. The shipped
+    frame was centred on the cold edge of the only warm thing in the scene, which
+    is exactly the picture item 22(c) describes. Now `TopDownOrtho`, `Angle 0`,
+    centred on **(-92.5, -150)** — copied from `DEFAULT_VIEW.CENTER_X/CENTER_Y`
+    in `selene_dashboard/src/utils/worldConfig.js`, not chosen — with the Grid
+    at **50 m** to match `FleetMap.jsx`'s `const minor = 50`, so the two images
+    can be compared by counting cells. The old oblique camera is kept as a saved
+    view, because it is genuinely better for reading crater relief.
+
+    **NEW RESIDUAL, AND IT IS UNEXPLAINED.** The launch-started RViz2 came up at
+    **`Scale: 0.625363`** px/m against the committed **`Scale: 5.3`** — it
+    honoured `Class`, `Angle`, `X` and `Y` from the same file and not `Scale`, so
+    the operator opens zoomed out to ~1856 m across and must zoom in. A directly
+    started `rviz2 -d` on a copy of that same file with `Scale: 30.0` came up at
+    **exactly 30**, rendering the CUBE_LIST large with the full hue ramp and
+    per-cell alpha visible — so the key is honoured somewhere and not somewhere
+    else. **No cause is proposed.** The overlay is usable; the default zoom is
+    not yet right.
+
+    **(b) — STILL OPEN, AND NOW WITH A MEASURED REASON.** The posterior in the
+    2026-08-01 comparison was **seeded**, by the same method exit-gate check 10
+    uses and discloses: 400 synthetic `ResourceMapUpdate` readings shaped like
+    `deposit_alpha`. The fleet was given 13 minutes to survey first and did not
+    get there: with D-28's per-step slope rule in force the scouts route around
+    the crater rim and were measured making **0.044 m/s of net progress** toward
+    their waypoints (positions sampled 110 s apart), with
+    `total_observations: 0` and `/orchestrator/map_update` never published. After
+    seeding, `total_observations: 6606`, and the dashboard legend read
+    **`1744 cells · 6840 readings`**. **So both renderers were driven from one
+    posterior, from one publisher, on one stack — but the fleet still has not
+    found this ice, and until it does, (b) is not discharged.**
+
+23. *(previous text of item 22, kept because the sequence is the point)*
+    **The RViz2 overlay has never been rendered by RViz2, and no side-by-side
     comparison has ever been performed.** `docs/PRD.md:1504` asks for one. Every
     parity statement in this register is a machine comparison of numbers, and the
     strongest of them (exit-gate check 10) recomputes through the same module the

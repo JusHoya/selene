@@ -375,12 +375,18 @@ def _launch_setup(context, *args, **kwargs):
                gz_sim, *spawn_actions, *bridge_actions,
                *frame_actions, *sensor_actions]
 
+    # RViz2 comes from rviz.launch.py, which starts the viewer TOGETHER WITH the
+    # static map->rviz_anchor transform it needs. A bare rviz2 Node was what
+    # shipped until 2026-08-01, and it produced `Global Status: Warn - Frame
+    # [map] does not exist` because nothing in SELENE publishes TF; the view had
+    # to be established with a hand-run static_transform_publisher. That is
+    # register open item 22(d) and the reason this include exists.
     if LaunchConfiguration('rviz').perform(context).lower() in ('true', '1'):
-        actions.append(Node(
-            package='rviz2',
-            executable='rviz2',
-            arguments=['-d', rviz_config],
-            output='screen',
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                FindPackageShare('selene_sim'), '/launch/rviz.launch.py',
+            ]),
+            launch_arguments={'rviz_config': rviz_config}.items(),
         ))
 
     return actions

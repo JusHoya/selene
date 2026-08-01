@@ -31,7 +31,7 @@ from rclpy.qos import (
 
 from selene_msgs.msg import RobotState, ResourceMapUpdate
 from selene_msgs.msg import TaskAnnouncement, TaskAssignment, BidResponse
-from selene_msgs.msg import MaterialEvent, TaskResult
+from selene_msgs.msg import MaterialEvent, TaskResult, FleetAlert
 from geometry_msgs.msg import Pose2D, Twist, Point
 from nav_msgs.msg import Path
 
@@ -292,6 +292,12 @@ class AgentNode(Node):
         self._state_pub = self.create_publisher(
             RobotState, f"/{self._robot_id}/state", 10
         )
+        # D-42. The operator's channel for faults in this agent's own inputs.
+        # /orchestrator/alerts is the one path that reaches the dashboard
+        # (FR-DASH-4) and the exit-gate probe; world_odometry_node publishes
+        # here for the same reason and documents the trade at its own
+        # create_publisher. Only _check_battery_health uses it today.
+        self._alert_pub = self.create_publisher(FleetAlert, "/orchestrator/alerts", 10)
         # D-34. Publish a RobotState on every FSM transition as well as on the
         # 0.5 s timer below, so a state shorter than the sampling period is on
         # the wire at all.
@@ -369,9 +375,25 @@ class AgentNode(Node):
         self._tick_timer = self.create_timer(tick_period, self._tick)
         self._state_timer = self.create_timer(0.5, self._publish_state)  # 2 Hz
         self._tick_count = 0
-        # Grace period: skip ENERGY_CRITICAL for the first 5 s so DDS can
-        # deliver the first real battery reading over UDP transport.
+        # THE ENERGY-CRITICAL GRACE PERIOD IS GONE (D-42); this counter now has
+        # exactly one reader, ``_note_unaffordable_announcement``, where "has the
+        # mission started yet" is genuinely a question about elapsed time rather
+        # than about data arrival. See ``_tick`` for why a clock was the wrong
+        # instrument for the battery question and ``is_valid`` is the right one.
         self._startup_grace_ticks = int(5.0 * self._tick_rate)
+
+        # -- D-42 battery-channel health ------------------------------------
+        # Latches, so each fault is reported once rather than at 10 Hz. The
+        # publisher-count latch stores the COUNT, so a stack going from two
+        # publishers to three says so again.
+        self._battery_pubs_reported = 0
+        self._battery_silence_reported = False
+        self._battery_stale_reported = False
+        self._first_tick_wall: float | None = None
+        # STARTS TRUE. _check_battery_health runs before the energy branch on
+        # every tick and sets it from a live count; defaulting it false would
+        # suspend the energy rule on tick 1 of a perfectly healthy robot.
+        self._battery_channel_attributable = True
 
         # -- Startup log ---------------------------------------------------------
         self.get_logger().info(
@@ -396,6 +418,8 @@ class AgentNode(Node):
     def _tick(self):
         dt = 1.0 / self._tick_rate
         self._tick_count += 1
+        if self._first_tick_wall is None:
+            self._first_tick_wall = self._clock_now()
 
         self._run_terrain_audit_once()
 
@@ -408,11 +432,53 @@ class AgentNode(Node):
 
         # Update energy manager
         self._energy_manager.update(battery_state)
+        self._check_battery_health(battery_state)
 
-        # Battery critical check — skip during startup grace period so DDS
-        # can deliver the first real battery reading (avoids 0% phantom).
+        # Battery critical check.
+        #
+        # THE GATE IS `is_valid`, NOT A CLOCK. This used to read
+        # `self._tick_count > self._startup_grace_ticks` -- a flat 5 s of wall
+        # clock -- under a comment claiming it was there "so DDS can deliver the
+        # first real battery reading (avoids 0% phantom)". Two things were wrong
+        # with that, and D-42 cost the exit gate its green on both.
+        #
+        # First, the mechanism the comment described did not exist. Neither HAL
+        # battery has ever reported a phantom 0% before its first message; both
+        # construct their cache FULL, so the pre-message reading was 100% and a
+        # grace period protected against nothing. What the HAL could not do was
+        # SAY it had no reading, which is now `BatteryState.is_valid`.
+        #
+        # Second, a wall clock cannot express the condition anyway. On
+        # 2026-08-01 `agent_scout_02` fired at 6.152 s -- 1.15 s past the grace,
+        # and the grace's own comment is the reason it was 5.0 rather than 7.5.
+        # A duration tuned against one observation is a guess about the next one.
+        # `is_valid` is not a guess: it is false until a message has been handled
+        # by `GazeboBattery._cb` and true forever after.
+        #
+        # AND THE RULE IS SUSPENDED ON AN UNATTRIBUTABLE CHANNEL. When the
+        # battery topic has more than one publisher, `GazeboBattery._cb` caches
+        # whichever message arrived last with no notion of source, so the value
+        # is not this robot's charge -- it is a sample from an interleaved
+        # stream. Acting on it is what took the 2026-08-01 exit gate down.
+        #
+        # THIS IS A REFUSAL, NOT A FILTER, and the distinction is the one this
+        # repository keeps having to relearn. Nothing is discarded, smoothed or
+        # median-ed: every reading still reaches EnergyManager, still appears in
+        # RobotState.battery_level, and still reaches the dashboard. What stops
+        # is the AUTOMATIC ACTION, and `_check_battery_health` has already raised
+        # a CRITICAL FleetAlert naming the publisher count.
+        #
+        # THE TRADE-OFF, STATED. A robot whose battery really is flat during
+        # contamination will not take itself to the charger, and could strand.
+        # That is accepted deliberately: the reading that would have triggered
+        # the recharge is, by construction, not known to be about this robot, so
+        # the alternative is not "safe behaviour" but "behaviour driven by
+        # another robot's battery". An operator who has been told CRITICAL that
+        # a robot's battery channel has two publishers can issue force_recharge;
+        # an operator whose fleet drove itself to the pad on a stranger's
+        # telemetry was given no decision at all.
         if (
-            self._tick_count > self._startup_grace_ticks
+            self._battery_channel_attributable
             and self._energy_manager.is_critical()
             and self._fsm.state
             not in (
@@ -1038,26 +1104,169 @@ class AgentNode(Node):
         if self._current_skill is not None and self._current_skill.is_running():
             self._current_skill.abort()
 
+    # ------------------------------------------------------------------
+    # D-42: the battery topic itself is a thing that can be wrong
+    # ------------------------------------------------------------------
+
+    #: Seconds a robot may run with no battery reading at all before it says so.
+    #: The battery node publishes at 10 Hz (spawn_robot.launch.py update_rate),
+    #: agents start 12 s after the simulator and DDS discovery on this box
+    #: completed in well under a second on every run measured, so 10 s of total
+    #: silence is not a race, it is an absence.
+    BATTERY_SILENCE_S = 10.0
+
+    #: Seconds between readings before the stream counts as stalled. 3 s is
+    #: thirty missed messages at 10 Hz.
+    BATTERY_STALE_S = 3.0
+
+    def _check_battery_health(self, state) -> None:
+        """Report -- never act on -- faults in the battery channel itself.
+
+        WHY THIS EXISTS. D-42: ``agent_scout_02`` acted on ``percentage = 0.0``
+        6.152 s after it started, three times, and the register could not name a
+        mechanism because nothing anywhere recorded the state of the channel the
+        number arrived on. The energy rule read the value and the FSM obeyed it;
+        both were correct on their inputs. What was missing was anyone asking
+        whether the input was trustworthy.
+
+        Three faults, each with its own remedy and none of them "drive home":
+
+        * MORE THAN ONE PUBLISHER. Something outside this stack is asserting
+          this robot's charge. Measured 2026-08-01: signalling ``ros2 launch``
+          left a complete SELENE stack alive -- gz sim, four battery nodes, four
+          agents, an orchestrator and rosbridge -- and a second launch put two
+          battery nodes on this topic. An orphaned battery node latches its last
+          cmd_vel forever and keeps integrating locomotion draw with no
+          simulator behind it, so it crosses zero, is clamped to EXACTLY 0.0 by
+          ``battery_node.py``'s ``max(0.0, ...)``, and publishes that at 10 Hz
+          indefinitely. Measured on this box: an orphaned ``battery_scout_02``
+          drained at 85 W (1.417 % per 30 s) while the orphaned excavator and
+          hauler sat pinned at exactly 1.0 -- they had never moved, so their
+          latched speed was zero and they were charging in sunlight. That
+          asymmetry is why one robot and not the fleet.
+        * NO READING, EVER. The battery node is not running, or the topic name
+          moved. Today this is silent: the cached state simply never changes and
+          the robot reports a confident 100% for the whole mission.
+        * READINGS STOPPED. The node died mid-run, same silence.
+
+        This method LOGS AND ALERTS. It does not change the FSM, does not stop
+        the robot and does not fabricate a charge. A robot whose battery channel
+        is untrustworthy is not thereby in danger, and inventing an emergency
+        response to a reporting fault is how D-42 took check 11 down in the first
+        place. The operator gets a CRITICAL FleetAlert on the one channel that
+        reaches the dashboard (FR-DASH-4); deciding what to do about it is
+        theirs. Same shape and same reasoning as
+        ``world_odometry_node._report_degraded``.
+        """
+        battery = self._hal.get_battery()
+
+        pubs = battery.publisher_count()
+        # A channel with more than one publisher is NOT ATTRIBUTABLE, and the
+        # energy rule is suspended while it stays that way. See the caller.
+        self._battery_channel_attributable = (pubs <= 1)
+        if pubs > 1 and pubs != self._battery_pubs_reported:
+            self._battery_pubs_reported = pubs
+            topic = getattr(battery, 'topic', lambda: '<unknown>')()
+            msg = (
+                f"[{self._robot_id}] BATTERY TOPIC HAS {pubs} PUBLISHERS "
+                f"({topic}). This robot's charge is being asserted by something "
+                f"outside its own simulator; the HAL caches whichever message "
+                f"arrived last, so the reading is not attributable. Most likely "
+                f"a previous stack was never torn down -- check for orphaned "
+                f"battery_node processes. Register D-42."
+            )
+            self.get_logger().error(msg)
+            self._publish_alert('CRITICAL', msg)
+        elif pubs <= 1:
+            self._battery_pubs_reported = 0
+
+        now = self._clock_now()
+        if not state.is_valid:
+            if (self._first_tick_wall is not None
+                    and now - self._first_tick_wall > self.BATTERY_SILENCE_S
+                    and not self._battery_silence_reported):
+                self._battery_silence_reported = True
+                msg = (
+                    f"[{self._robot_id}] NO BATTERY READING has arrived in "
+                    f"{now - self._first_tick_wall:.1f}s "
+                    f"({battery.message_count()} messages received on "
+                    f"{getattr(battery, 'topic', lambda: '<unknown>')()}). "
+                    f"The HAL is reporting its constructed default and the "
+                    f"energy policy is suspended, so this robot will neither "
+                    f"recharge nor refuse a task on energy grounds. "
+                    f"Register D-42."
+                )
+                self.get_logger().error(msg)
+                self._publish_alert('CRITICAL', msg)
+            return
+
+        age = battery.seconds_since_last_message()
+        if age is not None and age > self.BATTERY_STALE_S:
+            if not self._battery_stale_reported:
+                self._battery_stale_reported = True
+                elapsed = max(now - (self._first_tick_wall or now), 1e-6)
+                msg = (
+                    f"[{self._robot_id}] BATTERY READINGS STOPPED "
+                    f"{age:.1f}s ago after {battery.message_count()} messages "
+                    f"({battery.message_count() / elapsed:.1f} Hz average); the "
+                    f"last value ({state.charge_fraction:.1%}) is frozen and "
+                    f"the energy policy is still acting on it. Register D-42."
+                )
+                self.get_logger().error(msg)
+                self._publish_alert('CRITICAL', msg)
+        else:
+            self._battery_stale_reported = False
+
+    def _clock_now(self) -> float:
+        """Wall-clock seconds. Named so the D-42 tests can substitute it."""
+        return time.monotonic()
+
+    def _publish_alert(self, severity: str, message: str) -> None:
+        """Publish a FleetAlert on the operator's channel.
+
+        selene_agent publishing onto /orchestrator/alerts is the same deliberate
+        small impurity ``world_odometry_node`` documents: that topic is the ONE
+        path to the dashboard (FR-DASH-4) and to the exit-gate probe, multiple
+        publishers on one topic is ordinary ROS, and ``source_robot_id`` keeps
+        the alert attributable to whoever raised it.
+        """
+        if self._alert_pub is None:
+            return
+        alert = FleetAlert()
+        alert.severity = severity
+        alert.message = message
+        alert.source_robot_id = self._robot_id
+        alert.stamp = self.get_clock().now().to_msg()
+        self._alert_pub.publish(alert)
+
     def _recharge_reason(self) -> str:
         """Why this robot should go and charge now, or '' if it should not.
 
         Thin wrapper over ``EnergyManager.recharge_reason``: it supplies the
-        position and the startup gate, both of which are ROS-side facts.
+        position, which is a ROS-side fact.
 
-        THE STARTUP GATE IS NOT OPTIONAL. ``_tick`` already skips
-        ENERGY_CRITICAL for the first 5 s so DDS can deliver a real battery
-        reading, because before that the HAL reports a phantom 0%. Without the
-        same gate here, every robot in the fleet would read 0%, decide it is
-        below the floor and drive to the charging station in the first second
-        of the mission.
+        THE STARTUP GATE THAT USED TO BE HERE IS GONE, and its docstring was
+        wrong in the same way ``_tick``'s comment was. It read: "``_tick``
+        already skips ENERGY_CRITICAL for the first 5 s so DDS can deliver a
+        real battery reading, because before that the HAL reports a phantom 0%.
+        Without the same gate here, every robot in the fleet would read 0%,
+        decide it is below the floor and drive to the charging station in the
+        first second of the mission."
+
+        No HAL in this repository has ever reported a phantom 0%. Both battery
+        implementations construct their cache FULL -- ``GazeboBattery`` from the
+        RCDL capacity, ``StubBattery`` from its own model -- so the pre-message
+        reading is 100%, and the fleet-wide dash for the charger this paragraph
+        predicts could not have happened. The gate was real protection against a
+        misremembered mechanism. ``EnergyManager.recharge_reason`` now refuses to
+        answer at all on an unvalidated reading, which is the condition the
+        author of that paragraph was reaching for. Register D-42.
 
         A position that cannot be read leaves the return-margin tier out
         rather than forcing a recharge: the flat floor still applies, and
         guessing a distance from an invalid odom reading would produce a
         number with no relationship to where the robot is.
         """
-        if self._tick_count <= self._startup_grace_ticks:
-            return ''
         position = None
         try:
             odom = self._hal.get_sensor("odometry").read()

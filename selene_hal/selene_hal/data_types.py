@@ -119,6 +119,29 @@ class BatteryState:
     remaining_wh: float = 500.0
     is_charging: bool = False
 
+    # ---- Added 2026-08-01 closing D-42. ----
+    #
+    # True iff ``charge_fraction`` above came from a battery message this HAL has
+    # ACTUALLY RECEIVED. Before the first message, ``GazeboBattery`` constructs
+    # its cache from the RCDL capacity and reports a confident 100% -- so an
+    # agent could not distinguish "the battery is full" from "no data has ever
+    # arrived", and there was no way for it to say which it was looking at.
+    #
+    # THE DEFAULT IS TRUE, DELIBERATELY, and this is the same decision
+    # ``SensorReading.is_valid`` made at :39. A dataclass default of False would
+    # make every ``BatteryState()`` in a test or a stub silently invalid and the
+    # agent would refuse to act on a battery that is fine. The fail-safe lives at
+    # the ONE construction site that means "I have nothing" --
+    # ``GazeboBattery.__init__`` -- which passes ``is_valid=False`` explicitly.
+    # Contrast RobotState.pose_valid (D-31), which is a ROS message field where
+    # the language default IS false and a partially rebuilt workspace therefore
+    # reports "no fix"; this is a Python dataclass inside one process, both
+    # producer and consumer move together, and that exposure does not exist here.
+    #
+    # ``charge_fraction`` IS STILL POPULATED when this is false. The flag carries
+    # the meaning, not the value -- same contract as pose_valid.
+    is_valid: bool = True
+
 
 @dataclass(frozen=True)
 class ActuatorState:

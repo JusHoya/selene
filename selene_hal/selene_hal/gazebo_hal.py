@@ -7,6 +7,7 @@ locks; read() returns the latest cache. Publishers send commands directly.
 
 import math
 import threading
+import time
 
 import numpy as np
 
@@ -567,13 +568,21 @@ class GazeboBattery(BatteryInterface):
     def __init__(self, descriptor: RobotDescriptor, robot_id: str, node, qos):
         self._desc = descriptor
         self._lock = threading.Lock()
+        # is_valid=False: NOTHING HAS ARRIVED YET, and this object must be able
+        # to say so. The capacity numbers are real (they come from the RCDL) and
+        # charge_fraction stays at the dataclass default 1.0, so a consumer that
+        # ignores the flag sees exactly the pre-D-42 behaviour. Register D-42.
         self._cached = BatteryState(
             capacity_wh=descriptor.battery.capacity,
             remaining_wh=descriptor.battery.capacity,
+            is_valid=False,
         )
-        topic = f"/{robot_id}/battery_state"
+        self._topic = f"/{robot_id}/battery_state"
+        self._node = node
+        self._msg_count = 0
+        self._last_rx_monotonic: float | None = None
         self._sub = node.create_subscription(
-            RosBatteryState, topic, self._cb, qos,
+            RosBatteryState, self._topic, self._cb, qos,
         )
 
     def _cb(self, msg: RosBatteryState) -> None:
@@ -589,13 +598,66 @@ class GazeboBattery(BatteryInterface):
             remaining_wh=remaining,
             is_charging=(msg.power_supply_status
                          == RosBatteryState.POWER_SUPPLY_STATUS_CHARGING),
+            is_valid=True,
         )
         with self._lock:
             self._cached = state
+            self._msg_count += 1
+            self._last_rx_monotonic = time.monotonic()
 
     def get_state(self) -> BatteryState:
         with self._lock:
             return self._cached
+
+    # ---- D-42 instrumentation. ----
+    #
+    # THIS IS THE OBSERVATION D-42 SAID IT NEEDED: "a live probe of
+    # /<rid>/battery_state -- its rate, its percentage field, and whether the
+    # value the HAL caches matches what the node publishes". Two of those three
+    # are answerable from inside the HAL and are exposed here; the third is a
+    # comparison the agent makes.
+    #
+    # publisher_count() exists because the topic is not guaranteed to have ONE
+    # publisher. Measured on 2026-08-01: signalling `ros2 launch` left a complete
+    # SELENE stack -- gz sim, four battery_nodes, four agents, an orchestrator
+    # and rosbridge -- alive, and a second launch then put TWO battery_nodes on
+    # this topic. An orphaned battery_node latches its last cmd_vel forever
+    # (battery_node.py:121-122 assigns on message and nothing decays it), so with
+    # the simulator gone it keeps integrating locomotion draw at that speed,
+    # crosses zero, and is clamped by `max(0.0, ...)` at battery_node.py:182 to
+    # EXACTLY 0.0 -- which it then publishes at 10 Hz for as long as it lives.
+    # `_cb` above takes whichever message arrived last with no notion of source,
+    # so the cache flips between the healthy node's value and the orphan's zero.
+    #
+    # The HAL does not act on any of this. It reports; the agent decides.
+
+    def message_count(self) -> int:
+        """How many battery messages this HAL has received, ever."""
+        with self._lock:
+            return self._msg_count
+
+    def seconds_since_last_message(self) -> float | None:
+        """Monotonic seconds since the last battery message, or None if never."""
+        with self._lock:
+            if self._last_rx_monotonic is None:
+                return None
+            return time.monotonic() - self._last_rx_monotonic
+
+    def publisher_count(self) -> int:
+        """Live count of publishers on this robot's battery topic.
+
+        More than one means something outside this stack is asserting this
+        robot's charge. Exactly zero means the simulator's battery node is not
+        running -- which is survivable and silent today, because the cached
+        state simply stops changing.
+        """
+        try:
+            return self._node.count_publishers(self._topic)
+        except Exception:      # pragma: no cover - rclpy teardown races
+            return -1
+
+    def topic(self) -> str:
+        return self._topic
 
     def get_capacity_wh(self) -> float:
         return self._desc.battery.capacity

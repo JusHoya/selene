@@ -89,9 +89,32 @@ class EnergyManager:
             return self._cached_state
         return self._battery.get_state()
 
+    def has_valid_reading(self) -> bool:
+        """True when the cached charge came from a reading that actually arrived.
+
+        Added 2026-08-01 closing D-42. ``BatteryState.charge_fraction`` defaults
+        to 1.0 and ``GazeboBattery`` seeds its cache from the RCDL capacity, so a
+        HAL that has received nothing reports a confident full battery. That is
+        the safe direction for the *value* and the wrong direction for the
+        *claim*: the agent must be able to tell "full" from "unknown", because
+        the two call for different behaviour and only one of them is a fact.
+        """
+        return bool(self._current_state().is_valid)
+
     def is_critical(self) -> bool:
-        """True when charge fraction is at or below the critical threshold."""
-        return self._current_state().charge_fraction <= self._critical_threshold
+        """True when charge fraction is at or below the critical threshold.
+
+        FALSE ON AN UNVALIDATED READING, and that is the whole D-42 fix on this
+        side. An unvalidated reading is not evidence of a full battery either --
+        it is not evidence of anything - so the emergency does not fire on it.
+        ``agent_node`` is responsible for noticing that a reading has STAYED
+        unvalidated, which is a different fault with a different remedy; see
+        ``_check_battery_health``.
+        """
+        state = self._current_state()
+        if not state.is_valid:
+            return False
+        return state.charge_fraction <= self._critical_threshold
 
     def is_fully_charged(self) -> bool:
         """True when charge fraction is at or above the recharge target."""
@@ -221,6 +244,17 @@ class EnergyManager:
         different number is how a configuration defect becomes invisible;
         ``agent_node`` validates it once at construction, where it can say so.
         """
+        # NO READING, NO POLICY. All three tiers below are arithmetic on a
+        # charge fraction, and on an unvalidated reading that fraction is the
+        # dataclass default rather than a measurement (D-42). Returning '' here
+        # is the same ANSWER the tiers would have produced -- an unvalidated
+        # state reports 1.0, which is above every threshold -- but it is a
+        # different STATEMENT: "I have nothing to decide on" rather than "I
+        # decided, and the answer is that the battery is fine". The agent's
+        # ``_check_battery_health`` is what turns a persistent absence of
+        # readings into an alarm; this function's job is only to not invent one.
+        if not self.has_valid_reading():
+            return ''
         if self.is_critical():
             return RECHARGE_CRITICAL
         if self.get_charge_fraction() <= self._recharge_threshold:

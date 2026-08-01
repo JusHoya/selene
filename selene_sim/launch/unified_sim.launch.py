@@ -55,8 +55,7 @@ from launch.actions import (
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -103,6 +102,24 @@ def _launch_setup(context, *args, **kwargs):
             # simulation.launch.py's declaration and
             # selene_sim/selene_sim/world_odometry_node.py's docstring.
             'pose_source': LaunchConfiguration('pose_source').perform(context),
+            # PINNED FALSE, and this line is load-bearing.
+            #
+            # simulation.launch.py declares its OWN `rviz` argument and starts
+            # its own rviz2 Node on it (:378-386). A DeclareLaunchArgument in an
+            # included description does not shadow a value already in the launch
+            # context, so `unified_sim.launch.py rviz:=true` reached BOTH that
+            # node and the one this file adds below -- and started TWO RViz2
+            # processes against the same config. Measured 2026-08-01: one launch
+            # log carrying `[rviz2-19]: process started with pid [1529]` at t=0
+            # and `[rviz2-31]: process started with pid [2186]` at t=12, both
+            # alive, both subscribed to /orchestrator/resource_map_markers.
+            #
+            # That is not merely untidy. Item 22(a) is a comparison invalidated
+            # because two stacks were publishing and nobody could say which one
+            # the operator was looking at; a launch that silently opens two
+            # windows on one topic is the same failure one layer down. The
+            # delayed instance below is the one kept, for the reason stated there.
+            'rviz': 'false',
         }.items(),
     )
 
@@ -163,15 +180,16 @@ def _launch_setup(context, *args, **kwargs):
     # /orchestrator/resource_map_markers publisher exists before RViz subscribes
     # — RViz copes either way, but a display that goes green immediately is
     # easier to trust than one that fills in later.
+    # The viewer AND the static map->rviz_anchor transform it needs, from
+    # rviz.launch.py. Before 2026-08-01 this was a bare rviz2 Node and the fixed
+    # frame did not exist, so RViz2 reported `Warn - Frame [map] does not exist`
+    # and no view could be established without a hand-run
+    # static_transform_publisher. Register open item 22(d).
     if rviz:
-        delayed.append(Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            arguments=['-d', PathJoinSubstitution([
-                FindPackageShare('selene_sim'), 'rviz', 'selene_sim.rviz',
-            ])],
-            output='screen',
+        delayed.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                FindPackageShare('selene_sim'), '/launch/rviz.launch.py',
+            ]),
         ))
 
     # 12s delay lets Gazebo finish robot spawning before agents start polling /odom

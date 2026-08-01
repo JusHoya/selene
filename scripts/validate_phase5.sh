@@ -502,6 +502,75 @@ if [ "${STRAGGLERS:-0}" -gt 0 ]; then
     echo "      pkill is forbidden here (check_drive.sh:159-162)."
 fi
 
+# ORPHANED SELENE NODES — REPORT, and say what they would do to this run.
+#
+# The straggler scan above counts `gz sim` only. MEASURED 2026-08-01: signalling
+# a `ros2 launch` left four battery_nodes, four agent_nodes, four
+# world_odometry_nodes, an orchestrator and a rosbridge alive with no simulator
+# behind them, and a second launch then ran alongside all of it. GZ_PARTITION
+# does not touch any of that, because none of it is Gazebo transport — it is DDS
+# on ROS_DOMAIN_ID, which this repository sets nowhere.
+#
+# An orphaned battery_node is the specific hazard. It latches its last cmd_vel
+# and never decays it, so with no simulator it keeps integrating locomotion draw
+# — measured at 85.0 W for a scout — until the model's `max(0.0, ...)` clamp
+# pins it at EXACTLY 0.0, which it then publishes at 10 Hz forever. A robot in
+# this run whose battery topic also carries that stream reports 0.0% at random,
+# and the energy-critical rule countermands whatever the operator asked for.
+# That is register D-42, and it is what took check 11 down on 2026-08-01.
+ORPHANS=$(pgrep -fc "selene_sim/battery_node|selene_agent/agent_node|selene_orchestrator/orchestrator_node" 2>/dev/null) || ORPHANS=0
+if [ "${ORPHANS:-0}" -gt 0 ]; then
+    echo "WARNING: $ORPHANS existing SELENE node process(es) on this host, and"
+    echo "         nothing isolates them from this run: ROS_DOMAIN_ID is unset,"
+    echo "         so they share every topic with the stack about to start."
+    echo "         An orphaned battery_node publishes a clamped 0.0% forever"
+    echo "         (register D-42). Stop them before trusting this run."
+    # Trimmed at --ros-args, which also keeps the literal parameter-file flag
+    # out of this script: test_params_files_are_applied.py scans every
+    # occurrence of it here and requires each one to be a resolvable binding.
+    pgrep -af "selene_sim/battery_node|selene_agent/agent_node|selene_orchestrator/orchestrator_node" 2>/dev/null \
+        | sed 's/ --ros-args.*//' | sed 's/^/         /'
+fi
+
+# PRE-EXISTING LISTENERS ON THIS RUN'S PORTS — REFUSE, NEVER KILL.
+#
+# GZ_PARTITION isolates this run's Gazebo transport. NOTHING isolates TCP. A
+# rosbridge left behind by an earlier run holds 9090, this run's own rosbridge
+# then logs `Unable to start server: [Errno 98] Address already in use` and
+# retries forever — OBSERVED on this box on 2026-08-01 — and checks 3, 5 and 9
+# go on to measure the STALE bridge, attached to a ROS graph this gate did not
+# start. Check 1 cannot see it: missing_nodes() tests only for the ABSENCE of
+# expected nodes, so a stale /rosbridge_websocket satisfies it. The same holds
+# for a stale dashboard server on 3000 and check 2's bundle.
+#
+# That is D-07's "querying the wrong server" on the two transports the partition
+# does not cover, and it presents as a clean PASS — the one outcome D-10 exists
+# to prevent.
+#
+# REFUSED, NOT KILLED, and exit 3 rather than a FAIL row: this is "the gate could
+# not start", not "the system is broken". A host-wide kill is forbidden here.
+if command -v ss >/dev/null 2>&1; then
+    PORTS_IN_USE=""
+    for port in 9090 3000; do
+        if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+            PORTS_IN_USE="$PORTS_IN_USE $port"
+        fi
+    done
+    if [ -n "$PORTS_IN_USE" ]; then
+        echo "ERROR: port(s)$PORTS_IN_USE are already listening on this host." >&2
+        echo "       9090 is rosbridge (checks 3, 5, 9) and 3000 is the" >&2
+        echo "       dashboard bundle (check 2). This gate would measure a" >&2
+        echo "       stack it did not start, and would report it as a PASS." >&2
+        echo "       Stop the earlier run and try again. Not killed here: a" >&2
+        echo "       host-wide kill is forbidden (check_drive.sh:159-162)." >&2
+        exit 3
+    fi
+else
+    echo "WARNING: 'ss' not found, so the 9090/3000 pre-flight was SKIPPED." >&2
+    echo "         A stale rosbridge or dashboard server would be measured" >&2
+    echo "         instead of this run's, and would read as a PASS." >&2
+fi
+
 echo "[launch] ros2 launch selene_sim unified_sim.launch.py \\"
 echo "         num_scouts:=$NUM_SCOUTS num_excavators:=$NUM_EXCAVATORS num_haulers:=$NUM_HAULERS $PREBUILT_ARG"
 # setsid so the launch leads its OWN process group. That is what lets cleanup()
@@ -628,13 +697,44 @@ else
         C1_PROBLEMS="$C1_PROBLEMS; sim_time did not advance (${SIM_MS_FIRST}ms -> ${SIM_MS_SECOND}ms)"
     fi
 
-    GZ_MODELS=$(timeout 15 gz model --list 2>/dev/null)
+    # POLLED, NOT SAMPLED ONCE — and this is a fix to the INSTRUMENT, not a
+    # widened threshold.
+    #
+    # THE SPAWN IS STAGGERED. simulation.launch.py spawns robots 2 s apart, so
+    # the last model of a 2/1/1 fleet appears about 10 s after Gazebo starts.
+    # The node wait above does NOT cover it: world_odometry_node and
+    # battery_node come up immediately, so readiness can be satisfied while the
+    # tail of the spawn sequence is still running. A single `gz model --list`
+    # then misses the last robots and check 1 FAILs on a system that is fine.
+    #
+    # MEASURED 2026-08-01, polling every 4 s under the gate's own partition:
+    #     t=8s   scout_01:YES scout_02:YES excavator_01:YES hauler_01:no   (32 models)
+    #     t=12s  scout_01:YES scout_02:YES excavator_01:YES hauler_01:YES  (33 models)
+    # and all four stayed present for the rest of the run. `Entity creation
+    # successful` for the four spawns was logged at 500.0, 502.0, 504.0 and
+    # 506.0 s — exactly 2 s apart. That run's gate reported
+    # `models absent from Gazebo: excavator_01 hauler_01` while check 4 saw all
+    # four robots publishing state at 2 Hz and check 11 drove scout_02 5.93 m.
+    #
+    # So this waits for the same condition the launch is documented to
+    # establish, exactly as the node check already does. It does NOT relax what
+    # is asserted: every fleet model must still be present, and the deadline is
+    # the same READY_TIMEOUT. Waiting for a documented condition is not the same
+    # as widening a tolerance until a measurement stops complaining.
+    MODEL_DEADLINE=$(( $(date +%s) + READY_TIMEOUT ))
     MISSING_MODELS=""
-    for rid in "${FLEET[@]}"; do
-        printf '%s\n' "$GZ_MODELS" | grep -Fq -- "$rid" || MISSING_MODELS="$MISSING_MODELS $rid"
+    while : ; do
+        GZ_MODELS=$(timeout 15 gz model --list 2>/dev/null)
+        MISSING_MODELS=""
+        for rid in "${FLEET[@]}"; do
+            printf '%s\n' "$GZ_MODELS" | grep -Fq -- "$rid" || MISSING_MODELS="$MISSING_MODELS $rid"
+        done
+        [ -z "$MISSING_MODELS" ] && break
+        [ "$(date +%s)" -ge "$MODEL_DEADLINE" ] && break
+        sleep 2
     done
     if [ -n "$MISSING_MODELS" ]; then
-        C1_PROBLEMS="$C1_PROBLEMS; models absent from Gazebo:$MISSING_MODELS"
+        C1_PROBLEMS="$C1_PROBLEMS; models absent from Gazebo after ${READY_TIMEOUT}s:$MISSING_MODELS"
     fi
 
     # (c) publisher counts.
@@ -686,7 +786,23 @@ fi
 # --------------------------------------------------------------------------
 echo ""
 echo "[probe] running scripts/phase5_probe.py (stderr -> $PROBE_LOG)"
-timeout 420 python3 "$PROBE" \
+# 540 s, NOT 420, and the number is arithmetic rather than a round figure.
+# Summing every declared ceiling inside the probe -- settle 6 + rosbridge start
+# 20 + 6 + seed (25 map wait + 20 subscriber match + 1.5 publish + 25 settle) +
+# inject up to 35 + pick_prospect_robot (60 idle + 30 service + 10 corroborate)
+# + correlate 15 + queue 1.5 + check 7 (30 + 6) + check 11's 120 s budget --
+# comes to about 411 s, and check 11's budget was itself only tested at the TOP
+# of its bearing loop, so one more full bearing could start at 119.9 s and add
+# ~53 s. Against a 420 s ceiling that is a coin flip.
+#
+# AND LOSING IT LOSES EVERYTHING. The probe installs no SIGTERM handler, so
+# `timeout` kills it before the `finally:` that calls results.emit(), and all
+# TEN probe-owned checks come back as "the probe did not report this check".
+# That fails closed, which is correct, and it also destroys the run's
+# information -- one slow stage becomes ten FAIL rows that say nothing about the
+# system. The companion fix is in phase5_probe.py, which now tests check 11's
+# budget again before each motion window instead of only at the loop top.
+timeout 540 python3 "$PROBE" \
     --fleet "$FLEET_CSV" \
     --ice-config "$ICE_CONFIG" \
     --rviz-config "$RVIZ_CONFIG" \

@@ -76,7 +76,7 @@ Sprint 0. Phase definitions are in `docs/PRD.md:1169` (summary table) and `docs/
 | 2 — Single Agent Autonomy | FR-AGT-1..7 | Implemented |
 | 3 — Multi-Agent Coordination | FR-ORC-1/2/4, FR-MAP-1/2 | Implemented |
 | 4 — Orchestration Intelligence | FR-ORC-3/5/6, FR-MAP-3, excavate+haul skills, FR-ISRU-1/2 | Implemented; ran end to end for the first time on 2026-07-31 |
-| 5 — Dashboard & Integration | FR-DASH-1..7, FR-SIM-7 (full), FR-MAP-4 | Code complete and mostly demonstrated live; **exit gate RUN THREE TIMES and NOT PASSED** (8/1/2 exit 1, then 9/0/2 exit 2, then **10/1/0 exit 1** on 2026-08-01 at `9c1a4d7`) |
+| 5 — Dashboard & Integration | FR-DASH-1..7, FR-SIM-7 (full), FR-MAP-4 | Code complete and mostly demonstrated live; **exit gate RUN FIVE TIMES and NOT PASSED** (8/1/2 exit 1, then 9/0/2 exit 2, then 10/1/0 exit 1 at `9c1a4d7`, then **8/2/1** and **8/2/1** exit 1 on 2026-08-01 after the D-42 work) |
 | 6 — Polish & Hardening | NFR-1..5 validation, integration demos | Not started as a phase. Substantial hardening landed on branch `phase5-hardening` — see register D-19..D-42 |
 
 **`docs/phase5_deviation_register.md` is the authority on Phase 5 status** and is
@@ -85,7 +85,29 @@ Phase 5 as working. The distinction it draws — "implemented" versus "demonstra
 is the one that matters here.
 
 Caveats a reader should know:
-- **The exit gate has been RUN THREE TIMES, and it does NOT PASS.**
+- **THE EXIT GATE HAS NOW BEEN RUN FIVE TIMES AND IT STILL DOES NOT PASS.** Two more runs on
+  2026-08-01, after the D-42 work, both **8 passed / 2 failed / 1 skipped, exit 1**.
+  **CHECK 11 PASSES NOW, TWICE, ON TWO DIFFERENT TARGETS** — the row D-42 took down:
+  `planned_path ends 0.28 m` and `0.20 m from the commanded target`. **Check 1 also passes**
+  after a real defect was found in it: `gz model --list` was sampled ONCE while
+  `simulation.launch.py` spawns robots 2 s apart, so the last robots of the fleet were
+  reported "absent from Gazebo" on a system that was fine — measured directly, 3 of 4 models
+  at t=8 s and all 4 from t=12 s onward, in the same run whose check 4 saw four robots at
+  2 Hz. It now polls to the same `READY_TIMEOUT` the node check already uses.
+  **TWO ROWS STILL FAIL AND NEITHER HAS BEEN PAPERED OVER.**
+  **Check 4**: `scout_01: IDLE for 12 samples over 5.0s but its settled samples span
+  0.061 m (>= 0.05 m)` — a parked robot creeping ~1.2 cm/s. That is either a real physical
+  behaviour of a brakeless differential drive on a slope or a threshold that was never right;
+  **it has not been diagnosed, and the threshold has NOT been widened to make it pass.**
+  **Check 6**: the injected task is announced in ~2.5 s and then loses the auction. The
+  mechanism is a race, not a missing feature — `get_next_ready` really does take
+  `max(priority)` and `wake_deferred_auctions` really is wired to `FleetMonitor.idle_arrivals`
+  (both checked; an earlier reading of mine that the wake had no production caller was WRONG
+  and is withdrawn). What happens is that the gate frees a robot with `cancel_task` while an
+  auction for another task is already in flight, that robot bids on the in-flight task, and
+  the injected task's next round finds no bidder. It passed at **11.21 s of a 15 s budget**
+  on the third run, so it has been marginal all along. Check 9 SKIPs as a consequence of 6.
+- **The exit gate had been RUN THREE TIMES, and it did NOT PASS.**
   `scripts/validate_phase5.sh` ran twice on 2026-07-31 (ROS 2 Jazzy, 2/1/1, `prebuilt:=true`):
   **8 / 1 / 2 (exit 1)**, then **9 / 0 / 2 (exit 2)** — exit 2 is a SKIP, which by the gate's
   own contract is not a pass. It ran a third time on **2026-08-01 against `9c1a4d7`**:
@@ -114,10 +136,22 @@ Caveats a reader should know:
   **Nineteen new deviations (D-19..D-37) were opened on 2026-07-31**, eleven closed on live
   evidence and six left open. **On 2026-08-01 all six of those closed** — D-28, D-30, D-31,
   D-32, D-34, D-35 — and **five more were opened (D-38..D-42)**.
-  **EXACTLY TWO DEVIATIONS ARE OPEN AND NEITHER HAS A KNOWN CAUSE: D-37, the ODE abort
-  (untouched this session), and D-42, a scout that reported 0.0% battery 6.15 s after its
-  agent started, three times, on hardware arithmetic that says its battery node cannot
-  produce that number.** Do not invent a cause for either.
+  **D-42 IS NOW CLOSED — ROOT-CAUSED, REPRODUCED ON DEMAND, FIXED, AND THE FIX
+  DEMONSTRATED AGAINST THE REPRODUCTION.** The cause is a **second `battery_node` for the
+  same robot on a shared ROS domain**. `ros2 launch` does not take its children with it, so
+  an incomplete teardown leaves a complete SELENE stack alive (measured: 50 nodes, every
+  node duplicated, `rosbridge: Address already in use`); an orphaned `battery_node` latches
+  its last `cmd_vel` forever and keeps integrating locomotion draw with no simulator behind
+  it — **measured at 85.0 W, reaching the `max(0.0, …)` clamp in 28.5 minutes and publishing
+  EXACTLY 0.0 at 10 Hz thereafter**; and `GazeboBattery._cb` caches whichever message
+  arrived last with no notion of source. Robots that never moved sit pinned at **exactly
+  1.0** in the same measurement, which is the scout_02-only asymmetry. Nothing sets
+  `ROS_DOMAIN_ID` anywhere in this repository outside `docker-compose.yaml`, and
+  `GZ_PARTITION` isolates Gazebo transport only. The 0.1 % that the register could not
+  explain is the **fingerprint**: net solar for a stationary scout outside the PSR is
+  exactly 40 − 10 = 30 W into 50 Wh, so `.1%` formatting prints "0.1%" for t ∈ [3.0, 9.0] s
+  from empty. **One deviation is still open and its cause is still unknown: D-37**, and the
+  rule about not inventing a cause for it stands.
 - **Four of the five new deviations came from running the CHECKING APPARATUS, not the
   system.** D-38: CI's `dashboard-tests` job had never fired on this branch (SELENE CI
   triggers only on main/develop/PR/dispatch), and when dispatched it could not `npm ci` at
@@ -144,7 +178,27 @@ Caveats a reader should know:
   crater floor at (-100, -150). D-24/D-25: dead reckoning was the only position estimate, its
   error reached **166 m**, and a hauler once reported a perfect 19 kg delivery while standing
   **241.577 m** from the depot with its wheels spinning at 100% slip.
-- **The "wired but never called" pattern has bitten this repository SIX times** and is the
+- **A SECOND SELENE STACK IS A HAZARD THIS SYSTEM HAS NO DEFENCE AGAINST, and it is now
+  the first thing to check when a live number looks impossible.** `ros2 launch` leaves
+  children running; nothing sets `ROS_DOMAIN_ID`; `GZ_PARTITION` covers Gazebo transport
+  only; TCP ports are not isolated at all. Two stacks share every topic, and no message in
+  this system carries producer identity — `sensor_msgs/BatteryState` leaves `frame_id`,
+  `location` and `serial_number` empty, so `ros2 topic echo` on a contaminated domain looks
+  exactly like one node behaving erratically. This cost the 2026-08-01 exit gate its green
+  (D-42) and invalidated the first RViz2 side-by-side (open item 22(a)) **on the same day**.
+  Defences added 2026-08-01: every agent logs a CRITICAL `FleetAlert` naming the publisher
+  count on its own battery topic and **suspends the energy rule while the channel is
+  unattributable**; `scripts/validate_phase5.sh` refuses to start (exit 3) when 9090 or 3000
+  is already held and warns, naming processes, when SELENE nodes are already running.
+  **`scripts/start.sh` is a separate live hazard**: it still spawns the abandoned ring — all
+  four robots at 44.7–57.0 m from the PSR centre against a 60 m radius, i.e. **all inside**,
+  where the solar branch can never open and the batteries can only go down.
+- **The "wired but never called" pattern has bitten this repository SIX times in production
+  and once, found 2026-08-01, INSIDE THE MEASURING APPARATUS** — the exit-gate probe
+  recorded `battery_level` on every RobotState sample and read it in exactly one place, a
+  `0.0 <= x <= 1.0` range assertion in check 4 that `0.0` satisfies. So check 4 PASSED on a
+  robot reporting zero charge and said nothing, on the same run whose check 11 that robot
+  took down. It is the
   first thing to check in any new code. `AdaptiveSurveyPlanner` shipped with green unit tests
   and zero call sites (fixed, FR-MAP-3); `MaterialInventory`'s four write methods had zero
   production callers (fixed, D-06); `resource_map_publish_rate` was declared and never read
@@ -299,11 +353,11 @@ Caveats a reader should know:
   # Everything, one process, either collection order
   PYTHONPATH="selene_orchestrator;selene_isru;selene_hal;selene_agent;selene_sim" \
     python -m pytest selene_orchestrator/test selene_isru/test selene_hal/test \
-                     selene_agent/test selene_sim/test -q            # 1150 passed, 1 skipped
+                     selene_agent/test selene_sim/test -q            # 1206 passed, 1 skipped
 
   # The gate lane — the two-package path CI now runs whole (job `gate-lane-tests`)
   PYTHONPATH="selene_orchestrator;selene_isru" \
-    python -m pytest selene_orchestrator/test selene_isru/test -q    # 623 passed, 3 skipped
+    python -m pytest selene_orchestrator/test selene_isru/test -q    # 649 passed, 3 skipped
 
   cd selene_dashboard && CI=true npx react-scripts test --watchAll=false
                                                                      # 101 passed, 7 suites
@@ -311,9 +365,17 @@ Caveats a reader should know:
                    selene_sim scripts                                # 0 findings, exit 0
   ```
 
-  Counts above were re-measured on 2026-08-01 against the tree at `9c1a4d7` (they were
-  947/1, 518/1 and 39/2 on 2026-07-31; repairs add tests). The four-package and
-  `selene_sim`-only lanes still work and are documented in the register.
+  Counts above were re-measured on 2026-08-01 after the D-42 work (they were 1150/1 and
+  623/3 earlier that day, 947/1 and 518/1 on 2026-07-31; repairs add tests). The delta is
+  exactly the three new files: `selene_sim/test/test_battery_model.py` (14),
+  `selene_orchestrator/test/test_phase5_probe_goto_subject.py` (26) and
+  `selene_agent/test/test_battery_validity_is_wired.py` (16) — 1150 + 56 = 1206. **The
+  energy model had ZERO tests of any kind until 2026-08-01** — `battery_node.py`'s
+  arithmetic sat behind a module-level `import rclpy`, so no documented lane could reach
+  it, which is why D-42's arithmetic had to be re-derived by hand in the register twice.
+  It now lives in `selene_sim/selene_sim/battery_model.py` as pure Python, the same shape
+  as `localisation.py`. The four-package and `selene_sim`-only lanes still work and are
+  documented in the register.
 
   The gate lane was **1 failed, 518 passed** until 2026-07-31 (register D-36):
   `selene_orchestrator/test/test_terrain_guard.py` did a bare

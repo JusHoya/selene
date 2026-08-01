@@ -36,11 +36,17 @@ Panels:
 Visualization Manager:
   Class: ""
   Displays:
+    # 50 m cells, NOT 10, and the number is copied from the dashboard rather
+    # than chosen. FleetMap.jsx:138 draws its minor grid at `const minor = 50`.
+    # PRD:1504 asks for a side-by-side comparison of this view against that
+    # canvas, and two pictures on different lattices cannot be compared by
+    # counting; on one lattice they can, which is the only form of "matches"
+    # that is checkable by eye rather than asserted.
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Enabled: true
       Alpha: 0.5
-      Cell Size: 10
+      Cell Size: 50
       Color: 160; 160; 164
       Line Style:
         Line Width: 0.03
@@ -94,22 +100,64 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      # Framed on the PSR at (-100,-150), where the four deposits in
-      # selene_sim/config/ice_deposits.yaml sit, so the overlay is in shot at
-      # startup rather than behind the camera.
-      Class: rviz_default_plugins/Orbit
-      Distance: 260
-      Focal Point:
-        X: -100
-        Y: -150
-        Z: 0
+      # TOP-DOWN ORTHOGRAPHIC, NORTH-UP, AND THAT IS THE POINT.
+      #
+      # PRD:1504 asks for a side-by-side comparison of this view against the
+      # dashboard heatmap. The dashboard is an orthographic north-up 2-D canvas
+      # (selene_dashboard/src/components/FleetMap.jsx). This view used to be an
+      # Orbit camera at Yaw 0.785, Pitch 1.2 -- an OBLIQUE PERSPECTIVE. Those
+      # two projections cannot be made to agree however the distance is tuned:
+      # in perspective, equal world distances subtend different screen distances
+      # depending on depth, so a cell that matches at the near edge is wrong at
+      # the far one. No amount of care in taking the screenshots fixes that.
+      # The side-by-side was therefore not merely un-performed, it was not
+      # PERFORMABLE from the committed config. Register open item 22(c).
+      #
+      # THE CENTRE IS COPIED, NOT CHOSEN. (-92.5, -150) is DEFAULT_VIEW.CENTER_X
+      # / CENTER_Y from selene_dashboard/src/utils/worldConfig.js:75-104, which
+      # the dashboard computes as the midpoint of the PSR disc, the depot, the
+      # recharge station and the prospect waypoints plus a 25 m margin:
+      # x in [-185, 0], y in [-235, -65]. The previous focal point was
+      # (-100, -150) -- the PSR/depot centre from world_params.yaml, which is
+      # NOT where the ice is. deposit_alpha, the only deposit exit-gate check 10
+      # seeds, is centred (-80, -140) with sigma 12; at 22.4 m from (-100,-150)
+      # its Gaussian is 8.0*exp(-22.4^2/(2*12^2)) = 1.40 wt%, which is t=0.140 on
+      # the 0..10 wt% ramp -- the blue end. The shipped frame was centred on the
+      # cold edge of the only warm thing in the scene, which is exactly what
+      # item 22(c) describes having been photographed.
+      #
+      # Scale is RViz2's pixels-per-metre. At the packaged 1600x900 window,
+      # 5.3 px/m shows 170 m vertically, which is DEFAULT_VIEW.HEIGHT exactly.
+      # The horizontal extent still differs -- this window is 16:9 and the
+      # dashboard canvas measured 1240x576 -- so the two images share a centre,
+      # a projection, an orientation and a grid pitch, but NOT an aspect ratio.
+      # That residue is real and is recorded rather than papered over: the
+      # comparison is "same centre, same lattice, count the cells", not
+      # "identical rectangles".
+      Class: rviz_default_plugins/TopDownOrtho
+      Angle: 0
       Name: Current View
       Near Clip Distance: 0.01
-      Pitch: 1.2
+      Scale: 5.3
       Target Frame: <Fixed Frame>
-      Value: Orbit (rviz)
-      Yaw: 0.785398
-    Saved: ~
+      Value: TopDownOrtho (rviz_default_plugins)
+      X: -92.5
+      Y: -150
+    Saved:
+      # The old oblique camera, kept because it is genuinely better for reading
+      # crater relief -- it is only useless for the PRD's side-by-side.
+      - Class: rviz_default_plugins/Orbit
+        Distance: 260
+        Focal Point:
+          X: -92.5
+          Y: -150
+          Z: 0
+        Name: Oblique (relief)
+        Near Clip Distance: 0.01
+        Pitch: 1.2
+        Target Frame: <Fixed Frame>
+        Value: Orbit (rviz)
+        Yaw: 0.785398
 Window Geometry:
   Displays:
     collapsed: false
