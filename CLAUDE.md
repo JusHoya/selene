@@ -76,7 +76,7 @@ Sprint 0. Phase definitions are in `docs/PRD.md:1169` (summary table) and `docs/
 | 2 — Single Agent Autonomy | FR-AGT-1..7 | Implemented |
 | 3 — Multi-Agent Coordination | FR-ORC-1/2/4, FR-MAP-1/2 | Implemented |
 | 4 — Orchestration Intelligence | FR-ORC-3/5/6, FR-MAP-3, excavate+haul skills, FR-ISRU-1/2 | Implemented; ran end to end for the first time on 2026-07-31 |
-| 5 — Dashboard & Integration | FR-DASH-1..7, FR-SIM-7 (full), FR-MAP-4 | Code complete and mostly demonstrated live; **exit gate RUN FIVE TIMES and NOT PASSED** (8/1/2 exit 1, then 9/0/2 exit 2, then 10/1/0 exit 1 at `9c1a4d7`, then **8/2/1** and **8/2/1** exit 1 on 2026-08-01 after the D-42 work) |
+| 5 — Dashboard & Integration | FR-DASH-1..7, FR-SIM-7 (full), FR-MAP-4 | Code complete and mostly demonstrated live; **exit gate RUN EIGHT TIMES and NOT PASSED** — best is **9 passed / 1 failed / 1 skipped, exit 1** (2026-08-01), with **check 6 the only failure** and check 9 skipping as its consequence |
 | 6 — Polish & Hardening | NFR-1..5 validation, integration demos | Not started as a phase. Substantial hardening landed on branch `phase5-hardening` — see register D-19..D-42 |
 
 **`docs/phase5_deviation_register.md` is the authority on Phase 5 status** and is
@@ -85,8 +85,29 @@ Phase 5 as working. The distinction it draws — "implemented" versus "demonstra
 is the one that matters here.
 
 Caveats a reader should know:
-- **THE EXIT GATE HAS NOW BEEN RUN FIVE TIMES AND IT STILL DOES NOT PASS.** Two more runs on
-  2026-08-01, after the D-42 work, both **8 passed / 2 failed / 1 skipped, exit 1**.
+- **THE EXIT GATE HAS NOW BEEN RUN EIGHT TIMES AND IT STILL DOES NOT PASS — but it is down
+  to ONE failing row, and that row is a design question rather than a defect.** The last run
+  is **9 passed / 1 failed / 1 skipped, exit 1**. Checks 1, 2, 3, 4, 5, 7, 8, 10 and **11**
+  all PASS; **check 6 is the only failure**, and check 9 SKIPs purely as its consequence.
+  **CHECK 6 IS THE WHOLE OF WHAT STANDS BETWEEN THIS GATE AND GREEN.**
+  The mechanism is understood and has NOT been papered over: the orchestrator runs ONE
+  auction at a time, the gate frees a robot with `cancel_task` while an auction for another
+  task is already in flight, that robot bids on the in-flight task, and the injected
+  priority-10 task's next round finds no bidder. `get_next_ready` really does take
+  `max(priority)` and `wake_deferred_auctions` really is wired to `FleetMonitor.idle_arrivals`
+  — both were checked, and an earlier reading of mine that the wake had no production caller
+  was WRONG and is withdrawn. Whether a priority-10 operator injection should PREEMPT an
+  in-flight auction is a change to auction semantics and is left as an explicit decision, not
+  made silently to turn a row green.
+  **Check 4 now passes and its threshold was NOT widened**: the 0.061 m excursion did not
+  recur, and two 16-minute four-robot runs measured a maximum IDLE displacement of
+  **0.0004 m** with **zero** `cmd_vel` messages sent to any robot while its FSM said IDLE.
+  Every candidate mechanism was refuted by measurement — H-DECEL needs RTF < 0.333 and RTF
+  under gate-like load is **min 0.977, mean 1.000**; sliding needs ground within 0.25° of the
+  friction angle and the spawn cluster is 2.36–2.73° against 29–35°; a latched command would
+  be 0.7–2.5 m, not 0.061 m. **That 0.061 m has NO SURVIVING MECHANISM and the row is not
+  therefore proven sound.**
+- Earlier runs on 2026-08-01, after the D-42 work, were **8 passed / 2 failed / 1 skipped**.
   **CHECK 11 PASSES NOW, TWICE, ON TWO DIFFERENT TARGETS** — the row D-42 took down:
   `planned_path ends 0.28 m` and `0.20 m from the commanded target`. **Check 1 also passes**
   after a real defect was found in it: `gz model --list` was sampled ONCE while
