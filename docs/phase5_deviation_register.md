@@ -4493,9 +4493,54 @@ Added 2026-07-31 (evening), from the live runs and the exit-gate runs:
     `deposited_quantity` systematically lags `extracted_quantity` and the
     FR-DASH-7 progress bar cannot reach its target from deliveries alone. Whether
     that matters is a product decision; that it accumulates is arithmetic.
-22. **AMENDED AGAIN 2026-08-01 (late): (a), (c) and (d) ARE NOW DISCHARGED AND
-    MEASURED. (b) IS NOT, AND ONE NEW RESIDUAL IS RECORDED.** The item stays
-    open on (b) alone.
+22. **DISCHARGED 2026-08-01 (latest). ALL FOUR OF (a), (b), (c) AND (d) ARE NOW
+    MEASURED, AND THE PRD:1504 SIDE-BY-SIDE HAS BEEN PERFORMED AGAINST A MAP THE
+    FLEET SURVEYED.**
+
+    (b) was the last one open and it was not discharged by trying harder: it was
+    discharged by **D-43**, the path-follower waypoint-retirement bug. Before that
+    fix the first reading reached the posterior at t=802 s and only 6 of 10
+    waypoints ever completed, so the only way to get a populated map was to seed
+    it synthetically and say so. After it, readings land at t=240 s and all ten
+    complete.
+
+    **THE RUN, and nothing in it was seeded:**
+
+        prospect completions         9        (nothing injected by the script)
+        total_observations         793        (fleet's own readings)
+        dashboard legend           675 cells / 712 readings  (sampled mid-run)
+        /orchestrator/resource_map_markers   Publisher count: 1
+        /orchestrator/resource_map           Publisher count: 1
+        /tf_static                           Publisher count: 1
+        rviz2 processes              1        orchestrators: 1
+        RViz2 Global Status          Ok       Fixed Frame: OK
+        RViz2 Resource Map           Status: Ok
+        RViz2 view       TopDownOrtho, Angle 0, Scale 5.3, X -92.5, Y -150
+
+    Both renderers show the same thing and it is visibly NOT the seeded picture:
+    a surveyed map is a handful of **discrete overlapping discs**, one per
+    waypoint the scouts actually reached, rather than the smooth radial Gaussian
+    a synthetic seed produces. That difference is the evidence that (b) is
+    discharged — the images could not be mistaken for the seeded pair.
+
+    **THE EARLIER `Scale: 0.625363` RESIDUAL DID NOT RECUR.** The launch-started
+    RViz2 now comes up at the committed 5.3. The most likely explanation is that
+    the earlier capture caught an instance left over from the double-RViz2 defect
+    below, before the box was fully torn down — but that is a reconstruction, not
+    a measurement, and the cause is **not established**.
+
+    **WHAT IS STILL NOT CLAIMED.** The two images share a centre, a projection,
+    an orientation and a 50 m grid, but NOT an aspect ratio: RViz2's packaged
+    window is 16:9 at 5.3 px/m (~219 m across) and the dashboard canvas measured
+    1240 x 576 over DEFAULT_VIEW's 185 x 170 m. The comparison is "same centre,
+    same lattice, count the cells", not "identical rectangles", and that residue
+    is real.
+
+    ---
+
+    **Superseded status line, 2026-08-01 (late): (a), (c) and (d) ARE NOW
+    DISCHARGED AND MEASURED. (b) IS NOT, AND ONE NEW RESIDUAL IS RECORDED.** The
+    item stays open on (b) alone.
 
     **(d) — THE FIXED FRAME. FIXED, AND CONFIRMED ON SCREEN.** A new
     `selene_sim/launch/rviz.launch.py` starts the viewer TOGETHER WITH a

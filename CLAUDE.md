@@ -269,11 +269,21 @@ Caveats a reader should know:
   **whole** extent — the gray lerp and the alpha ramp as well as the concentration ramp — is
   machine-checked across the language boundary with no per-channel tolerance by
   `selene_orchestrator/test/test_dashboard_colour_parity.py`. The dashboard half **has now
-  been rendered in Chrome**. **RViz2 has never been started**, and the side-by-side comparison
-  `docs/PRD.md:1504` asks for has never been performed — that is the largest remaining gap in
-  Phase 5. What exists instead is a machine comparison: the exit gate recomputes the marker
-  array from the `ResourceMap` message and asserts point-and-colour equality, through the same
-  module the publisher uses.
+  been rendered in Chrome**, and **the `docs/PRD.md:1504` SIDE-BY-SIDE HAS NOW BEEN PERFORMED**
+  — register open item 22 is discharged on all four of its clauses. One stack (publisher count
+  1 on the markers, on the posterior and on `/tf_static`; one rviz2; one orchestrator), a map
+  the FLEET surveyed rather than one the probe seeded (9 prospect completions, 793
+  observations, nothing injected), the same top-down orthographic projection on the
+  dashboard's own `DEFAULT_VIEW` centre, and no hand-run transform — RViz2 reports
+  `Global Status: Ok`. A surveyed map renders as **discrete overlapping discs, one per
+  waypoint reached**, visibly not the smooth radial Gaussian a synthetic seed produces; that
+  difference is what makes the pair evidence rather than decoration. **(b) was not discharged
+  by trying harder — it was discharged by D-43**, without which the first reading arrived at
+  t=802 s and only 6 of 10 waypoints ever completed. Residue stated: the two images share a
+  centre, a projection, an orientation and a 50 m grid but NOT an aspect ratio, so the
+  comparison is "count the cells", not "identical rectangles". The machine comparison still
+  stands alongside it: the exit gate recomputes the marker array from the `ResourceMap`
+  message and asserts point-and-colour equality, through the same module the publisher uses.
 - **The `ImageData` row flip in `FleetMap.jsx` has been checked and is CORRECT**, and the
   raster has now been rendered in a browser. Three independent passes executed the round trip
   outside a browser — producer flat index, consumer decode, and the `translate`/negative-`scale`
