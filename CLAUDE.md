@@ -186,6 +186,16 @@ Caveats a reader should know:
   friction angle and the spawn cluster is 2.36–2.73° against 29–35°; a latched command would
   be 0.7–2.5 m, not 0.061 m. **That 0.061 m has NO SURVIVING MECHANISM and the row is not
   therefore proven sound.**
+  **⚠ PROVENANCE, ADDED 2026-08-02: EVERY FIGURE IN THE PARAGRAPH ABOVE EXISTS ONLY IN THIS
+  FILE.** "H-DECEL" appears in exactly one place in the repository — this line. So do the
+  0.0004 m maximum IDLE displacement, the 2.36–2.73° vs 29–35° friction comparison and the
+  "min 0.977, mean 1.000" RTF figures: `docs/phase5_deviation_register.md` records the 0.061 m
+  excursion only as the two words "did not recur", and no script, artefact or run report in the
+  tree carries any of them. (The committed slope-campaign RTF set — a *different* configuration,
+  one robot, no agents — measures min **0.9084**, mean **0.9937** over 45 samples, so it is not
+  the source either.) By this file's own standard that makes the refutation **an unattributed
+  claim, not evidence**: it may well be right, and nothing in the repository can check it.
+  Either land the measurements as an artefact or state the paragraph as unreproduced.
 - Earlier runs on 2026-08-01, after the D-42 work, were **8 passed / 2 failed / 1 skipped**.
   **CHECK 11 PASSES NOW, TWICE, ON TWO DIFFERENT TARGETS** — the row D-42 took down:
   `planned_path ends 0.28 m` and `0.20 m from the commanded target`. **Check 1 also passes**
@@ -448,7 +458,13 @@ Caveats a reader should know:
   `MaterialInventory` and can only fail on float drift. `unaccounted_quantity` is the one that
   can fail. An earlier run produced an identically clean ledger for a delivery that happened
   241 m from the depot; read register D-06's status block before quoting any ledger figure.
-- Nothing in the repository publishes TF: `/tf` and `/tf_static` still have zero publishers.
+- ~~Nothing in the repository publishes TF: `/tf` and `/tf_static` still have zero publishers.~~
+  **CORRECTED 2026-08-02 — the flat form is stale.** `selene_sim/launch/rviz.launch.py:97-98`
+  starts a `tf2_ros/static_transform_publisher` for `map -> rviz_anchor`, but **only under
+  `rviz:=true`**, and it was added to make the FR-MAP-4 overlay usable as shipped (open item
+  22(d)). The accurate statement is: **nothing publishes TF except `rviz.launch.py`, and only
+  when a viewer is started** — so every headless run, every CI job and every exit-gate run still
+  has **zero** TF publishers, and there is **no dynamic `/tf` and no robot frame anywhere**.
   (`tf2_msgs/msg/TFMessage` *is* now used — it is the type `ros_gz_bridge` carries the model
   pose on — but it is remapped to `/<robot_id>/pose_truth`, not to `/tf`.) RViz2 resolves a
   frame only when `header.frame_id` equals its fixed frame, so the overlay is published in
@@ -592,13 +608,34 @@ Caveats a reader should know:
   green at `7727ba8` and `9c1a4d7`. Note SELENE CI triggers only on push to `main`/`develop`,
   PR to `main`, or `workflow_dispatch` — **on a feature branch it must be dispatched, and a
   job that has never fired is not a check** (that is D-38).
-  **⚠ CI HAS NOT RUN AGAINST THE D-44 WORK, and by D-38's own lesson that means it is
-  unchecked, not green.** The three green SHAs above all predate it. What HAS been measured on
-  the Windows host is the three lanes and flake8 quoted above; what has NOT is the Humble
-  `colcon build` / `colcon test` lane, `shellcheck`, `dashboard-tests` as a CI job, and the
-  Simulation gates. **`colcon build` matters more than usual here**, because D-44 edits three
-  `.msg`/`.srv` files that no `rosidl` run has yet seen. Dispatch it and record the SHA, or say
-  it has not run — do not carry the older SHAs forward as if they covered this.
+  ~~**⚠ CI HAS NOT RUN AGAINST THE D-44 WORK, and by D-38's own lesson that means it is
+  unchecked, not green.** The three green SHAs above all predate it. … Dispatch it and record
+  the SHA, or say it has not run.~~
+  **SUPERSEDED 2026-08-02 BY MEASUREMENT, AND THE PARAGRAPH BELOW ALREADY KNEW.** This warning
+  and the "FOURTH LANE" paragraph eight lines under it were **added by the same commit**
+  (`4efb47d`, CLAUDE.md +14 / test file +21, zero deletions) — one of them narrating the very CI
+  run the other says never happened. A reader applying this file's own rule would reach opposite
+  conclusions from two adjacent paragraphs. Corrected here rather than softened.
+  **CI HAS RUN AGAINST D-44 AND SELENE CI IS 9/9 GREEN AT HEAD**: run `30731928511` at
+  `4efb47d`, **push to `main`** (the trigger path D-38 says is the one that counts), 2026-08-02
+  04:11 UTC — `build-and-test`, `gate-lane-tests`, `cross-package-tests` (both matrix legs),
+  `dashboard-tests`, `e2e-integration`, `terrain-datum`, `gate-coverage` and `shell-lint`, all
+  success. `build-and-test` is the Humble `colcon build` + `colcon test` lane and it regenerated
+  all three interfaces D-44 changed: `Summary: 1400 tests, 0 errors, 0 failures, 39 skipped`.
+  **Simulation gates** (real Gazebo Harmonic) is green at the same SHA twice — on push
+  (`30731928569`) and on the 2026-08-02 06:45 UTC scheduled run (`30736512175`).
+  **D-38's lesson vindicated itself on the way**: the D-44 commit `83cd897` went **RED on exactly
+  one job**, `build-and-test`, the only lane that could see the fake-clock defect — and `4efb47d`
+  is the fix. So the warning was correct when written and was answered within seven minutes.
+  **Two things this green does NOT cover.** (a) `colcon test` has run under **Humble**, not the
+  operator's **Jazzy** — and that distinction is exactly what `4efb47d` is about, so it is not
+  pedantry; no CI job builds the workspace under Jazzy. (b) **The Humble lane's 1400 is not
+  comparable to the host lane's 1394**: it collects 1400 and *asserts* **1361**, because all 39
+  of its skips fall in `selene_orchestrator` (almost certainly `test_conftest_mirrors_msgs.py`
+  standing down when the real generated `selene_msgs` is installed, which is by design), while
+  the host lane skips one. Neither is a superset of the other.
+  **Also note D-38's trigger gap has DISSOLVED rather than been fixed**: the work is on `main`,
+  so CI now fires on every push and no `workflow_dispatch` is needed.
 
   **A FOURTH LANE EXISTS AND ONLY CI RUNS IT: `colcon test` UNDER HUMBLE, AGAINST REAL
   GENERATED MESSAGES.** It caught a defect on 2026-08-02 that BOTH documented lanes and the
@@ -646,11 +683,30 @@ Caveats a reader should know:
   emergency that could abort twenty-five auctions in twenty-five cycles, a preemption spent on
   ticks that could not use it, and an emergency invisible, inside its own D-20 backoff, to the
   very decision built to act on it. The tests were not wrong; they tested the mechanism and
-  not its limits. **And none of it has run.**
+  not its limits. ~~**And none of it has run.**~~ **SUPERSEDED: it ran the same evening.**
   ~~**Still unknown: D-37's cause, D-42's cause. Still never run: RViz2. Still not passing:
   the exit gate.**~~ **SUPERSEDED — two of those four were already false in this file when it
   said them**, which is the failure mode this bullet exists to prevent: D-42 was CLOSED and
-  RViz2 HAD been started. Corrected:
-  **Still unknown: D-37's cause. Still not passing: the exit gate.
+  RViz2 HAD been started.
+  ~~**Still unknown: D-37's cause. Still not passing: the exit gate.
   Implemented, unit-tested and NOT DEMONSTRATED: D-44 — no `colcon build`, no live emergency
-  injection, no `auction_preempted` ever seen on the wire, and NO NINTH GATE RUN.**
+  injection, no `auction_preempted` ever seen on the wire, and NO NINTH GATE RUN.**~~
+  **SUPERSEDED AGAIN 2026-08-02, AND THIS BULLET HAS NOW BEEN WRONG TWICE IN THE SAME WAY —
+  which is the strongest argument this file contains for its own rule.** Both corrections were
+  needed because a summary line outlived the evidence under it. Every clause of the D-44
+  sentence is false: `colcon build` ran, the injection was live, `auction_preempted` was seen on
+  the wire, and there were a ninth AND a tenth gate run. Corrected, and dated so the next reader
+  can tell how old it is:
+  **True at 2026-08-02 —**
+  **Still unknown: D-37's cause**, and the campaign that cleared both hazard models ran a
+  configuration that is *not the one that crashed* (no agents, no orchestrator, no skills).
+  **The exit gate PASSES** — 11/0/0, exit 0, runs 9 and 10 — and **neither run measured a
+  preemption**, check 10 ran on a map the gate SEEDED, and PRD row 7 is NOT COVERED.
+  **SELENE CI is 9/9 green at HEAD**, including the Humble `colcon` lane.
+  **Phase 6 has NOT started**, nine of its ten exit-gate rows are unstarted or partial, and the
+  one that is green (CI) went green by side effect. **Assessing that on 2026-08-02 found four
+  structural defects that are not in the register** — an unreachable HTN cycle top-up branch,
+  a terminally FAILED task that deadlocks the mission silently, a task permanently orphaned by
+  a single robot dropout, and a missing re-entry guard in `_on_task_result` — **none of which is
+  fixed, and none of which a green suite or a green gate would have shown.** That is this
+  file's own lesson arriving at a fifth address.

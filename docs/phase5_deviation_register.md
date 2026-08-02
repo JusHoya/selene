@@ -1,5 +1,43 @@
 # Phase 5 Deviation Register
 
+> **AMENDED 2026-08-02 — A RECONCILIATION PASS, AND IT FIXED NO CODE.**
+> This document had drifted out of agreement with **its own body** and with
+> `CLAUDE.md`, in the direction this register spends 6,000 lines guarding
+> against — except inverted. **It was UNDER-reporting.** Its D-44 heading said
+> "NOT DEMONSTRATED, EXIT GATE NOT RE-RUN" above a gate block recording runs 9
+> and 10; **its last sentence said D-44 was undemonstrated four lines after
+> saying the gate passes**, both unstruck; "Recommended disposition" opened with
+> "run EIGHT times and it does not pass"; the FR-MAP-4 summary row said RViz2 had
+> never rendered the overlay while open item 22 recorded the side-by-side as
+> discharged; and Verification limit 19's measured test counts were **two
+> revisions behind `CLAUDE.md`**. The register's own note at "Status summary"
+> names this exact inversion — *"`CLAUDE.md` was for a period more current than
+> the document it names as the authority on Phase 5 status. That is the wrong
+> way round"* — and it had happened again, at greater length.
+>
+> Every stale claim is **struck in place with its supersession beside it**, not
+> deleted. Nothing below was upgraded: where a green rests on a proxy, a seeded
+> map, or a corroboration clause that reported NOT APPLICABLE, this pass says so
+> **in the same breath as the green**.
+>
+> **Newly recorded here and measured on 2026-08-02:** SELENE CI is **9/9 green
+> at HEAD** including the ROS 2 Humble `colcon build`/`colcon test` lane (so
+> Verification limit 27 is partly lifted, and its narrow half is now the one that
+> cost a commit); the **first statement-coverage figure in this project's
+> history**; the **`ROS_PYTHON_CHECK_FIELDS` distro divergence** that `4efb47d`
+> exists because of, which had **zero occurrences in this file**; the **two
+> colliding "open item N" namespaces** and this list's **duplicate item 23**; and
+> **open item 16 is partly REFUTED** — `varianceToCertainty` does have an
+> importer, and all four of that item's citations had drifted.
+>
+> **What this pass did NOT do: it fixed no defect and opened no deviation.**
+> Four structural defects found while assessing Phase 6 readiness — an
+> unreachable HTN top-up branch, a terminally FAILED task that deadlocks the
+> mission, a task permanently orphaned by a single robot dropout, and a missing
+> re-entry guard in `_on_task_result` — are **deliberately not written up here**,
+> because they are Phase 6 findings and this is a Phase 5 document. They are
+> named so their absence is visible rather than inferred.
+
 What Phase 5 was scoped to deliver, what was actually delivered, and every place
 those differ. Written 2026-07-30 at commit `19d364c`; rewritten the same day at
 `bab8af6` when D-01..D-06 and D-10 were fixed; re-verified 2026-07-31 against
@@ -32,8 +70,10 @@ against `9c1a4d7`. **All six deviations this register carried as open (D-28,
 D-30, D-31, D-32, D-34, D-35) are closed below**, one of them — D-32 — dissolved
 rather than fixed, and one of them — D-31 — diagnosed for the first time. Five
 new deviations are opened: **D-38, D-39, D-40 and D-41, each closed or worked
-around on the evidence that found it, and D-42, which is OPEN with an UNKNOWN
-cause.** The headline measurement is the gate:
+around on the evidence that found it, and D-42, ~~which is OPEN with an UNKNOWN
+cause~~ **— SUPERSEDED later the same day: D-42 is CLOSED, root-caused to a
+second `battery_node` on a shared ROS domain, reproduced on demand and the fix
+demonstrated against the reproduction.** The headline measurement is the gate:
 
     2026-07-31   8 passed / 1 failed / 2 skipped   (exit 1)
     2026-07-31   9 passed / 0 failed / 2 skipped   (exit 2 — a SKIP is not a pass)
@@ -47,11 +87,20 @@ still waits — which this document and `CLAUDE.md` had until then deliberately
 left open, in those words. It then records the six defects the first
 implementation of that decision carried and the eighth "declared and never read"
 field it introduced, all found by adversarial review **before any of it ran**.
-**Nothing in D-44 has been demonstrated**: no `colcon build`, no live
+~~**Nothing in D-44 has been demonstrated**: no `colcon build`, no live
 injection, no `auction_preempted` observed on the wire, and the exit gate not
-re-run. **Check 6's stimulus has changed** — it now injects an emergency — so a
-future PASS on that row would mean "the emergency path works", not "the race was
-fixed", and the non-emergency path is no longer exercised by any gate row.
+re-run.~~ **SUPERSEDED IN EVERY CLAUSE, 2026-08-01 (late) and 2026-08-02 — see
+D-44's own gate block, and the reconciliation note under "Status summary".**
+`colcon build` regenerated all six packages; an emergency injection was issued
+live over both transports; `auction_preempted` was observed on the wire by
+`scripts/demo_emergency_preemption.py` against its own control; and the gate was
+re-run twice, both 11 passed / 0 failed / 0 skipped, exit 0. **Check 6's stimulus
+has changed** — it now injects an emergency — so its PASS means "the emergency
+path was exercised as a stimulus", not "the race was fixed", and the
+non-emergency path is no longer exercised by any gate row (Verification limit
+30). On runs 9 and 10 the corroboration clause reported NOT APPLICABLE, so the
+row passed for the ordinary reason and **neither gate run measured a
+preemption**.
 
 **Zero skips is the finding.** Checks 6 and 9 produced verdicts for the first
 time, so PRD exit-gate rows 3 and 4 are **measured at last** rather than
@@ -140,7 +189,7 @@ permission slip. This file replaces it.
 | FR-DASH-6 Robot Override | P2 | D-05 | **Implemented; half demonstrated** | both overrides reached the FSM live (gate checks 7, 8, 11); the override's row in the rendered task history was never itemised |
 | FR-DASH-7 Mission Progress | P1 | D-06, D-11, D-31 | **Closed — demonstrated; one published field was wrong** | 5 deliveries, `deposited_quantity` 94.85 kg, `unaccounted_quantity` exactly 0.0, on a 30-minute ten-robot run. `fleet_distance_total` on that same run was 2.21× the truth — diagnosed and fixed 2026-08-01 (D-31), **sufficiency not established**. (This row read "D-28" until 2026-08-01; that was a typo — D-28 is the slope limit and has nothing to do with mission progress.) |
 | FR-SIM-7 Launch & Config (full) | P0 | D-07 | **Closed — demonstrated** | measured on WSL2 / Jazzy; re-exercised at 4/3/3 twice since, and at 2/1/1 in the 2026-08-01 gate run |
-| FR-MAP-4 RViz2 Visualization | P1 | D-08 | **Closed — implemented, overlay never seen** | published and machine-paired live; **its 2026-07-30 hot-cell figure is SUPERSEDED** (odom frame); **no RViz2 has ever rendered it, and that is still true on 2026-08-01** |
+| FR-MAP-4 RViz2 Visualization | P1 | D-08 | **Closed — DEMONSTRATED 2026-08-01 (late); row corrected 2026-08-02** | published and machine-paired live; **its 2026-07-30 hot-cell figure is SUPERSEDED** (odom frame). ~~no RViz2 has ever rendered it, and that is still true on 2026-08-01~~ — **SUPERSEDED: RViz2 has rendered it and the `docs/PRD.md:1504` SIDE-BY-SIDE HAS BEEN PERFORMED, against a map the FLEET surveyed** (9 prospect completions, 793 observations, nothing seeded), one stack, `Global Status: Ok`. See open item 22, DISCHARGED on all four clauses. Residue stated there: the two images share a centre, projection, orientation and 50 m grid but **not an aspect ratio** |
 | FR-MAP-1(e)(f) fused map on the wire | P0 | D-09 | **Closed — demonstrated** | largest live `ResourceMap` websocket frame 362 B (gate check 3, all three runs) |
 | Navigation slope limit | P1 | D-28, D-32 | **Closed 2026-08-01 — measured, enforced, demonstrated** | 54-trial capability campaign (`docs/slope_capability_2026-08-01.json`); limit 20°, enforced **per step**; every agent in the 2026-08-01 gate run logged depot and recharge pad **REACHABLE** |
 | Phase 5 exit gate itself | — | D-10, D-29, D-34, D-35, D-42, **D-44** | **Run TEN times. PASSES — runs 9 and 10, both 11/0/0 exit 0** | 8/1/2 (exit 1), 9/0/2 (exit 2), then **10/1/0 (exit 1)** at `9c1a4d7`; runs 4-8 are recorded in `CLAUDE.md` and the regenerated report, **not in this document** (see the run-ledger note below). Run 8 was **9 passed / 1 failed / 1 skipped (exit 1)**, check 6 the only failure. **Runs 9 and 10, 2026-08-01 at `d7f0f3e` (dirty), are the first greens this gate has ever produced: 11 passed / 0 failed / 0 skipped, exit 0, twice.** Read D-44’s gate block before quoting them — **check 6 passed with its preemption corroboration clause reporting NOT APPLICABLE on both runs, so neither run measured a preemption**; the emergency path is demonstrated separately by `scripts/demo_emergency_preemption.py` |
@@ -148,14 +197,21 @@ permission slip. This file replaces it.
 > **RUN LEDGER — a gap in this document, stated rather than papered over.**
 > This register was written against the **third** gate run and its summary rows,
 > its D-10 heading and its "Recommended disposition" all still said "three
-> times" until this amendment. The gate has in fact been run **eight** times.
+> times" until this amendment. ~~The gate has in fact been run **eight** times.~~
+> **CORRECTED 2026-08-02: the gate has been run TEN times, and runs 9 and 10
+> both PASS at 11/0/0 exit 0.** This note itself said "eight" while the summary
+> row six lines above already said "Run TEN times" — the same disagreement one
+> layer in.
 > Runs 4-7 were never written into this document at all and their individual
 > tallies are **not recoverable from anything in the tree**; run 8 is recorded
-> in `docs/phase5_validation_report.md` and in the commit message of `d7f0f3e`.
-> The headline figures below have been corrected to the eighth run. **Runs 4-7
-> remain unrecorded here, and this note exists so that absence is visible
-> rather than inferred.** The rule this register applies to superseded numbers
-> applies to missing ones too.
+> in the commit message of `d7f0f3e`. ~~run 8 is recorded in
+> `docs/phase5_validation_report.md`~~ — **CORRECTED: the in-tree report is
+> RUN NINE.** Its own figures identify it (announce 60.35 s, assign 65.85 s,
+> queue snapshot 0.15 s before injection, `Summary: 11 passed, 0 failed,
+> 0 skipped`), and D-44's gate block says so directly.
+> **Runs 4-8 remain unrecorded here, and this note exists so that absence is
+> visible rather than inferred.** The rule this register applies to superseded
+> numbers applies to missing ones too.
 >
 > One consequence worth stating plainly: `CLAUDE.md` was for a period **more
 > current than the document it names as the authority on Phase 5 status.** That
@@ -4418,7 +4474,14 @@ excavate task exists for the first time in these runs.
 
 ---
 
-## D-44 — operator EMERGENCY preemption: a deliberate change to auction semantics, and the six defects the first implementation of it carried — DECIDED AND IMPLEMENTED 2026-08-01, UNIT-TESTED, **NOT DEMONSTRATED, EXIT GATE NOT RE-RUN**
+## D-44 — operator EMERGENCY preemption: a deliberate change to auction semantics, and the six defects the first implementation of it carried — DECIDED AND IMPLEMENTED 2026-08-01, UNIT-TESTED, **DEMONSTRATED LIVE 2026-08-01 (late); EXIT GATE RE-RUN TWICE, 11/0/0 BOTH — but NEITHER GATE RUN MEASURED A PREEMPTION**
+
+> **HEADING CORRECTED 2026-08-02.** It read "**NOT DEMONSTRATED, EXIT GATE NOT
+> RE-RUN**" until this amendment, while this entry's own gate block below
+> recorded runs 9 and 10 and a live `auction_preempted`. The body was updated on
+> 2026-08-01 and the heading was not. That is the failure mode this register
+> names at line 158 — a status line disagreeing with the evidence beneath it —
+> and it is corrected here rather than left for a reader who greps headings.
 
 **THIS IS NOT A DEFECT FIX AND MUST NOT BE READ AS ONE.** Every other entry in
 this register records something that was wrong and was corrected. This one
@@ -4872,13 +4935,23 @@ documented test lane, the same way `battery_node.py`'s arithmetic was.
 
 ### WHAT THIS ENTRY DOES NOT CLAIM
 
-* **NOTHING HERE HAS RUN**, itemised in full under "WHAT IS NOT DEMONSTRATED"
+* ~~**NOTHING HERE HAS RUN**, itemised in full under "WHAT IS NOT DEMONSTRATED"
   above. **This entry is IMPLEMENTED, NOT DEMONSTRATED**, and by this register's
-  own standard that is the weaker of the two by a long way.
-* **It does not claim check 6 will now pass.** It removes one identified
+  own standard that is the weaker of the two by a long way.~~ **SUPERSEDED
+  2026-08-01 (late).** It has run: six packages rebuilt, emergency injections
+  issued live over both transports, `_preempt_for_emergency` executed inside a
+  live ROS node, and a real auction aborted. What has NOT changed is the standard
+  of evidence — read the gate block above for exactly what was measured, and note
+  that **the conjunction the demonstration needed was manufactured by freeing a
+  robot with an operator `cancel_task`**, not observed arising on its own.
+* ~~**It does not claim check 6 will now pass.** It removes one identified
   mechanism by which the injected task loses its auction. Whether that is THE
   mechanism on WSL2 is unmeasured, and the honest statement is that the exit
-  gate has been run eight times and has not passed.
+  gate has been run eight times and has not passed.~~ **SUPERSEDED: the gate has
+  been run TEN times and runs 9 and 10 both PASS, 11/0/0, exit 0.** The narrower
+  claim survives and is the one that matters: **check 6 passed without measuring
+  a preemption at all** — its corroboration clause reported NOT APPLICABLE on
+  both runs — so nothing about the race is settled by that green.
 * **CHECK 6 NOW MEASURES A DIFFERENT STIMULUS FROM ITS EIGHT PRIOR RUNS.** The
   injection it makes is an emergency injection. So "check 6 passes" would mean
   "the emergency path works", not "the race was fixed", and **the non-emergency
@@ -5009,6 +5082,24 @@ SC-3 measured over the real deposit field, deterministic:
 
 Closing D-01..D-06 and D-10 deliberately did **not** close these, and each is
 recorded here so the closure cannot be read as covering it.
+
+> **⚠ READ THIS BEFORE CITING ANY "open item N", 2026-08-02. THERE ARE TWO
+> INDEPENDENTLY NUMBERED LISTS IN THIS FILE AND THEY COLLIDE.**
+> **This** list — "Open items carried forward" — runs 1..27. The separate
+> **"Verification limits"** section further down runs 1..31. So *"open item 22"*
+> (the RViz2 side-by-side) is **this** list's 22, while *"open item 28"* (the
+> stranded bidder) and *"open item 30"* (the unexercised non-emergency path) are
+> **Verification limits** 28 and 30 — a different list. `CLAUDE.md` cites all
+> three with the same phrase, and **this register caused that**: D-44 says
+> "recorded as open item 28" and "Open items 28-31" while placing them under
+> Verification limits.
+> **Until the two lists are renumbered, cite them as `OI-n` and `VL-n`.**
+> **A second bookkeeping defect: this list has a DUPLICATE item 23.** Two
+> entries carry that number — the kept previous text of item 22, and the
+> side-slope rollover entry — so the list holds **28 entries under 27 numbers**,
+> while "Recommended disposition" point 9 counts "twenty-seven". Neither is
+> renumbered here, because every existing citation into this list would break;
+> the collision is named instead, which is this document's usual remedy.
 
 Items 1-8 predate that work. **Items 9 and 10 were introduced by it** — both are
 small consequences of the new task-event ring and the new constrained auction,
@@ -5149,17 +5240,31 @@ reading or grepping the working tree on this pass:
     `prior_mean` in the reducer is load-bearing and must stay** — it is only the
     storing of the results that is dead. Same species as the pattern this
     register calls the repository's recurring failure mode, at trivial cost.
-16. **Four `colors.js` exports are imported by no module.**
+16. ~~**Four `colors.js` exports are imported by no module.**
     `iceConcentrationRGB` (`:113`), `varianceToCertainty` (`:223`),
-    `LOW_CONFIDENCE_GRAY` (`:191`) and `VARIANCE_FLOOR` (`:197`). Checked on
-    this pass: `FleetMap.jsx` imports `posteriorCellRGBA` and mentions
-    `LOW_CONFIDENCE_GRAY` only in a comment; `ResourceLegend.jsx` imports
+    `LOW_CONFIDENCE_GRAY` (`:191`) and `VARIANCE_FLOOR` (`:197`).~~
+    **PARTLY REFUTED AND FULLY RE-ANCHORED 2026-08-02. It is THREE, not four,
+    and all four line numbers had drifted.** `varianceToCertainty` **IS**
+    imported — `selene_dashboard/src/components/FleetMap.jsx:17` — and **called**
+    at `FleetMap.jsx:1407`. The three that really have no importer are
+    `iceConcentrationRGB` (`colors.js:144`), `LOW_CONFIDENCE_GRAY` (`:239`) and
+    `VARIANCE_FLOOR` (`:245`); outside `colors.js` they appear only in comments
+    (`FleetMap.jsx:240`, `ResourceLegend.jsx:22`). `varianceToCertainty` is now
+    at `:302`. The drifts are 31, 79, 48 and 48 lines — **exactly what
+    Verification limit 19 predicted would happen** ("they will drift if anyone
+    edits those files"), and nobody re-anchored until this pass.
+    `FleetMap.jsx` imports `posteriorCellRGBA`; `ResourceLegend.jsx` imports
     `iceConcentrationColor`, `certaintyRGB`, `ALPHA_MIN`, `ALPHA_MAX`. There is
-    a real reason not to un-export them —
-    `test_dashboard_colour_parity.py` parses these four out of the file as text
+    a real reason not to un-export the remaining three —
+    `test_dashboard_colour_parity.py` parses them out of the file as text
     and would be harder to write against non-exported constants — but that
-    reason is nowhere in the file, so the next reader will see four orphans.
+    reason is nowhere in the file, so the next reader will see three orphans.
     Say so in `colors.js` or drop the exports.
+    **A live consequence this item did not have when it was written:** because
+    `varianceToCertainty` now has a real JS caller, the parity test and a
+    production consumer depend on the same function through two different
+    mechanisms, one of which is a **text parse**. That arrangement is written
+    down nowhere but here.
 17. **Four comments name `App.jsx` as the validator when the validation is in
     `useFleetState.js`, and one guard is unreachable because of it.**
     `FleetMap.jsx:272-273` says "App.jsx validates the parallel arrays but not
@@ -5448,8 +5553,15 @@ ones that remain are the ones that matter now.
 **Amended 2026-08-01.** Item **19** carries new counts, all re-run on this box.
 Item **20** is **LIFTED, and it was also partly wrong when it was written** —
 see the entry. Items **24-27** are new and are the limits of the slope campaign,
-the browser session and the 2026-08-01 gate run. Item 1's unqualified clause
-("RViz2 was never started") is still unqualified.
+the browser session and the 2026-08-01 gate run. ~~Item 1's unqualified clause
+("RViz2 was never started") is still unqualified.~~ **SUPERSEDED 2026-08-02:
+RViz2 HAS been started and the PRD:1504 side-by-side HAS been performed — see
+open item 22, DISCHARGED. Item 1's clause is struck in place below.**
+
+**Amended 2026-08-02 (reconciliation pass).** Items **19** and **27** carry
+corrected figures; item 1's RViz2 clause is struck. **Items 28-31 were added
+2026-08-01 (late) by D-44 and they live in THIS list, not in "Open items carried
+forward"** — see the numbering note at the head of that section.
 
 This section applies to the whole register. **None of the following may be
 described as verified, measured, or observed.**
@@ -5459,9 +5571,15 @@ described as verified, measured, or observed.**
    evening of 2026-07-31 the system was run: `colcon build` (6 packages,
    0 errors), a four-robot fleet three times, a ten-robot fleet twice
    (615 s and 1818 s), and `scripts/validate_phase5.sh` twice. A browser was
-   opened and the dashboard confirmed rendering. **RViz2 was never started, and
+   opened and the dashboard confirmed rendering. ~~**RViz2 was never started, and
    no side-by-side image comparison was performed** — that limit stands
-   unqualified and is open item 22.
+   unqualified and is open item 22.~~ **LIFTED 2026-08-01 (late): RViz2 was
+   started, it rendered the overlay, and the `docs/PRD.md:1504` side-by-side was
+   performed against a map the FLEET surveyed — one stack, one publisher,
+   `Global Status: Ok`. Open item 22 is DISCHARGED on all four clauses.** The
+   residue is stated there and is real: the two images share a centre, a
+   projection, an orientation and a 50 m grid but **not an aspect ratio**, so the
+   comparison is "count the cells", not "identical rectangles".
 
    **This document's owner ran none of it.** What was run here is the Windows
    test lanes (item 19), every `file:line` citation opened and read, and the
@@ -5655,6 +5773,42 @@ described as verified, measured, or observed.**
     > zero skips** — which is the half that makes a skip legitimate rather than a
     > hiding place. Both are now enforced by CI jobs (`gate-lane-tests` and
     > `cross-package-tests`); see D-36.
+
+    > **RE-MEASURED 2026-08-02 on the committed tree at `4efb47d`**, same box,
+    > by this reconciliation pass, running each command rather than copying it.
+    > **The block above was TWO REVISIONS STALE and `CLAUDE.md` carried the
+    > correct figures** — which is precisely the inversion the run-ledger note
+    > under "Status summary" calls "the wrong way round". It is corrected here
+    > for the same reason.
+    >
+    >     all FIVE packages in ONE process        1394 passed, 1 skipped
+    >         (was 1150/1) — identical in both collection orders
+    >     gate lane (orchestrator + isru)           815 passed, 3 skipped
+    >         (was 623/3)
+    >     flake8 over five packages + scripts/      exit 0, 0 findings
+    >     CI=true npx react-scripts test            122 passed, 9 suites
+    >         (was 101 passed, 7 suites)
+    >
+    > The +166 on both pytest lanes is D-44's; `CLAUDE.md` reconciles it
+    > file-by-file and every per-file figure in that reconciliation was
+    > re-measured here by `--collect-only` and agrees.
+    >
+    > **A NUMBER THIS PROJECT HAS NEVER HAD: statement coverage.** Measured
+    > 2026-08-02 with `coverage` 7.15.2 on the five-package lane, written to a
+    > scratch directory with the repository untouched. **66%** over 6443
+    > statements repo-wide; **93%** (4059 statements, 276 missed) with the nine
+    > rclpy node shells excluded; and every module NFR-5.1 names by name at or
+    > above 87% — `fsm` 99, `task_auction` 98, `energy_manager` 97,
+    > `htn_planner` 96, `resource_map` 87. **NFR-5.1's 80% bar is probably
+    > already cleared on core logic.** It is not claimed as met, for two reasons
+    > this register would insist on anyway: there is **no coverage tooling in the
+    > repository or in CI** (`pytest-cov` appears once, in `docker/Dockerfile:37`,
+    > with zero callers — an instance of this project's own recurring pattern),
+    > so the figure is not reproducible from a checkout; and **"core logic
+    > modules" is prose that has never been pinned to a file list**, so the
+    > denominator is a judgement. The 0% modules are named and are the ones that
+    > matter: `agent_node.py` (592 stmts), `gazebo_hal.py`, six `selene_sim`
+    > nodes — every module a `import rclpy` puts out of the host lane's reach.
 20. ~~**`shellcheck` was not run**~~ **LIFTED 2026-08-01 — and this item was
     partly wrong when it was written, which is worth more than the lift.** It
     said shellcheck "has still never been run against the rewritten
@@ -5716,11 +5870,31 @@ Added 2026-08-01:
     partially rebuilt workspace produces exactly that value for the wrong reason.
     The mitigation is procedural — rebuild all six packages in one `colcon
     build` — and nothing enforces it.
-27. **`colcon test` still has not run.** `colcon build` has run many times,
-    including in this session's workspace sync; the per-package test entry points
-    remain unexercised under a real workspace on this machine. CI's
-    `build-and-test` job does run `colcon test` under ROS 2 **Humble**, which is
-    not the distro the operator's workspace uses.
+27. ~~**`colcon test` still has not run.**~~ **PARTLY LIFTED 2026-08-02, and the
+    narrow half survives — which is the half that has now cost a commit.**
+    `colcon test` HAS run, under ROS 2 **Humble**, in CI's `build-and-test` job,
+    and it is **green at HEAD**: run `30731928511` at `4efb47d`, push to `main`,
+    `Summary: 1400 tests, 0 errors, 0 failures, 39 skipped`, with the "Build
+    workspace" step regenerating all three interfaces D-44 changed. **It is not
+    the distro the operator's workspace uses**, and that is no longer a
+    theoretical caveat: `4efb47d` exists *because* the two distros diverge —
+    `rosidl` guards a generated field's type check with `if __debug__:` on Humble
+    (always on) and `if self._check_fields:` on Jazzy (opt-in, off by default),
+    so a fake clock returning `object()` for `TaskAnnouncement.deadline` passed
+    the ROS-free lane, passed Jazzy, and failed only here. Reproduce Humble's
+    behaviour locally with **`ROS_PYTHON_CHECK_FIELDS=1`**.
+    **What still has not run: `colcon test` under Jazzy, on the operator's
+    workspace.** The divergence runs both ways — a Jazzy-only defect has no
+    reader at all today — and no CI job builds the workspace under Jazzy
+    (`sim-gates.yaml` does use `ros:jazzy-ros-base-noble`, but only
+    `colcon build --packages-up-to selene_sim`, with no tests).
+    **Note also that CI's headline is not comparable to the host lane's.**
+    Measured from the same log: the Humble lane collects 1400 and asserts
+    **1361**, because all 39 of its skips fall in `selene_orchestrator` — almost
+    certainly `test_conftest_mirrors_msgs.py` standing down when the real
+    generated `selene_msgs` is installed, which is by design. The host lane
+    asserts 1394 with one skip. **Neither number is a superset of the other**,
+    and no document in this repository stated that until now.
 
 **Items 28-31 were added 2026-08-01 (late) by D-44.** All four are residue of
 the emergency-preemption decision, and none of them is a defect in it — they are
@@ -5771,16 +5945,31 @@ the things that decision deliberately did not do.
 
 ## Recommended disposition
 
-**Phase 5 cannot be closed. The exit gate has now been run EIGHT times and it
-does not pass.** ~~three times — 8/1/2 (exit 1), then 9/0/2 (exit 2), then
+~~**Phase 5 cannot be closed. The exit gate has now been run EIGHT times and it
+does not pass.**~~ ~~three times — 8/1/2 (exit 1), then 9/0/2 (exit 2), then
 **10 passed / 1 failed / 0 skipped (exit 1)** on 2026-08-01 at `9c1a4d7`~~ —
-**SUPERSEDED; see the run ledger under "Status summary".** The best result is
+~~**SUPERSEDED; see the run ledger under "Status summary".** The best result is
 the eighth: **9 passed / 1 failed / 1 skipped, exit 1**, 2026-08-01, with
-**check 6 the only failure** and check 9 SKIPping as its consequence. That is
-the whole answer. Everything below is detail on it, and the detail has changed
-shape three times since the revision before last: **the problem is no longer
-that nothing has been run, it is no longer that the instrument cannot see, and
-as of D-44 it is no longer an undecided design question either.**
+**check 6 the only failure** and check 9 SKIPping as its consequence.~~
+
+**SUPERSEDED 2026-08-02. THE GATE HAS BEEN RUN TEN TIMES AND RUNS 9 AND 10 BOTH
+PASS: 11 passed / 0 failed / 0 skipped, exit 0**, 2026-08-01 at `d7f0f3e`
+(working tree dirty), ROS 2 Jazzy, Gazebo Harmonic 8.11.0, fleet 2/1/1,
+`prebuilt:=true`. `docs/phase5_validation_report.md` is run 9 and is in the tree.
+**Phase 5's blocking condition is therefore discharged.**
+
+**What must be read before that green is quoted, and none of it is small:**
+**check 6's preemption corroboration clause reported NOT APPLICABLE on BOTH
+runs**, so neither run measured a preemption and the row passed for the ordinary
+reason; **check 10 ran on a map this gate SEEDED**, so it proves the
+fusion → sparse-encode → marker path and not that robots survey autonomously;
+**PRD row 7 is NOT COVERED by construction**, no browser is started anywhere in
+the gate; and **no gate row exercises the non-emergency injection path any more**
+(Verification limit 30). Everything below is detail, and the detail has changed
+shape four times: **the problem is no longer that nothing has been run, no longer
+that the instrument cannot see, no longer an undecided design question, and as of
+runs 9 and 10 no longer a red gate. What it is now is a green gate whose proxies
+are named — and a Phase 6 that has not started.**
 
 **What the third run changed.** **Zero skips.** Checks 6 and 9 produced verdicts
 for the first time and both PASSed, so **PRD exit-gate rows 3 and 4 are measured
@@ -5870,13 +6059,18 @@ What is missing:
 
 3. **Perform the PRD's visual methods, or accept in writing that they were not
    performed — and the list is now short and specific.** A browser has been
-   opened, so most of this section's predecessor is discharged. What remains is
+   opened, so most of this section's predecessor is discharged. ~~What remains is
    `docs/PRD.md:1504`: **RViz2 has never been started and no side-by-side
    comparison of the overlay against the dashboard heatmap has ever been made**
-   (open item 22). Every parity claim in this document is a machine comparison
-   of numbers, and the strongest of them recomputes through the same module the
-   publisher uses. PRD row 7 (frame timing) is NOT COVERED by construction. No
-   demo recording exists in-tree (`docs/PRD.md:1511`).
+   (open item 22).~~ **SUPERSEDED 2026-08-01 (late): open item 22 is DISCHARGED
+   — RViz2 was started, it rendered the overlay, and the side-by-side was
+   performed against a surveyed map.** Every parity claim in this document is
+   still a machine comparison of numbers, and the strongest of them recomputes
+   through the same module the publisher uses. **What remains un-performed is
+   PRD row 7** (frame timing), NOT COVERED by construction because no browser is
+   started anywhere in the gate. **No demo recording exists in-tree**
+   (`docs/PRD.md:1511`), and PRD §10's four integration demos have no harness at
+   all — that is Phase 6a and it has not started.
 
 4. **Three figures this register published as measurements are superseded and
    must not be quoted.** D-08's hot cell at world (−80.5, −140.5), FR-MAP-3's
@@ -5991,8 +6185,35 @@ decision built to act on it.
 **The gate now passes — runs 9 and 10, 2026-08-01, 11/0/0 exit 0 — but neither
 run measured a preemption (D-44), and every PRD exit-gate METHOD remains a human
 one that no script performed.**
-**What is new and is not the same thing: D-44 is implemented, unit-tested and
+~~**What is new and is not the same thing: D-44 is implemented, unit-tested and
 UNDEMONSTRATED — no `colcon build`, no live injection, no `auction_preempted`
 ever seen on the wire, and the exit gate NOT re-run.** By this register's own
 standard that is the weaker half of the distinction it exists to draw, and the
-ninth run is what would change it.
+ninth run is what would change it.~~
+
+**SUPERSEDED 2026-08-02, AND THIS SENTENCE IS WHY THIS RECONCILIATION PASS
+EXISTS.** It stood as the LAST SENTENCE OF THIS DOCUMENT, four lines below the
+paragraph that says the gate now passes, with both halves unstruck. Every one of
+its five clauses was already false when a reader reached it: the ninth run
+happened, and so did the tenth. **D-44 is implemented, unit-tested and
+DEMONSTRATED LIVE** — `colcon build` regenerated six packages, emergency
+injections were issued over both transports, `auction_preempted` was observed on
+the wire against a control, and the gate was re-run twice at 11/0/0 exit 0.
+
+**What is true at 2026-08-02, stated once, so the closing line of this file
+agrees with its body:**
+
+* **D-37's cause is unknown.** It is the only deviation in that state. The
+  45-minute campaign that rejected both hazard models at p<0.01 ran a
+  configuration that is **not the one that crashed** — no agents, no
+  orchestrator, no skills, no actuators — so a hazard depending on anything an
+  agent does is uncovered.
+* **The exit gate PASSES**, runs 9 and 10, 11/0/0 exit 0 — and **neither run
+  measured a preemption**, check 10 ran on a map the gate SEEDED, and every PRD
+  exit-gate METHOD remains a human one that no script performed.
+* **SELENE CI is 9/9 green at HEAD** (`4efb47d`, run `30731928511`, push to
+  `main`, 2026-08-02T04:11Z), including the ROS 2 Humble `colcon build` /
+  `colcon test` lane. Simulation gates is green at the same SHA twice.
+* **Phase 6 has not started, and it is larger than the PRD's 6a–6e buckets** —
+  roughly thirty items in "Open items carried forward" and "Verification limits"
+  are Phase-6-shaped work that appears in none of them.
