@@ -121,8 +121,27 @@ class _FakeNode:
         return self._logger
 
     def get_clock(self):
+        """A clock whose ``to_msg()`` the REAL TaskAnnouncement will accept.
+
+        This returned ``object()`` when it was written, and that passed every
+        ROS-free lane and FAILED CI's Humble ``colcon test`` lane with
+        ``AssertionError: The 'deadline' field must be a sub message of type
+        'Time'``. The generated message's property setter type-checks;
+        ``conftest``'s stub does not. A fake that only satisfies the stub proves
+        nothing about the publisher and hides behind whichever lane happens to
+        run -- register D-14's shape exactly, and the reason CLAUDE.md forbids
+        "completing" the ROS-free stubs so another package's imports resolve
+        against them.
+
+        ``builtin_interfaces.msg.Time`` is the right import in BOTH lanes:
+        without ROS, ``conftest`` installs a stub module providing it
+        (conftest.py:381-395); with ROS, it is the generated type the setter
+        demands. So this asserts against whichever one is actually present
+        rather than against a hand-written third thing.
+        """
+        from builtin_interfaces.msg import Time
         return types.SimpleNamespace(
-            now=lambda: types.SimpleNamespace(to_msg=lambda: object()))
+            now=lambda: types.SimpleNamespace(to_msg=lambda: Time()))
 
     def _publish_alert(self, severity, source_robot_id, message):
         self.alerts.append((severity, source_robot_id, message))

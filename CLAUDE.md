@@ -600,6 +600,20 @@ Caveats a reader should know:
   `.msg`/`.srv` files that no `rosidl` run has yet seen. Dispatch it and record the SHA, or say
   it has not run — do not carry the older SHAs forward as if they covered this.
 
+  **A FOURTH LANE EXISTS AND ONLY CI RUNS IT: `colcon test` UNDER HUMBLE, AGAINST REAL
+  GENERATED MESSAGES.** It caught a defect on 2026-08-02 that BOTH documented lanes and the
+  WSL2 Jazzy path passed, and the divergence is in rosidl itself. A generated message's field
+  setter type-checks its value; **Humble guards that check with `if __debug__:` (always on),
+  Jazzy guards it with `if self._check_fields:` (opt-in, OFF by default)**. So a test that
+  hands `_publish_announcement` a fake clock returning `object()` for
+  `TaskAnnouncement.deadline` passes the ROS-free lane (conftest's stub type-checks nothing),
+  passes `colcon test` on Jazzy (the check is compiled out), and FAILS CI with
+  `AssertionError: The 'deadline' field must be a sub message of type 'Time'`. Reproduce
+  Humble's behaviour locally with **`ROS_PYTHON_CHECK_FIELDS=1`** — verified to reproduce this
+  exact failure and to clear it. Import `builtin_interfaces.msg.Time` rather than inventing a
+  stand-in: `conftest` supplies a stub for it without ROS (`conftest.py:381-395`) and the real
+  type with ROS, so one import is correct in every lane.
+
   Three rules follow and all three are earned. **Do not "complete" the ROS-free stubs** in
   `selene_orchestrator/test/conftest.py` so another package's imports resolve against them —
   that trades a loud abort for `selene_hal`'s Gazebo tests silently running against
