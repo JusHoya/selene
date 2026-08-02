@@ -5013,6 +5013,148 @@ to
 
 ---
 
+## D-45 — four structural defects found by assessing PHASE 6 readiness, none of which a green suite or a green gate would have shown — CLOSED 2026-08-02; D4 and D2's retry half DEMONSTRATED LIVE, the rest IMPLEMENTED AND VERIFIED, NOT DEMONSTRATED
+
+**These were found by reading the system to plan Phase 6, not by running it, and the
+exit gate was passing 11/0/0 the whole time they were present.** That is the entry's
+point. Every one is provable from source; three were reproduced against the real
+classes with no ROS and no browser; and **one was reproduced on a live ROS 2 Jazzy
+stack, where it killed the mission while the dashboard went on reporting health.**
+
+### THE FOUR, AND WHAT EACH ACTUALLY WAS
+
+**D-45.1 — the HTN cycle top-up branch was UNREACHABLE.** `htn_planner.py`'s
+`if needed_cycles > self._cycles_generated` could never be true: `_cycles_generated`
+is `ceil(target/HOPPER_CAPACITY_KG) = 5` after the first `_generate_cycles`, and
+`needed_cycles = ceil((target − deposited)/HOPPER) ≤ 5` for every `deposited ≥ 0`.
+Proven by exhaustive sweep: over `[0, 100)` in 1 g steps the maximum `needed_cycles`
+ever reached is **5**, so the branch fires **0/200** sample points. Exactly five cycles
+were ever created, they deliver ~94.85 kg against a 100 kg objective, and **no sixth
+cycle could ever exist** — which is precisely the 5.15 kg shortfall this register has
+carried as a measured figure since D-06 without anyone asking why it was structural.
+FIXED by comparing against cycles still UNDELIVERED rather than cycles ever created,
+with a one-pass debounce, one cycle per pass, and a ceiling. Verified: top-up now
+reachable on **200/200**, and the ledger reaches 113.82 kg at 18.97 kg/delivery.
+
+**D-45.2 — a terminally FAILED task deadlocked the whole mission, silently.**
+`_ready_tasks` required every dependency `COMPLETED`, and **nothing in `TaskQueue`
+ever moved a task out of `FAILED`** — no `retry_task`, no `reset_failed`, no
+`replan`, no `requeue_failed`. `select_site` depends on all ten surveys and every
+excavate/haul cycle is generated only after it completes, so **one failed survey
+killed the entire ISRU chain for the process lifetime.**
+**OBSERVED LIVE, and this is the strongest evidence in this entry.** On a running
+Jazzy stack a duplicate `TaskResult` flipped `survey_aa78d4f9` from COMPLETED to
+FAILED; the queue read `1 FAILED / 1 IN_PROGRESS / 9 PENDING`; `select_site_907c0627`
+listed that survey first in its `depends_on`; and the dashboard went on reading
+**"Objective 100 kg — awaiting first extraction"** — which had just become true
+forever. The only operator signal was ONE WARNING alert between a wheel-slip notice
+and a dead-reckoning drift notice.
+
+**D-45.3 — a single robot dropout could permanently orphan a task**, in three
+independent ways, all reproduced: (a) `recover_tasks_for_robot` covered only
+`(ASSIGNED, IN_PROGRESS)`, so a task in `AUCTIONING` or `INTERRUPTED` when its robot
+timed out was never recovered; (b) `check_heartbeats` skips robots already OFFLINE,
+so recovery ran **exactly once per robot** and whatever it missed was missed
+permanently; (c) `resolve_auction_winner(task, bids, max_rounds)` took **no liveness
+input at all** and could elect a robot the fleet monitor had already declared dead.
+
+**D-45.4 — `_on_task_result` had no re-entry guard.** It set
+`task.terminal_reported = True` unconditionally and then dispatched, so a second
+`TaskResult` flipped a task's terminal state. **The guard already existed 45 lines
+above**, where the completion-inference branch checks `not task.terminal_reported`.
+The protection was written; the authoritative path skipped it.
+**DEMONSTRATED LIVE, A/B on identical stimulus with the code as the only difference:**
+before, the duplicate produced `1 FAILED` and a spurious operator alert; after, the
+queue holds `1 COMPLETED`, **zero** FAILED alerts, and the log carries
+`duplicate TaskResult … CONTRADICTS the recorded outcome … ignored`.
+
+**Also closed here: Verification limit 29** — a lone bid withdrawal at the `−1.0`
+sentinel still WON its auction, because the only guard was `if not bid_list`.
+Reproduced (`winner='scout_09'` from a single −1.0 bid) and fixed. `task_auction.py`'s
+`select_winner` carried a second dormant copy of the same bug.
+
+### THE DESIGN DECISION, TAKEN BY THE USER — AND IT IS THE SECOND ONE IN THIS REGISTER
+
+Bounded retry made D-45.2's stop **loud and bounded** but did not make the mission
+**survive** a lost survey: after three attempts the deadlock returned, measured live.
+Closing it needed a decision about what a dependency MEANS, and — like D-44 — that
+decision was put to the user rather than taken quietly.
+
+**The insight the options rested on: the queue enforced ONE dependency semantic while
+the mission has TWO kinds of edge.**
+
+* **SOFT / evidential** — `survey → select_site`. `_pick_best_site` scores the
+  **fused ResourceMap posterior** (`mean/(1+variance)`) and **never reads the survey
+  task list**; it already falls back to the zone centre on zero readings. Losing one
+  survey of ten degrades *confidence*, it does not invalidate the decision.
+* **HARD / causal** — `select_site → excavate → haul → excavate → …`. You cannot haul
+  what was not excavated, and relaxing this would feed the ISRU mass ledger a delivery
+  with no extraction behind it — corrupting the one subsystem whose entire value is
+  having exactly one source of truth.
+
+**D-45.2 was mission-fatal precisely because a SOFT edge was enforced as a HARD one.**
+
+**THE DECISION: Option 1 — a dependency QUORUM on soft edges, k = 1.** A task with a
+quorum becomes ready when **(a)** every dependency is RESOLVED — COMPLETED, or FAILED
+with its retry attempts exhausted — and **(b)** at least k are COMPLETED. Clause (a)
+is load-bearing: without it `select_site` would fire the instant the first k surveys
+landed and abandon the other nine mid-flight. **The default is unchanged**, so every
+hard edge and every pre-existing task keeps exactly today's semantics.
+
+**k = 1 AND NOT 0, deliberately.** `_pick_best_site` tolerates zero readings, so k = 0
+would let the mission choose an extraction site having surveyed **nothing** and call
+it success. That is the shape of **D-29**, where a gate check passed vacuously on a map
+with `total_observations = 0`, and this register treats vacuous success as a defect.
+
+**THE DEGRADATION IS ON THE WIRE, not inferred.** A site chosen on partial evidence
+takes `status_reason='site_selected_partial'` and raises a WARNING `FleetAlert` naming
+the counts: *"chosen on PARTIAL EVIDENCE: only 9 of 10 survey task(s) COMPLETED … the
+site is the best cell of a SMALLER surveyed area than was planned."* Exactly one alert
+per mission, latched by the pre-existing `_registered_sites` guard.
+
+**A defect the fix exposed, and it is the reason the fix works at all:**
+`htn_planner.check_and_advance` carried **its own copy** of "every dependency must be
+COMPLETED". A quorum applied only to `_ready_tasks` would have changed **nothing an
+operator could see**, because `select_site` is a virtual task the auction never
+announces and only the planner resolves. The rule is now one expression,
+`TaskQueue.dependencies_met`, with both callers reading it.
+
+### EVIDENCE, AND ITS LIMITS
+
+Test lane **1394 → 1550 passed, 1 skipped** (+156); flake8 exit 0; **zero test
+functions removed** across the whole diff (one docstring expanded). No `.msg` field
+added, removed or reordered — documentation comments only, so **no `rosidl`
+regeneration is required**. No new ROS parameter; `test_no_orphan_parameters.py`'s
+allow-list is still the single name `fleet_state_publish_rate`.
+**The Phase 5 exit gate PASSES 11/0/0 on the final code**, re-run after the quorum
+change because it touches `_ready_tasks` on the 0.5 s hot path.
+
+**An earlier gate run in this session returned 9 passed / 2 failed and it was NOT a
+regression** — checks 4 and 11 failed with **all four robots at 0.12 Hz** and 0.22 m
+of motion in **1268.8 s**, a whole-fleet rate collapse measured while a browser held a
+live 2 Hz rosbridge subscription on the same box. Re-run clean: 2.00–2.06 Hz and
+1.08 m in 3.8 s. **Recorded because the failing run looked exactly like a real
+regression and was not**, which is D-41's lesson in a new place.
+
+**WHAT IS NOT DEMONSTRATED, and it is most of this entry.** D-45.4 and D-45.2's retry
+half were observed on a live stack. **D-45.1, D-45.3, VL-29 and the QUORUM ITSELF have
+never run on a live fleet** — they are implemented, unit-tested, and verified by
+independent repro against the real classes on a Windows host with no ROS 2. The gate
+exercises none of them: no gate row fails a task, kills a robot, withdraws a bid, or
+reaches a sixth cycle.
+
+**RESIDUE, stated rather than left to be discovered.** A task whose HARD dependency
+exhausts still deadlocks — correctly, since a haul without an excavate is not
+recoverable — and the mission announces it rather than terminating: there is still
+**no acted-upon mission-termination condition** and `MissionProgress` has no status
+field to carry one (adding one needs a `rosidl` regen across six packages). That is
+Phase 6 work, it is Option 4 of the five the user was offered, and it was not taken
+here. Separately, an AST scan during this work found **76 production functions with
+zero production callers**, and **nothing in the suite catches a dead method** — the
+repository's most-repeated failure mode remains unguarded at that shape.
+
+---
+
 ## FR-MAP-3 - adaptive survey never ran - CLOSED 2026-07-30
 
 Not a Phase 5 deviation: FR-MAP-3 is P0 **Phase 4** scope

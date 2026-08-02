@@ -54,6 +54,53 @@ class TestFleetMonitor:
         fm.mark_offline('scout_01')
         assert fm.check_heartbeats(current_time=200.0) == []
 
+    def test_check_heartbeats_reports_a_dead_robot_exactly_once(self):
+        """D3(b), stated as the premise it is rather than as a defect.
+
+        THE SKIP IS CORRECT AND STAYS. Reporting an already-dead robot every
+        second would re-fire the timeout alert at 1 Hz for the rest of the
+        mission. What it means, though, is that the recovery call site inside
+        the orchestrator's ``timed_out`` loop runs EXACTLY ONCE per robot: any
+        task assigned to that robot afterwards -- and one can be, because
+        ``_resolve_auction`` takes no liveness input and the timers share a
+        ReentrantCallbackGroup on a 4-thread executor -- is missed permanently.
+
+        So the fix cannot live in here. It is a SECOND, SILENT sweep beside this
+        one, and this test pins the fact that makes such a sweep necessary.
+        """
+        fm = self._make_monitor(timeout=5.0)
+        fm.update_robot('scout_01', 'scout', 'NAVIGATING', 0, 0, 0,
+                        0.9, 'task_1', timestamp=100.0)
+        assert fm.check_heartbeats(current_time=111.0) == ['scout_01']
+        fm.mark_offline('scout_01')
+        # Every later sweep, forever, reports nothing.
+        assert fm.check_heartbeats(current_time=112.0) == []
+        assert fm.check_heartbeats(current_time=999.0) == []
+
+    def test_get_all_robots_still_lists_an_offline_robot(self):
+        """The data source the second sweep has to use.
+
+        ``check_heartbeats`` can never name this robot again, so the only way to
+        find a task still held by it is to walk the roster and test
+        ``fsm_state``. ``get_all_robots`` already has a production caller, which
+        is why no new FleetMonitor symbol is introduced for D3(b): adding a
+        ``get_offline_robots`` helper would be an eighth "wired but never
+        called" until somebody wired it.
+        """
+        fm = self._make_monitor(timeout=5.0)
+        fm.update_robot('scout_01', 'scout', 'IDLE', 0, 0, 0, 0.9, '', timestamp=100.0)
+        fm.update_robot('scout_02', 'scout', 'IDLE', 0, 0, 0, 0.9, '', timestamp=100.0)
+        fm.mark_offline('scout_01')
+
+        roster = fm.get_all_robots()
+        assert set(roster) == {'scout_01', 'scout_02'}
+        offline = [rid for rid, s in roster.items() if s['fsm_state'] == 'OFFLINE']
+        assert offline == ['scout_01']
+        # The same predicate ``_robot_is_live`` will use, on the same field
+        # ``get_robots_with_capability`` and ``get_online_count`` already use.
+        assert fm.get_robot('scout_01')['fsm_state'] == 'OFFLINE'
+        assert fm.get_robot('scout_02')['fsm_state'] != 'OFFLINE'
+
     def test_get_idle_robots(self):
         fm = self._make_monitor()
         fm.update_robot('s1', 'scout', 'IDLE', 0, 0, 0, 0.9, '', timestamp=0)

@@ -86,6 +86,9 @@ from selene_orchestrator.task_feed import (
     OUTCOME_PREFERENCE_DROPPED,
     OUTCOME_REQUEUE,
     REQUEUE_STATUS_BY_REASON,
+    TASK_ATTEMPTS_EXHAUSTED,
+    TASK_MAX_ATTEMPTS,
+    TASK_RETRY_REQUEUED,
     TaskEventLog,
     auction_backoff_sec,
     auction_failure_reason,
@@ -1338,6 +1341,14 @@ class OrchestratorNode(Node):
         #: D-20's logging half: 261 rounds produced 261 identical INFO lines
         #: because nothing remembered what the last one said.
         self._auction_failure_logged: dict[str, str] = {}
+        # ---- D2: the bounded skill retry ----
+        #: task_ids already announced as having spent every attempt, so the
+        #: mission-fatal alert is raised ONCE per task rather than at 2 Hz for
+        #: the rest of the run. The same latch, for the same reason, as
+        #: ``_auction_failure_logged`` above and ``_stalled_robots`` below; an
+        #: exhausted task rests in FAILED forever, so without it this is the
+        #: D-20 flood arriving from a third direction.
+        self._attempts_exhausted_alerted: set[str] = set()
         #: ``FleetMonitor.idle_arrivals`` as of the last auction tick. A change
         #: means a robot arrived in IDLE, which is the only new information
         #: that can make an abandoned task biddable.
@@ -1653,6 +1664,48 @@ class OrchestratorNode(Node):
                 f'TaskResult for unknown task {msg.task_id} from '
                 f'{msg.robot_id}; ignored')
             return
+        # FIRST TERMINAL REPORT WINS. This is the guard 45 lines above in
+        # ``_on_robot_state`` -- ``not task.terminal_reported`` -- finally
+        # applied by the AUTHORITATIVE path to itself. The fallback defended
+        # itself against a task this path had already terminated; this path
+        # never defended itself against itself. Without it a second TaskResult
+        # rewrote the terminal state, and a COMPLETED task was observed flipping
+        # to FAILED on a live stack, which deadlocks every task that depends on
+        # it -- ``_ready_tasks`` satisfies a dependency only with COMPLETED.
+        #
+        # KEYED ON terminal_reported, NEVER ON task.status, and that is the
+        # load-bearing choice. The positional fallback above calls
+        # ``mark_complete()`` WITHOUT setting this flag, on purpose: the two
+        # messages race on different topics with no ordering guarantee, and the
+        # authoritative TaskResult is meant to be able to correct an INFERRED
+        # completion to FAILED. Guarding on status would block that correction
+        # and record a failed excavate as COMPLETED -- D-03's headline defect,
+        # reintroduced through a side door.
+        #
+        # TRANSIENT_LOCAL REPLAY IS SERVED, NOT BROKEN. Both ledger topics are
+        # durable on both ends (_ledger_qos), so a re-matched subscription can be
+        # handed an agent's history again. Ignoring the repeat is exactly what
+        # MaterialEvent's event_id dedupe does for the other ledger topic;
+        # TaskResult carries no id, so task_id plus this flag is the only key
+        # there is.
+        #
+        # LOGGED, NOT ALERTED. A duplicate that AGREES with the recorded outcome
+        # is transport, not a fleet fault, and a replayed history would flood the
+        # bounded operator ring; a duplicate that CONTRADICTS it is two
+        # publishers disagreeing about one task -- the second-stack hazard -- and
+        # that is worth a warning in the log.
+        if task.terminal_reported:
+            if bool(msg.success) != (task.status == TaskStatus.COMPLETED):
+                self.get_logger().warn(
+                    f'duplicate TaskResult for {msg.task_id} from '
+                    f'{msg.robot_id} CONTRADICTS the recorded outcome: task '
+                    f'is {task.status.name}, second report success='
+                    f'{bool(msg.success)}; ignored')
+            else:
+                self.get_logger().debug(
+                    f'duplicate TaskResult for {msg.task_id} from '
+                    f'{msg.robot_id}; already terminated, ignored')
+            return
         task.terminal_reported = True
         if msg.success:
             self._task_queue.mark_complete(msg.task_id, 'skill_complete')
@@ -1868,6 +1921,9 @@ class OrchestratorNode(Node):
             self.get_logger().warn(
                 f'Robot {rid} timed out, recovered tasks: {recovered}'
             )
+        # D3(b). The loop above runs exactly ONCE per robot; this is the sweep
+        # that makes the recovery repeatable.
+        self._recover_offline_robot_tasks()
         # D-22. Shares this 1 Hz timer deliberately: the two checks answer the
         # same question -- "is the fleet still alive" -- from opposite sides.
         # The heartbeat sees a process stop; this sees the WORLD stop while
@@ -1877,6 +1933,53 @@ class OrchestratorNode(Node):
         # refused is evidence about the position source, and it used to be
         # discarded silently.
         self._report_distance_rejections()
+
+    def _recover_offline_robot_tasks(self) -> None:
+        """Re-queue any task still held by an already-OFFLINE robot — D3(b).
+
+        THE HEARTBEAT LOOP ABOVE RUNS ONCE PER ROBOT, EVER. ``check_heartbeats``
+        skips a robot it has already declared OFFLINE, so ``mark_offline`` ->
+        ``recover_tasks_for_robot`` fires exactly once and whatever that pass
+        missed is missed permanently.
+
+        IT CAN MISS, and the two ways are separate. A bid does not refresh a
+        heartbeat -- only ``FleetMonitor.update_robot`` does -- so a robot whose
+        state stream is lost while its bid traffic survives can be elected AFTER
+        its one and only sweep. ``_resolve_auction``'s ``_robot_is_live`` filter
+        closes the common case, but it is not atomic with the
+        ``assign_to_robot`` that follows it: every timer here shares a
+        ``ReentrantCallbackGroup`` under a 4-thread ``MultiThreadedExecutor``, so
+        ``_heartbeat_check`` (1 Hz) and ``_auction_tick`` (2 Hz) genuinely
+        interleave. This sweep is the backstop, not the alternative.
+
+        SILENT AND FREE WHEN THERE IS NOTHING TO DO. ``recover_tasks_for_robot``
+        clears ``assigned_robot``, so a second pass over the same robot returns
+        ``[]`` -- no alert, no log line, no event. That is what keeps a 1 Hz
+        sweep from becoming D-20's 261-line flood, and it is the same discipline
+        ``_report_distance_rejections`` follows on this very timer.
+
+        RESIDUAL, STATED RATHER THAN PAPERED OVER: a task held by a robot the
+        fleet monitor has NEVER seen is invisible here, because
+        ``get_all_robots`` cannot list it. Reaching that state needs a bid from a
+        robot that has never published RobotState, which ``agent_node`` does not
+        do -- it publishes at 2 Hz from startup and bids only from IDLE -- so
+        this is recorded as an open item rather than defended against with code
+        no test can reach.
+        """
+        for rid, state in self._fleet.get_all_robots().items():
+            if state['fsm_state'] != 'OFFLINE':
+                continue
+            stranded = self._task_queue.recover_tasks_for_robot(
+                rid, reason='robot_offline')
+            if not stranded:
+                continue
+            self._publish_alert(
+                'ERROR', rid,
+                f'{len(stranded)} task(s) were still held by {rid}, which is '
+                f'OFFLINE, after its heartbeat recovery had already run. '
+                f'Re-queued: {stranded}')
+            self.get_logger().warn(
+                f'Robot {rid} is OFFLINE and still held {stranded}; re-queued')
 
     def _check_motion_stalls(self) -> None:
         """Report robots that are expected to be moving and are not — D-30.
@@ -2129,6 +2232,18 @@ class OrchestratorNode(Node):
         # thread of the MultiThreadedExecutor while a timer walks it.
         self._wake_on_fleet_change()
 
+        # D2: and give a task a SKILL reported FAILED its next attempt, if it
+        # has one left. Here rather than on any other timer for three reasons,
+        # and the first is the same one the wake above is here for: this is the
+        # timer callback group, so the task queue is not mutated from a DDS
+        # callback thread. The second is that a retried task is PENDING before
+        # the same tick's ``get_next_ready`` runs, so it re-enters the ordinary
+        # auction with no extra latency and no second dispatch path. The third
+        # is that this must run BEFORE the early returns below -- a fleet whose
+        # only remaining work is a failed task has an idle robot and no ready
+        # task, which is exactly the state ``_auction_tick`` returns from.
+        self._retry_failed_tasks()
+
         # If an auction is active, check for timeout
         if self._auction.is_active():
             if self._auction.is_timed_out(now):
@@ -2177,8 +2292,16 @@ class OrchestratorNode(Node):
         # the emergency's own D-20 backoff and confirmed it is servable and not
         # ledger-blocked. Re-querying keeps one expression of "what runs next"
         # instead of two that can drift.
+        #
+        # `max_attempts` is D2's soft-quorum bound and it is a NO-OP for every
+        # task in this queue but select_site: with no quorum set,
+        # ``dependencies_met`` still demands every dependency COMPLETED and
+        # never looks at the bound. It is passed so the queue's readiness rule
+        # and the planner's ask the same question with the same bound rather
+        # than two that drift -- which is exactly how D2 happened.
         next_task = self._task_queue.get_next_ready(
-            now, servable=self._servable_by_idle_fleet)
+            now, servable=self._servable_by_idle_fleet,
+            max_attempts=TASK_MAX_ATTEMPTS)
         if next_task is None:
             return
 
@@ -2243,6 +2366,26 @@ class OrchestratorNode(Node):
         return bool(self._fleet.get_idle_robots_with_capabilities(
             getattr(task, 'required_capabilities', ()) or ()))
 
+    def _robot_is_live(self, robot_id: str) -> bool:
+        """Has the fleet monitor NOT declared this robot dead? — D3(c).
+
+        The predicate ``_resolve_auction`` hands to
+        ``task_feed.resolve_auction_winner``, in the same shape and for the same
+        stated reason as ``_servable_by_idle_fleet`` above: the fleet question is
+        answered here, the decision stays in the ROS-free module where the gate
+        lane can drive it.
+
+        UNKNOWN IS NOT DEAD, and that asymmetry is deliberate. The defect is
+        electing a robot the monitor has ALREADY declared OFFLINE; a robot it has
+        never heard of is one whose first RobotState has not arrived, and
+        refusing its bid would burn an auction round on a fleet that is merely
+        still starting up. ``fsm_state != 'OFFLINE'`` is not an invented test:
+        it is the same one ``get_robots_with_capability`` and
+        ``get_online_count`` already use.
+        """
+        robot = self._fleet.get_robot(robot_id)
+        return robot is None or robot.get('fsm_state') != 'OFFLINE'
+
     def _preempt_for_emergency(self, now: float) -> bool:
         """Abort the in-flight auction for an operator EMERGENCY. True if aborted.
 
@@ -2304,7 +2447,8 @@ class OrchestratorNode(Node):
         # Reaching through the backoff is bounded to once per injection by
         # `preemption_spent`, which should_preempt reads.
         candidate = self._task_queue.get_preemption_candidate(
-            now, servable=self._servable_by_idle_fleet)
+            now, servable=self._servable_by_idle_fleet,
+            max_attempts=TASK_MAX_ATTEMPTS)
         if not should_preempt(running, candidate):
             return False
 
@@ -2393,9 +2537,20 @@ class OrchestratorNode(Node):
         task_id = self._auction.get_task_id()
         task = self._task_queue.get_task(task_id)
         bids = self._auction.get_bids()
-        bid_count = len(bids)
+        offline_bidders = [b.robot_id for b in bids
+                           if not self._robot_is_live(b.robot_id)]
+        # The LIVE count. Without the subtraction ``_log_auction_failure`` prints
+        # "auction_no_bids (2 bid(s))", which contradicts itself.
+        bid_count = len(bids) - len(offline_bidders)
         winner, outcome, reason = resolve_auction_winner(
-            task, bids, self._preferred_robot_max_rounds)
+            task, bids, self._preferred_robot_max_rounds,
+            is_live=self._robot_is_live)
+        if offline_bidders:
+            self.get_logger().warn(
+                f'Auction {task_id}: discarded {len(offline_bidders)} bid(s) '
+                f'from robot(s) the fleet monitor has declared OFFLINE '
+                f'({offline_bidders}). Electing one would assign the task to a '
+                f'robot whose heartbeat can never fire again.')
 
         # D-06, and this is the authoritative gate: re-check the ledger at the
         # moment of assignment, not just when the auction opened. The material
@@ -2577,6 +2732,146 @@ class OrchestratorNode(Node):
         self.get_logger().info(
             f'A robot became IDLE; {len(woken)} backed-off task(s) are '
             f'auctionable again: {sorted(woken)}')
+
+    # ------------------------------------------------------------------ #
+    #  D2: the bounded skill retry                                        #
+    # ------------------------------------------------------------------ #
+
+    def _retry_failed_tasks(self) -> None:
+        """Give a task a skill reported FAILED its next attempt — D2.
+
+        THE SIBLING OF ``_wake_on_fleet_change`` and it runs beside it, because
+        the two answer the same question about two different dead ends: a task
+        the fleet never bid on, and a task the fleet ran and failed. Before
+        this, only the first had an answer. A FAILED task was terminal in
+        practice and nothing in ``TaskQueue`` moved one out of FAILED, so --
+        measured live -- one failed survey took ``select_site`` with it and
+        every excavate and haul behind that, permanently and silently.
+
+        UNGATED, unlike the wake, and that is what ``TaskEntry.failed_attempts``
+        buys. ``wake_deferred_auctions`` has to be driven by a fleet change or
+        it re-announces forever; this cannot, because ``failed_attempts`` is
+        never reset by anything, so a task is retried at most
+        ``TASK_MAX_ATTEMPTS - 1`` times in its entire life however often this
+        sweep runs. At 2 Hz over a whole mission that is still two re-queues.
+
+        SILENT AND FREE WHEN THERE IS NOTHING TO DO -- ``retry_failed_tasks``
+        returns ``[]`` and the exhaustion report is latched -- which is the same
+        discipline ``_recover_offline_robot_tasks`` follows on the 1 Hz timer
+        and the reason a sweep this frequent is not D-20's 261-line flood.
+
+        The per-task WARNING is bounded by the same arithmetic: two lines per
+        task, ever.
+        """
+        retried = self._task_queue.retry_failed_tasks(
+            TASK_MAX_ATTEMPTS, TASK_RETRY_REQUEUED)
+        for task_id in retried:
+            task = self._task_queue.get_task(task_id)
+            attempts = getattr(task, 'failed_attempts', 0) if task else 0
+            self.get_logger().warn(
+                f'Task {task_id} has failed {attempts} of '
+                f'{TASK_MAX_ATTEMPTS} attempt(s); re-queued as PENDING with '
+                f'status_reason={TASK_RETRY_REQUEUED!r}. It re-enters the '
+                f'ordinary auction -- no robot is reserved for it and its '
+                f'previous assignment is cleared.')
+        self._report_attempts_exhausted()
+
+    def _report_attempts_exhausted(self) -> None:
+        """Say ONCE, and loudly, that a task will not be attempted again — D2.
+
+        THE OTHER HALF OF THE FIX, and it is not cosmetic. A bounded retry on
+        its own converts a silent deadlock into a slower silent deadlock: after
+        the last attempt the task rests in FAILED forever, and while an ORDINARY
+        dependency was satisfied only by COMPLETED the mission then stopped with
+        nothing said. That is precisely what was observed -- the dashboard read
+        "awaiting first extraction" for the rest of the run. The soft dependency
+        quorum added later lets select_site survive exactly this, on partial
+        evidence and loudly (``_htn_advance``); it does not make an exhausted
+        task any less exhausted, so this alert is unchanged in purpose. This is the
+        ``auction_abandoned`` alert's counterpart: the orchestrator has stopped
+        trying, so an operator has to know.
+
+        THE BLAST RADIUS IS THE POINT, and it is why
+        ``TaskQueue.get_transitive_dependents`` exists rather than
+        ``get_dependent_tasks``. A dead survey directly blocks one task
+        (select_site) and really blocks every excavate and haul behind it; an
+        alert naming "1 blocked task" would understate a mission-fatal event by
+        the whole chain.
+
+        THE COUNT IS STRUCTURAL AND IT IS A FLOOR, NOT THE COST. It counts rows
+        that EXIST in the queue now. In the shipped decomposition the excavate
+        and haul cycles are generated only after ``select_site`` COMPLETES, so
+        at the moment a survey exhausts its attempts most of what it has killed
+        has not been created yet and cannot be counted here. Understating is
+        the failure mode this alert exists to prevent, so it is said in the
+        message rather than left for a reader to discover.
+
+        Latched on ``_attempts_exhausted_alerted`` rather than on the status,
+        because an exhausted task NEVER leaves FAILED on its own: an unlatched
+        sweep would re-alert at 2 Hz for the rest of the mission.
+        """
+        for task in self._task_queue.get_all_tasks():
+            if task.status != TaskStatus.FAILED:
+                continue
+            # THE SAME predicate ``retry_failed_tasks`` skips a task on and
+            # ``TaskQueue._dependency_resolved`` calls a dependency finished on
+            # -- one expression now, not three spellings of one bound. It is
+            # false for failed_attempts == 0, which is what keeps
+            # inject_task_logic._reject's FAILED row -- written through
+            # set_status, never counted -- out of this alert.
+            if not TaskQueue.attempts_exhausted(task, TASK_MAX_ATTEMPTS):
+                continue
+            if task.task_id in self._attempts_exhausted_alerted:
+                continue
+            self._attempts_exhausted_alerted.add(task.task_id)
+            blocked = sorted(
+                t.task_id
+                for t in self._task_queue.get_transitive_dependents(
+                    task.task_id))
+            last_reason = task.status_reason
+            # Through set_status, which finds the task ALREADY FAILED and
+            # therefore updates the reason and returns at its
+            # ``previous == status`` guard -- no listener, no second TaskEvent,
+            # no new status_changed. The same mechanism, for the same reason,
+            # as wake_deferred_auctions' direct write.
+            self._task_queue.set_status(
+                task.task_id, TaskStatus.FAILED, TASK_ATTEMPTS_EXHAUSTED)
+            if blocked:
+                # THE "can NEVER become ready" CLAUSE THAT STOOD HERE IS NO
+                # LONGER TRUE OF EVERY DEPENDENT, and leaving it would make the
+                # loudest message this node emits assert a deadlock the same
+                # change removes. A dependent carrying a SOFT dependency quorum
+                # (TaskEntry.depends_on_quorum -- select_site does) becomes
+                # ready once every dependency is RESOLVED, and a task that has
+                # spent every attempt IS resolved. So the set below is the blast
+                # radius of the edge; whether each member is genuinely dead is
+                # TaskQueue.dependencies_met's answer, and this says so.
+                impact = (
+                    f'{len(blocked)} task(s) already in the queue depend on '
+                    f'it, directly or transitively: {blocked}. An ORDINARY '
+                    f'dependency is satisfied only by COMPLETED, so those can '
+                    f'never become ready while it stays FAILED. The exception '
+                    f'is a dependent carrying a SOFT dependency quorum '
+                    f'(select_site carries one): every dependency of it is now '
+                    f'RESOLVED, so it may still run on PARTIAL EVIDENCE, and a '
+                    f'separate WARNING will say so if it does. That count is a '
+                    f'FLOOR: work the HTN planner has not decomposed yet is '
+                    f'not in it.')
+            else:
+                impact = 'No task currently in the queue depends on it.'
+            self.get_logger().error(
+                f'Task {task.task_id} ({task.task_type}) has FAILED '
+                f'{task.failed_attempts} time(s); GIVING UP. It stays FAILED '
+                f'with status_reason={TASK_ATTEMPTS_EXHAUSTED!r} and will not '
+                f'be retried again. Last failure: {last_reason!r}. '
+                f'Blocked: {blocked}')
+            self._publish_alert(
+                'CRITICAL' if blocked else 'WARNING', task.assigned_robot,
+                f'task {task.task_id} ({task.task_type}) has FAILED '
+                f'{task.failed_attempts} time(s) and the orchestrator has '
+                f'STOPPED retrying it (last failure: {last_reason}). '
+                f'{impact} Nothing in the orchestrator will clear this by '
+                f'itself: re-inject the work, or cancel what depends on it.')
 
     def _publish_mission_progress(self) -> None:
         """Publish aggregated mission progress metrics — FR-DASH-7.
@@ -2795,7 +3090,13 @@ class OrchestratorNode(Node):
         (htn_planner._generate_cycles), and ``get_next_ready`` will not auction
         a task whose dependencies are not COMPLETED — select_site is marked
         COMPLETED in the same call that allocates the site id. So no
-        MaterialEvent can arrive for a site the ledger has not heard of.
+        MaterialEvent can arrive for a site the ledger has not heard of. That
+        argument survives D2's soft quorum untouched, because the quorum is on
+        select_site's OWN dependencies and every excavate's dependency on
+        select_site is a HARD edge with no quorum at all.
+
+        It is also where the operator is told, once, that the site was chosen on
+        PARTIAL survey evidence -- see the WARNING at the end.
         """
         self._htn_planner.check_and_advance()
 
@@ -2818,6 +3119,49 @@ class OrchestratorNode(Node):
             'ISRU ledger: registered site %s at (%.1f, %.1f), mission plan '
             '%.1f kg' % (site_id, position[0], position[1],
                          float(status.get('target_kg', 0.0))))
+
+        # D2, the soft-quorum half: the site was chosen on PARTIAL evidence.
+        # SAY SO, ONCE, and to the operator rather than only to the log.
+        #
+        # HERE rather than in the planner because ``HTNPlanner`` is pure Python
+        # with no publisher and no clock by construction -- the same split as
+        # ``task_feed`` and ``resource_map_viz``. AFTER the registration because
+        # this block is already latched exactly once per site by the
+        # ``site_id in self._registered_sites`` early return above, so no second
+        # latch flag is needed and a 1 Hz re-alert is impossible.
+        #
+        # WARNING and not CRITICAL, and the line is drawn where D2 already drew
+        # it: CRITICAL in this node means "the orchestrator has STOPPED and
+        # nothing will clear it". This says the opposite -- it PROCEEDED,
+        # degraded. The dead surveys that caused it have each already raised
+        # their own CRITICAL from ``_report_attempts_exhausted``, so an operator
+        # sees the cause at CRITICAL and the consequence at WARNING, in that
+        # order.
+        #
+        # ``0 < surveyed`` is documenting rather than reachable: with a quorum
+        # of 1 a select_site with zero COMPLETED surveys can never resolve, so
+        # this can never fire claiming "0 of 10". ``surveyed == planned`` is the
+        # ordinary case and says nothing at all.
+        surveyed, planned = self._htn_planner.get_site_evidence()
+        if 0 < surveyed < planned:
+            missing = planned - surveyed
+            self.get_logger().warn(
+                'HTN: extraction site %s was chosen on PARTIAL EVIDENCE -- %d '
+                'of %d survey waypoints COMPLETED. The other %d exhausted all '
+                '%d attempt(s) and stay FAILED, so the fused posterior this '
+                'site was picked from is missing their cells.'
+                % (site_id, surveyed, planned, missing, TASK_MAX_ATTEMPTS))
+            self._publish_alert(
+                'WARNING', '',
+                f'extraction site {site_id} at ({position[0]:.1f}, '
+                f'{position[1]:.1f}) was chosen on PARTIAL EVIDENCE: only '
+                f'{surveyed} of {planned} survey task(s) COMPLETED. The other '
+                f'{missing} exhausted all {TASK_MAX_ATTEMPTS} attempt(s) and '
+                f'stay FAILED. The mission is PROCEEDING rather than '
+                f'deadlocking, which is the change; the site is the best cell '
+                f'of a SMALLER surveyed area than was planned, it will not be '
+                f're-selected, and every excavate and haul in this mission '
+                f'targets it.')
 
     # ------------------------------------------------------------------ #
     #  Operator service handlers (FR-DASH-5 / FR-DASH-6)                   #

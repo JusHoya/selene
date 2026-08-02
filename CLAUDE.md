@@ -697,16 +697,30 @@ Caveats a reader should know:
   sentence is false: `colcon build` ran, the injection was live, `auction_preempted` was seen on
   the wire, and there were a ninth AND a tenth gate run. Corrected, and dated so the next reader
   can tell how old it is:
-  **True at 2026-08-02 —**
+  **True at 2026-08-02 (late) —**
   **Still unknown: D-37's cause**, and the campaign that cleared both hazard models ran a
   configuration that is *not the one that crashed* (no agents, no orchestrator, no skills).
-  **The exit gate PASSES** — 11/0/0, exit 0, runs 9 and 10 — and **neither run measured a
-  preemption**, check 10 ran on a map the gate SEEDED, and PRD row 7 is NOT COVERED.
+  **The exit gate PASSES** — 11/0/0, exit 0, and it has now been re-run TWICE MORE on the
+  post-D-45 code, both green — and **no gate run has ever measured a preemption**, check 10 runs
+  on a map the gate SEEDED, and PRD row 7 is NOT COVERED.
   **SELENE CI is 9/9 green at HEAD**, including the Humble `colcon` lane.
   **Phase 6 has NOT started**, nine of its ten exit-gate rows are unstarted or partial, and the
-  one that is green (CI) went green by side effect. **Assessing that on 2026-08-02 found four
-  structural defects that are not in the register** — an unreachable HTN cycle top-up branch,
-  a terminally FAILED task that deadlocks the mission silently, a task permanently orphaned by
-  a single robot dropout, and a missing re-entry guard in `_on_task_result` — **none of which is
-  fixed, and none of which a green suite or a green gate would have shown.** That is this
-  file's own lesson arriving at a fifth address.
+  one that is green (CI) went green by side effect.
+  ~~**Assessing that on 2026-08-02 found four structural defects that are not in the register**
+  … **none of which is fixed**~~ — **SUPERSEDED THE SAME DAY: they are D-45 and all four are
+  FIXED**, together with Verification limit 29. **D-45.4 and D-45.2's retry half were
+  DEMONSTRATED LIVE**; D-45.1, D-45.3, VL-29 and the dependency quorum are implemented,
+  independently verified and **NOT demonstrated** — no live fleet has exercised any of them, and
+  no gate row fails a task, kills a robot, withdraws a bid or reaches a sixth cycle.
+  **The finding that mattered was the framing, not any one bug**: the task queue enforced ONE
+  dependency semantic while the mission has TWO kinds of edge — `survey → select_site` is
+  EVIDENTIAL (`_pick_best_site` scores the fused posterior and never reads the task list), while
+  `select_site → excavate → haul` is CAUSAL. D-45.2 was mission-fatal precisely because a soft
+  edge was enforced as a hard one. The user chose a **dependency quorum, k = 1** — 1 and not 0,
+  because `_pick_best_site` tolerates zero readings and k = 0 would let the fleet pick a site
+  having surveyed nothing, which is D-29's vacuous success wearing a new hat.
+  **The residue is named in D-45 and is Phase 6 work**: a HARD dependency that exhausts still
+  deadlocks (correctly — a haul with no excavate behind it is not recoverable), there is still
+  **no acted-upon mission-termination condition**, and an AST scan found **76 production
+  functions with zero production callers** with **nothing in the suite that catches a dead
+  method** — this repository's most-repeated failure mode, still unguarded at that shape.

@@ -249,6 +249,13 @@ class _Orchestrator:
         self.tick_auction()
 
     def _resolve(self):
+        # A COPY OF ``_resolve_auction``, AND IT DOES NOT MODEL D3(c). This
+        # harness has no FleetMonitor, so it cannot answer the liveness
+        # question and passes no ``is_live``; production does, at
+        # orchestrator_node's ``_resolve_auction``. The divergence is recorded
+        # rather than papered over -- copying the rule into a copy is how the
+        # two drift. ``test_robot_dropout_recovery.py`` drives the shipped
+        # function for that claim.
         task_id = self.auction.get_task_id()
         task = self.task_queue.get_task(task_id)
         winner, outcome, reason = resolve_auction_winner(
@@ -270,7 +277,16 @@ class _Orchestrator:
 
     def report_result(self, task_id, robot_id, success=True,
                       failure_reason=''):
-        """What ``_on_task_result`` does: terminate on the agent's own word."""
+        """What ``_on_task_result`` does: terminate on the agent's own word.
+
+        A COPY, AND IT DOES NOT MODEL THE D4 RE-ENTRY GUARD. Production returns
+        early when ``terminal_reported`` is already set (orchestrator_node's
+        ``_on_task_result``); this sets it unconditionally. Nothing in this file
+        reports twice for one task, so the two agree on every sequence exercised
+        here -- but they are not the same code, and asserting on the guard here
+        would be asserting about the copy. ``test_task_result_reentry.py``
+        drives the shipped function.
+        """
         task = self.task_queue.get_task(task_id)
         task.terminal_reported = True
         if success:

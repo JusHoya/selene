@@ -26,6 +26,7 @@ import time
 from collections import deque
 from typing import Any, Iterable
 
+from selene_orchestrator.task_auction import live_bids
 from selene_orchestrator.task_queue import TaskStatus
 
 
@@ -160,8 +161,8 @@ OUTCOME_REQUEUE = 'requeue'
 OUTCOME_PREFERENCE_DROPPED = 'preference_dropped'
 
 
-def resolve_auction_winner(task, bids: Iterable[Any],
-                           max_rounds: int) -> tuple[Any, str, str]:
+def resolve_auction_winner(task, bids: Iterable[Any], max_rounds: int,
+                           is_live=None) -> tuple[Any, str, str]:
     """Pick the winner of one auction. Returns ``(winner|None, outcome, reason)``.
 
     FR-DASH-5(b) says an operator-injected task "enters the auction". What the
@@ -194,8 +195,43 @@ def resolve_auction_winner(task, bids: Iterable[Any],
     ``task.auction_rounds`` is expected to have been incremented already by
     ``TaskQueue.begin_auction`` when this auction started, so a *max_rounds* of
     3 means the preference survives auctions 1 and 2 and is dropped at 3.
+
+    A FIFTH CASE, and it is the one the four above silently assumed away: an
+    element of *bids* that is not an offer. Two kinds exist and both used to
+    win.
+
+    * VL-29, a WITHDRAWAL. ``agent_node._publish_bid_withdrawal`` retracts a bid
+      by publishing ``task_auction.WITHDRAWN_BID_SCORE`` (-1.0), and this
+      function guarded only on ``if not bid_list`` -- emptiness, not liveness --
+      so a withdrawal-only list was non-empty and elected the robot that
+      withdrew, at -1.0. ``live_bids`` drops every bid from a robot that
+      withdrew, before either election path sees it, so the preferred-robot scan
+      below cannot elect one either.
+    * D3(c), a bid from a robot the fleet monitor has DECLARED OFFLINE. A bid
+      does not refresh a heartbeat -- only ``FleetMonitor.update_robot`` does --
+      so a robot whose state stream is lost while its bid traffic survives is
+      declared OFFLINE and can still bid on the next announcement. Electing it
+      writes ASSIGNED plus ``assigned_robot`` onto a robot whose heartbeat can
+      never fire again, and ``check_heartbeats`` skips an already-OFFLINE robot,
+      so nothing in the system ever looks at that task again.
+
+    *is_live* is an optional ``robot_id -> bool`` predicate; ``None`` means "ask
+    nothing", which is exactly today's behaviour and is what keeps every
+    existing three-argument call site meaningful. It is trailing and defaulted
+    for the same reason and in the same shape as
+    ``TaskQueue.get_next_ready(servable=...)``: the fleet question is answered on
+    the node's side of the boundary, while the decision that can actually be
+    wrong stays in this ROS-free module where the gate lane can drive it.
+
+    An ALL-OFFLINE or all-withdrawn bid list therefore resolves as
+    ``auction_no_bids``, which is the correct landing place and needs no new
+    reason string: it feeds D-20's backoff in ``_resolve_auction``. The honest
+    detail -- who was discarded and why -- is logged there rather than encoded
+    in a status string the dashboard renders as free text.
     """
-    bid_list = list(bids)
+    bid_list = live_bids(bids)
+    if is_live is not None:
+        bid_list = [b for b in bid_list if is_live(b.robot_id)]
     preferred = (getattr(task, 'preferred_robot', '') or '') if task else ''
 
     if preferred:
@@ -286,6 +322,114 @@ AUCTION_ABANDONED = 'auction_abandoned'
 
 #: What a woken task's ``status_reason`` becomes.
 AUCTION_FLEET_CHANGED = 'fleet_changed'
+
+
+# --------------------------------------------------------------------------- #
+#  D2: the bounded retry of a task a SKILL reported FAILED (2026-08-02)        #
+# --------------------------------------------------------------------------- #
+#
+# OBSERVED LIVE on a running ROS 2 Jazzy stack. ``survey_aa78d4f9`` was flipped
+# to FAILED; ``select_site_907c0627`` depends_on all ten surveys; every excavate
+# and haul in the shipped mission is generated only AFTER select_site COMPLETES.
+# ``TaskQueue._ready_tasks`` satisfies a dependency ONLY with COMPLETED, so
+# ``select_site_907c0627`` could never become ready, the whole ISRU chain was
+# permanently dead, and the dashboard read "Objective 100 kg -- awaiting first
+# extraction" for the rest of the run. The only operator signal was a single
+# WARNING FleetAlert buried among wheel-slip and drift notices.
+#
+# THE FIX IS AUCTION ABANDONMENT'S SHAPE, one layer away, because that is the
+# same problem already solved well here: a task that attracts no bid for
+# ``auction_max_failed_rounds`` gets ``auction_backoff_until = math.inf``, and
+# that state is BOTH recoverable (``wake_deferred_auctions``, wired to
+# ``FleetMonitor.idle_arrivals``) AND observable (a WARNING FleetAlert that says
+# GIVING UP by name). Skill-reported FAILED had NEITHER half: nothing moved a
+# task out of FAILED and nothing said the mission had stopped. It now has both
+# -- ``TaskQueue.retry_failed_tasks`` called from ``_auction_tick``, and
+# ``orchestrator_node._report_attempts_exhausted``.
+#
+# THESE ARE MODULE CONSTANTS AND NOT ROS PARAMETERS, and that is a decision.
+# ``selene_orchestrator/test/test_no_orphan_parameters.py``'s allow-list is down
+# to the single name ``fleet_state_publish_rate`` and stays there; more to the
+# point, a retry bound is not a per-deployment tuning knob. It is a property of
+# the layered design -- ``PathFollower`` already replans up to
+# ``navigator.MAX_REPLAN_ATTEMPTS = 3`` before a skill fails at all, so the
+# failure this bound counts is one that has ALREADY survived a bounded retry one
+# layer down. An operator given a dial would be tuning the wrong layer.
+
+#: How many times one task may be ATTEMPTED before the orchestrator gives up on
+#: it. 3, which is the value ``TaskQueue.retry_failed_tasks`` was built and
+#: unit-tested against, and the same bound ``navigator.MAX_REPLAN_ATTEMPTS``
+#: applies to the replan one layer below.
+#:
+#: It bounds ATTEMPTS, not retries: 3 means the task runs, fails, runs, fails,
+#: runs, fails -- and is then done. Two re-queues, not three.
+TASK_MAX_ATTEMPTS = 3
+
+#: ``status_reason`` on a FAILED task the retry sweep has returned to PENDING.
+#:
+#: The task really is PENDING again and enters the ordinary auction with no
+#: special handling; the reason is the only thing that tells the dashboard this
+#: row is a SECOND attempt rather than work that has never been tried.
+TASK_RETRY_REQUEUED = 'skill_failed_requeued'
+
+#: ``status_reason`` on a FAILED task that has spent every attempt.
+#:
+#: IT REPLACES THE SKILL'S OWN FAILURE REASON, once, and that trade is
+#: deliberate. 'Path blocked, no alternate route' says why the last attempt
+#: failed but not that the orchestrator has stopped -- and "stopped" is the one
+#: thing an operator has to know, because nothing in this system will clear it.
+#: The skill's reason is not lost: it was published in the WARNING FleetAlert
+#: ``_on_task_result`` raises per failure, it is the ``detail`` of the FAILED
+#: TaskEvent in the ring the dashboard replays, and the exhaustion alert quotes
+#: it verbatim.
+TASK_ATTEMPTS_EXHAUSTED = 'attempts_exhausted'
+
+
+# --------------------------------------------------------------------------- #
+#  D2, the other half: the SOFT dependency edge (2026-08-02)                   #
+# --------------------------------------------------------------------------- #
+#
+# A BOUNDED RETRY MAKES THE STOP BOUNDED AND LOUD. IT DOES NOT MAKE THE MISSION
+# SURVIVE A LOST SURVEY. After the third attempt the survey rests in FAILED
+# forever, and until now every dependent needed it COMPLETED -- so the mission
+# was still permanently dead, just noisily. What changed is that the queue now
+# distinguishes the two kinds of edge the mission has always had:
+#
+#   HARD / CAUSAL      select_site -> excavate -> haul -> excavate ...
+#                      Unchanged, and it must stay unchanged: a haul admitted
+#                      without its excavate would put a mass in the ISRU ledger
+#                      that no extraction produced.
+#   SOFT / EVIDENTIAL  survey -> select_site. ``htn_planner._pick_best_site``
+#                      scores the FUSED posterior and never reads the survey
+#                      task list, so losing one of ten surveys degrades
+#                      confidence, not correctness.
+#
+# See ``TaskQueue.dependencies_met`` for the rule and
+# ``htn_planner.SELECT_SITE_SURVEY_QUORUM`` for why the quorum is 1 and not 0.
+
+#: ``status_reason`` on a select_site task resolved with EVERY survey COMPLETED.
+#:
+#: It was a bare literal in ``htn_planner`` and is promoted to a constant only
+#: so it cannot drift from its partial-evidence twin below: the two are read as
+#: a pair by anyone asking "was this site chosen on the whole zone or not".
+SITE_SELECTED = 'site_selected'
+
+#: ``status_reason`` on a select_site task resolved on a PARTIAL quorum.
+#:
+#: Every survey was RESOLVED and at least ``SELECT_SITE_SURVEY_QUORUM`` of them
+#: COMPLETED, but not all of them did -- the rest exhausted every attempt and
+#: stay FAILED. The mission PROCEEDED rather than deadlocking, and the site is
+#: the best cell of a smaller surveyed area than was planned.
+#:
+#: THIS IS THE DURABLE HALF OF THE OPERATOR DISCLOSURE. The WARNING FleetAlert
+#: raised beside it lives in a 32-entry ring; this sits on the task row for the
+#: rest of the mission, so an operator who joins an hour later still sees it.
+#:
+#: TWENTY-ONE CHARACTERS, DELIBERATELY: ``TaskQueue.jsx`` renders
+#: ``truncate(task.status_reason, 26)``, so a longer spelling would reach the
+#: operator's badge cut off mid-word. The full string survives in the row title
+#: either way.
+SITE_SELECTED_PARTIAL = 'site_selected_partial'
 
 
 # --------------------------------------------------------------------------- #

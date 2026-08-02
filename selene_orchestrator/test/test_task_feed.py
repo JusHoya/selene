@@ -222,6 +222,93 @@ class TestResolveAuctionWinner:
         assert outcome == OUTCOME_PREFERENCE_DROPPED
 
 
+# ------------------------------------------------------- D3(c): dead bidders
+
+class TestLivenessFilter:
+    """A bid from a robot the fleet monitor has DECLARED OFFLINE must not win.
+
+    A bid does not refresh a heartbeat -- only ``FleetMonitor.update_robot``
+    does -- so a robot whose state stream is lost while its bid traffic survives
+    is declared OFFLINE and can still bid. Electing it writes ASSIGNED plus
+    ``assigned_robot`` onto a robot ``check_heartbeats`` will never report again.
+
+    These drive the PURE function. ``test_robot_dropout_recovery.py`` proves the
+    predicate is actually wired into ``_resolve_auction``, which is the separate
+    claim this repository has been bitten seven times for conflating.
+    """
+
+    @staticmethod
+    def _live_except(*offline):
+        dead = set(offline)
+        return lambda rid: rid not in dead
+
+    def test_an_offline_high_bid_loses_to_a_live_low_one(self):
+        q = TaskQueue()
+        q.add_task('t1', 'haul', 0.0, 0.0)
+        bids = [_Bid('t1', 'scout_01', 0.9), _Bid('t1', 'scout_02', 0.1)]
+        winner, outcome, reason = resolve_auction_winner(
+            q.get_task('t1'), bids, 3, is_live=self._live_except('scout_01'))
+        assert winner.robot_id == 'scout_02'
+        assert outcome == OUTCOME_ASSIGN
+        assert reason == ''
+
+    def test_an_all_offline_bid_list_requeues_as_pending(self):
+        """No new reason string: it lands on auction_no_bids and backs off."""
+        q = TaskQueue()
+        q.add_task('t1', 'haul', 0.0, 0.0)
+        bids = [_Bid('t1', 'scout_01', 0.9), _Bid('t1', 'scout_02', 0.5)]
+        winner, outcome, reason = resolve_auction_winner(
+            q.get_task('t1'), bids, 3,
+            is_live=self._live_except('scout_01', 'scout_02'))
+        assert winner is None
+        assert outcome == OUTCOME_REQUEUE
+        assert reason == 'auction_no_bids'
+        assert REQUEUE_STATUS_BY_REASON[reason] is TaskStatus.PENDING
+
+    def test_an_offline_preferred_robot_does_not_win(self):
+        """The filter runs BEFORE the preferred-robot scan, which ignores score.
+
+        Left after it, the operator's preference would be exactly the path that
+        still elects a corpse -- and it is the path an operator uses when a
+        specific robot matters most.
+        """
+        q = TaskQueue()
+        q.add_task('t1', 'haul', 0.0, 0.0, preferred_robot='hauler_02')
+        q.begin_auction('t1')
+        bids = [_Bid('t1', 'hauler_02', 0.8)]
+        winner, outcome, reason = resolve_auction_winner(
+            q.get_task('t1'), bids, 3, is_live=self._live_except('hauler_02'))
+        assert winner is None
+        assert outcome == OUTCOME_REQUEUE
+        assert reason == 'preferred_robot_absent'
+
+    def test_is_live_none_asks_nothing_and_reproduces_today(self):
+        """What keeps the existing three-argument call sites meaningful."""
+        q = TaskQueue()
+        q.add_task('t1', 'haul', 0.0, 0.0)
+        bids = [_Bid('t1', 'scout_01', 0.9), _Bid('t1', 'scout_02', 0.1)]
+        assert resolve_auction_winner(q.get_task('t1'), bids, 3)[0].robot_id \
+            == 'scout_01'
+        assert resolve_auction_winner(
+            q.get_task('t1'), bids, 3, is_live=None)[0].robot_id == 'scout_01'
+
+    def test_a_live_robot_that_withdrew_is_still_dropped(self):
+        """VL-29 and D3(c) COMPOSE; the second filter does not replace the first.
+
+        Whichever of the two landed second had to compose with the other, so this
+        pins the conjunction rather than either clause: ``scout_09`` is alive and
+        withdrew, ``scout_01`` is offline and did not.
+        """
+        q = TaskQueue()
+        q.add_task('t1', 'haul', 0.0, 0.0)
+        bids = [_Bid('t1', 'scout_09', 0.9), _Bid('t1', 'scout_09', -1.0),
+                _Bid('t1', 'scout_01', 0.8), _Bid('t1', 'scout_02', 0.2)]
+        winner, outcome, _ = resolve_auction_winner(
+            q.get_task('t1'), bids, 3, is_live=self._live_except('scout_01'))
+        assert winner.robot_id == 'scout_02'
+        assert outcome == OUTCOME_ASSIGN
+
+
 # --------------------------------------------------------- requeue statuses
 
 def test_interrupted_is_returned_by_get_next_ready_and_completed_is_not():

@@ -1,17 +1,20 @@
 """Tests for the HTN task planner."""
 
+import ast
 import math
 import os
 import xml.etree.ElementTree as ET
 
 import pytest
 
+from selene_orchestrator import htn_planner as htn_planner_module
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 from selene_orchestrator.resource_map import ResourceMap
 from selene_orchestrator.htn_planner import (
     FOOTPRINT_CLEARANCE_M,
     HAUL_PICKUP_OFFSET_M,
     HOPPER_CAPACITY_KG,
+    MAX_CYCLE_OVERPLAN_FACTOR,
     HTNPlanner,
 )
 
@@ -332,6 +335,322 @@ class TestMeasuredDeposit:
                 pytest.approx(HAUL_PICKUP_OFFSET_M)
             assert (haul.target_x, haul.target_y) != (50.0, 50.0)
         assert planner.get_depot() == (50.0, 50.0)
+
+
+class TestCycleTopUp:
+    """D1: the cycle top-up branch was UNREACHABLE, so an under-delivering
+    mission could never finish.
+
+    ``if needed_cycles > self._cycles_generated`` compared an OUTSTANDING count
+    against a CUMULATIVE one. ``_cycles_generated`` was
+    ``ceil(target / HOPPER_CAPACITY_KG)`` after the initial ``_generate_cycles``
+    and never decreased, while ``needed_cycles`` is
+    ``ceil((target - deposited) / HOPPER_CAPACITY_KG) <= ceil(target /
+    HOPPER_CAPACITY_KG)`` for every ``deposited >= 0`` -- and ``deposited`` can
+    only be non-negative. The strict ``>`` was therefore unsatisfiable in every
+    reachable state.
+
+    It only MATTERED because per-cycle yield is not the nominal 20.0 kg: the
+    2026-07-31 ten-robot run measured 19.0 kg per delivery (register :947), so
+    five cycles delivered 94.85 kg against a 100 kg objective and no sixth could
+    ever exist. With a perfect 20.0 kg cycle the dead branch would never have
+    been needed, which is why the defect survived to a live run.
+
+    NOTHING HERE IS DEMONSTRATED ON A RUNNING SYSTEM. These are unit tests
+    against the real ``HTNPlanner`` and the real ``TaskQueue``; no live mission
+    has ever generated a sixth cycle.
+    """
+
+    TARGET_KG = 100.0
+    """The configured objective. NOMINAL_CYCLES below is derived from it."""
+
+    NOMINAL_CYCLES = 5
+    """ceil(100.0 / 20.0). Asserted rather than assumed in the tests below."""
+
+    @staticmethod
+    def _resolve(planner, queue, resource_map, quantity_kg):
+        """Run the mission up to (and including) SelectSite resolution."""
+        planner.decompose_collect_ice(
+            zone_center=(0.0, 0.0), zone_radius=40.0, quantity_kg=quantity_kg,
+        )
+        resource_map.update(0.0, 0.0, 5.0, 1.0)
+        for t in queue.get_all_tasks():
+            if t.task_type == "prospect":
+                queue.mark_complete(t.task_id)
+        planner.check_and_advance()
+
+    @staticmethod
+    def _hauls(queue):
+        return [t for t in queue.get_all_tasks() if t.task_type == "haul"]
+
+    @staticmethod
+    def _excavates(queue):
+        return [t for t in queue.get_all_tasks() if t.task_type == "excavate"]
+
+    @classmethod
+    def _next_undelivered_haul(cls, queue):
+        for haul in cls._hauls(queue):
+            if haul.status != TaskStatus.COMPLETED:
+                return haul
+        return None
+
+    @classmethod
+    def _deliver_one_cycle(cls, planner, queue, ledger, per_delivery):
+        """Complete the next excavate+haul pair, credit the ledger, step twice.
+
+        Two ``check_and_advance`` calls because the top-up debounce requires a
+        shortfall to survive two CONSECUTIVE passes. At 1 Hz that is one second
+        against a ~174 s cycle time.
+
+        Returns False when there was no undelivered cycle left to complete.
+        """
+        haul = cls._next_undelivered_haul(queue)
+        if haul is None:
+            return False
+        queue.mark_complete(haul.depends_on[0])
+        queue.mark_complete(haul.task_id)
+        ledger["kg"] += per_delivery
+        planner.check_and_advance()
+        planner.check_and_advance()
+        return True
+
+    # -- Mutation witnesses -------------------------------------------------
+
+    def test_a_below_nominal_yield_generates_another_cycle(
+            self, queue, resource_map):
+        """THE HEADLINE. 18.97 kg per delivery against a 100 kg objective.
+
+        Without the fix this ends at 5 cycles, 94.85 kg deposited and
+        ``complete`` False forever -- the exact state reproduced against the
+        unmodified classes.
+        """
+        ledger = {"kg": 0.0}
+        planner = HTNPlanner(queue, resource_map,
+                             deposited_source=lambda: ledger["kg"])
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+        assert len(self._hauls(queue)) == self.NOMINAL_CYCLES
+
+        for _ in range(50):  # bounded so a regression stalls loudly, not forever
+            if planner.get_mission_status()["complete"]:
+                break
+            if not self._deliver_one_cycle(planner, queue, ledger, 18.97):
+                break
+
+        assert len(self._excavates(queue)) == 6
+        assert len(self._hauls(queue)) == 6
+        status = planner.get_mission_status()
+        assert status["deposited_kg"] == pytest.approx(6 * 18.97)
+        assert status["complete"] is True
+
+    def test_undelivered_cycles_that_cannot_cover_the_gap_add_one(
+            self, queue, resource_map):
+        """Surgical: pins the comparison itself.
+
+        Every one of the five nominal cycles is COMPLETED and the ledger reads
+        the run's measured 94.85 kg, so ZERO cycles are undelivered against a
+        5.15 kg shortfall that needs one. Without the fix, no new task appears.
+        """
+        ledger = {"kg": 0.0}
+        planner = HTNPlanner(queue, resource_map,
+                             deposited_source=lambda: ledger["kg"])
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+        for task in self._excavates(queue) + self._hauls(queue):
+            queue.mark_complete(task.task_id)
+        ledger["kg"] = 94.85
+        assert len(self._hauls(queue)) == self.NOMINAL_CYCLES
+
+        planner.check_and_advance()   # observes the shortfall
+        planner.check_and_advance()   # confirms it and acts
+
+        assert len(self._excavates(queue)) == self.NOMINAL_CYCLES + 1
+        assert len(self._hauls(queue)) == self.NOMINAL_CYCLES + 1
+
+    def test_the_top_up_cycle_chains_onto_the_last_haul_and_carries_the_site(
+            self, queue, resource_map):
+        """A top-up cycle must be sequenced and attributed like any other.
+
+        ``_generate_cycles`` chains onto ``existing_hauls[-1]``; this is the
+        only caller that ever reaches that path with a non-empty list, so
+        without a sixth cycle it is never exercised at all. The ``site_id``
+        matters because the ledger resolves a MaterialEvent through it and
+        never through a coordinate.
+        """
+        ledger = {"kg": 0.0}
+        planner = HTNPlanner(queue, resource_map,
+                             deposited_source=lambda: ledger["kg"])
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+        for task in self._excavates(queue) + self._hauls(queue):
+            queue.mark_complete(task.task_id)
+        ledger["kg"] = 94.85
+        before_hauls = self._hauls(queue)
+        before_ids = {t.task_id for t in before_hauls + self._excavates(queue)}
+
+        planner.check_and_advance()
+        planner.check_and_advance()
+
+        new_excavates = [t for t in self._excavates(queue)
+                         if t.task_id not in before_ids]
+        new_hauls = [t for t in self._hauls(queue)
+                     if t.task_id not in before_ids]
+        assert len(new_excavates) == 1 and len(new_hauls) == 1
+        assert new_excavates[0].depends_on == [before_hauls[-1].task_id]
+        assert new_hauls[0].depends_on == [new_excavates[0].task_id]
+        site_id = planner.get_site_id()
+        assert site_id.startswith("site_")
+        assert new_excavates[0].site_id == site_id
+        assert new_hauls[0].site_id == site_id
+
+    def test_a_ledger_that_never_moves_is_bounded_by_the_cycle_ceiling(
+            self, queue, resource_map):
+        """MAX_CYCLE_OVERPLAN_FACTOR. The top-up is a feedback loop whose only
+        feedback is the ledger, so a haul that COMPLETES without its mass ever
+        reaching MaterialInventory is indistinguishable from one that delivered
+        nothing -- and that path is real (a skill that cannot read its fill
+        sensor publishes NOTHING rather than a zero). Unbounded, the planner
+        appends a cycle per completed haul forever, into a TaskQueueState
+        republished in full at 2 Hz.
+
+        Mutation-checked by deleting the ceiling clause: the count then grows
+        without bound.
+        """
+        planner = HTNPlanner(queue, resource_map, deposited_source=lambda: 0.0)
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+        ceiling = MAX_CYCLE_OVERPLAN_FACTOR * self.NOMINAL_CYCLES
+
+        for _ in range(200):
+            for haul in self._hauls(queue):
+                if haul.status != TaskStatus.COMPLETED:
+                    queue.mark_complete(haul.task_id)
+            planner.check_and_advance()
+            assert len(self._hauls(queue)) <= ceiling
+
+        assert len(self._hauls(queue)) == ceiling
+        # When the ceiling binds the mission simply stops topping up. It is not
+        # a delivery guarantee, and it says so no louder than a stalled bar.
+        assert planner.get_mission_status()["complete"] is False
+
+    def test_a_ledger_lag_does_not_manufacture_a_spurious_cycle(
+            self, queue, resource_map):
+        """The one-pass debounce, against the race it was written for.
+
+        The agent publishes the 'unloaded' MaterialEvent (agent_node.py:787)
+        BEFORE the TaskResult (:792); they travel on different topics and
+        ``_htn_advance`` runs on a ReentrantCallbackGroup under a 4-thread
+        executor, so a pass can see a haul COMPLETED whose mass has not yet
+        landed. Here each cycle is stepped once with the ledger stale and once
+        after it updates. A PERFECT 20.0 kg mission must still plan exactly
+        five cycles.
+
+        Mutation-checked by deleting ``and self._shortfall_confirmed``: this
+        then fails with 6 cycles, i.e. a 19 kg over-delivery traded for D1's
+        5 kg under-delivery.
+        """
+        ledger = {"kg": 0.0}
+        planner = HTNPlanner(queue, resource_map,
+                             deposited_source=lambda: ledger["kg"])
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+
+        for _ in range(self.NOMINAL_CYCLES):
+            haul = self._next_undelivered_haul(queue)
+            assert haul is not None
+            queue.mark_complete(haul.depends_on[0])
+            queue.mark_complete(haul.task_id)
+            planner.check_and_advance()   # COMPLETED seen, mass not yet in ledger
+            ledger["kg"] += 20.0
+            planner.check_and_advance()   # mass lands
+
+        assert len(self._hauls(queue)) == self.NOMINAL_CYCLES
+        status = planner.get_mission_status()
+        assert status["deposited_kg"] == pytest.approx(100.0)
+        assert status["complete"] is True
+
+    # -- Guards (these PASS both with and without the fix) ------------------
+
+    def test_a_perfect_nominal_mission_still_plans_exactly_five_cycles(
+            self, queue, resource_map):
+        """REGRESSION GUARD, NOT A MUTATION WITNESS -- it passes both ways, and
+        that is the point: the fix must not change behaviour when every cycle
+        delivers a full hopper."""
+        ledger = {"kg": 0.0}
+        planner = HTNPlanner(queue, resource_map,
+                             deposited_source=lambda: ledger["kg"])
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+
+        for _ in range(50):
+            if planner.get_mission_status()["complete"]:
+                break
+            if not self._deliver_one_cycle(planner, queue, ledger, 20.0):
+                break
+
+        assert len(self._hauls(queue)) == self.NOMINAL_CYCLES
+        status = planner.get_mission_status()
+        assert status["deposited_kg"] == pytest.approx(100.0)
+        assert status["complete"] is True
+
+    @pytest.mark.parametrize("target_kg", [40.0, 50.0])
+    def test_the_estimate_fallback_never_triggers_a_top_up(
+            self, queue, resource_map, target_kg):
+        """REGRESSION GUARD, NOT A MUTATION WITNESS -- passes both ways.
+
+        With no ``deposited_source`` the deposited figure is
+        ``completed_hauls * HOPPER_CAPACITY_KG``, which is self-consistent with
+        the nominal cycle size by construction, so no shortfall can ever be
+        observed. 50.0 is included because it is not a multiple of the hopper:
+        the last cycle over-delivers on the estimate and must not be confused
+        for a shortfall.
+        """
+        planner = HTNPlanner(queue, resource_map)
+        self._resolve(planner, queue, resource_map, target_kg)
+        nominal = math.ceil(target_kg / HOPPER_CAPACITY_KG)
+        assert len(self._hauls(queue)) == nominal
+        assert planner.get_mission_status()["deposited_is_measured"] is False
+
+        ledger = {"kg": 0.0}  # unread: this planner has no source
+        for _ in range(nominal):
+            assert self._deliver_one_cycle(planner, queue, ledger, 0.0)
+
+        assert len(self._hauls(queue)) == nominal
+        assert planner.get_mission_status()["complete"] is True
+
+    def test_a_fired_top_up_does_not_fire_again_on_an_unchanged_ledger(
+            self, queue, resource_map):
+        """Idempotence: the loop converges, it does not oscillate."""
+        ledger = {"kg": 0.0}
+        planner = HTNPlanner(queue, resource_map,
+                             deposited_source=lambda: ledger["kg"])
+        self._resolve(planner, queue, resource_map, self.TARGET_KG)
+        for task in self._excavates(queue) + self._hauls(queue):
+            queue.mark_complete(task.task_id)
+        ledger["kg"] = 94.85
+        planner.check_and_advance()
+        planner.check_and_advance()
+        after_top_up = len(self._hauls(queue))
+
+        for _ in range(10):
+            planner.check_and_advance()
+
+        assert len(self._hauls(queue)) == after_top_up
+
+    def test_the_cumulative_counter_is_gone_rather_than_merely_unused(
+            self, planner):
+        """No-orphan guard. Leaving ``_cycles_generated`` in place as a
+        write-only mirror would be an eighth instance of the 'wired but never
+        called' pattern CLAUDE.md tracks -- and it is the mirror itself that was
+        the defect, so it is deleted rather than left incrementing.
+
+        Checked over the AST rather than the source text, so the docstrings and
+        comments that record WHY it is gone do not themselves trip the guard.
+        """
+        assert not hasattr(planner, "_cycles_generated")
+        with open(htn_planner_module.__file__, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        referenced = {
+            node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+        } | {
+            node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+        }
+        assert "_cycles_generated" not in referenced
 
 
 class TestRendezvousSeparation:

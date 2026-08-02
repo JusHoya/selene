@@ -65,8 +65,29 @@ geometry_msgs/Point target_location
 # HTN mission id this task belongs to, or ''.
 string parent_task_id
 
-# task_ids that must be COMPLETED before this task is eligible
-# (TaskQueue.get_next_ready).
+# task_ids this task waits on (TaskQueue.get_next_ready, via
+# TaskQueue.dependencies_met).
+#
+# ORDINARILY ALL OF THEM MUST BE COMPLETED, and that is the rule for every task
+# type here except one.
+#
+# THE EXCEPTION IS A SOFT / EVIDENTIAL EDGE, D2. A task may carry a dependency
+# QUORUM (TaskQueue.TaskEntry.depends_on_quorum), and one does: the HTN
+# planner's select_site task, whose quorum is htn_planner.SELECT_SITE_SURVEY_QUORUM
+# = 1. Such a task becomes eligible when every dependency is RESOLVED --
+# COMPLETED, or FAILED with all task_feed.TASK_MAX_ATTEMPTS attempts spent --
+# AND at least `quorum` of them COMPLETED. It exists because survey ->
+# select_site is evidential rather than causal: htn_planner._pick_best_site
+# scores the fused ResourceMap posterior and never reads the survey task list,
+# so one dead survey degrades confidence, not correctness. Before it, one FAILED
+# survey killed select_site and with it every excavate and haul, permanently.
+# The excavate -> haul -> excavate chain is CAUSAL and carries no quorum.
+#
+# THE QUORUM IS NOT PUBLISHED. It is a plain Python field on the queue entry,
+# because adding one here needs a rosidl regeneration across all six packages
+# and this branch has had none. What a consumer sees instead is the
+# 'site_selected_partial' status_reason below, after the fact -- so this field
+# alone cannot tell you whether a given row's edge is hard or soft.
 string[] depends_on
 
 # Capabilities a bidder must have. Matched against RobotState.capabilities.
@@ -132,8 +153,70 @@ string[] required_capabilities
 #     'robot_started' -- the ASSIGNED -> IN_PROGRESS promotion, D-03
 #     'inferred_from_robot_state' | 'skill_complete' | 'skill_failed' |
 #     'robot_error'
+#   bounded skill retry, D2 (task_feed.py TASK_RETRY_REQUEUED /
+#                            TASK_ATTEMPTS_EXHAUSTED, written by
+#                            orchestrator_node._retry_failed_tasks and
+#                            _report_attempts_exhausted)
+#     'skill_failed_requeued'
+#                         -- a skill reported this task FAILED and it had an
+#                            attempt left, so it was returned to PENDING and
+#                            re-enters the ordinary auction. The status here is
+#                            PENDING, not FAILED: this reason is the only thing
+#                            that says the row is a SECOND attempt rather than
+#                            work nobody has tried. `assigned_robot` is cleared
+#                            and no robot is reserved for the retry.
+#     'attempts_exhausted'
+#                         -- the task has now FAILED task_feed.TASK_MAX_ATTEMPTS
+#                            (3) times and the orchestrator has STOPPED
+#                            retrying it. TERMINAL, and the only terminal
+#                            status_reason in this list: nothing in the system
+#                            moves a task out of it. Every task that depends_on
+#                            this one -- directly or transitively -- through an
+#                            ORDINARY edge can therefore never become ready,
+#                            because such a dependency is satisfied only by
+#                            COMPLETED. THE ONE EXCEPTION is a dependent
+#                            carrying a soft dependency quorum (see depends_on
+#                            above): an exhausted task counts as RESOLVED, so
+#                            select_site can still resolve on partial evidence
+#                            and will carry 'site_selected_partial' when it
+#                            does. It REPLACES the
+#                            skill's own failure_reason on this field; that
+#                            string survives in the FAILED TaskEvent's detail
+#                            and is quoted verbatim in the CRITICAL FleetAlert
+#                            raised once when this is written. An operator has
+#                            to act: re-inject the work or cancel what depends
+#                            on it.
+#   soft dependency quorum, D2 (task_feed.py SITE_SELECTED /
+#                               SITE_SELECTED_PARTIAL, both written by
+#                               htn_planner.check_and_advance)
+#     'site_selected'     -- the virtual select_site task resolved with EVERY
+#                            survey it depends_on COMPLETED. The ordinary case.
+#     'site_selected_partial'
+#                         -- select_site resolved on a PARTIAL quorum: every
+#                            survey was RESOLVED and at least
+#                            htn_planner.SELECT_SITE_SURVEY_QUORUM of them
+#                            COMPLETED, but the rest exhausted every attempt and
+#                            stay FAILED. The mission PROCEEDED instead of
+#                            deadlocking, and the extraction site is the best
+#                            cell of a SMALLER surveyed area than was planned.
+#                            The site is never re-selected. A WARNING FleetAlert
+#                            from orchestrator_node._htn_advance carries the
+#                            counts once; this field carries the fact for the
+#                            rest of the mission.
 #   fleet health (task_queue.py:200, recover_tasks_for_robot's default)
-#     'heartbeat_timeout'
+#     'heartbeat_timeout' -- FleetMonitor declared the holding robot OFFLINE
+#                            and its tasks were re-queued (the default reason
+#                            of recover_tasks_for_robot).
+#     'robot_offline'     -- the D3(b) backstop sweep,
+#                            orchestrator_node._recover_offline_robot_tasks,
+#                            found a task still held by an ALREADY-OFFLINE
+#                            robot after that robot's one-and-only heartbeat
+#                            recovery had run. Same effect as
+#                            'heartbeat_timeout' -- re-queued as PENDING with
+#                            assigned_robot cleared -- and a different reason
+#                            because the two say different things about the
+#                            orchestrator: the first is the recovery working,
+#                            the second is the recovery having missed.
 #   operator (orchestrator_node.py:477/584-585)
 #     'inject_rejected' | 'operator_cancel_task' | 'operator_force_recharge'
 #     Only those two commands re-queue a task; 'send_to_location' does not

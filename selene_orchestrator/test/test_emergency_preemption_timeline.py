@@ -66,6 +66,9 @@ class _Logger:
     def warn(self, msg):
         self.lines.append(('warn', str(msg)))
 
+    def error(self, msg):
+        self.lines.append(('error', str(msg)))
+
     def debug(self, msg):
         self.lines.append(('debug', str(msg)))
 
@@ -131,6 +134,9 @@ class _Sim:
         self._auction_backoff_max = AUCTION_BACKOFF_MAX_SEC
         self._auction_max_failed_rounds = AUCTION_MAX_FAILED_ROUNDS
         self._auction_failure_logged = {}
+        #: D2: the retry sweep's once-per-task latch. Nothing in this file
+        #: fails a task, so it must stay empty in every timeline here.
+        self._attempts_exhausted_alerted = set()
         self.announced = []      # (t, task_id)
         self.assigned = []       # (t, task_id, robot_id)
         self.alerts = []
@@ -186,8 +192,27 @@ class _Sim:
     def _wake_on_fleet_change(self):
         OrchestratorNode._wake_on_fleet_change(self)
 
+    def _retry_failed_tasks(self):
+        # D2. Bound rather than stubbed, for the same reason _robot_is_live
+        # below is: every collaborator is real here, so every timeline in this
+        # file runs the retry sweep as well. No task in this file ever goes
+        # FAILED, so it is a no-op in all of them and every event trace must
+        # stay identical -- if one moves, the sweep reaches too far.
+        OrchestratorNode._retry_failed_tasks(self)
+
+    def _report_attempts_exhausted(self):
+        OrchestratorNode._report_attempts_exhausted(self)
+
     def _servable_by_idle_fleet(self, task):
         return OrchestratorNode._servable_by_idle_fleet(self, task)
+
+    def _robot_is_live(self, robot_id):
+        # D3(c). Bound rather than stubbed: ``self._fleet`` is a REAL
+        # FleetMonitor, so binding it means every timeline in this file
+        # exercises the liveness rule for free. None of these robots is ever
+        # OFFLINE, so every timeline must stay event-for-event identical -- if
+        # one moves, the liveness filter is wrong.
+        return OrchestratorNode._robot_is_live(self, robot_id)
 
     def _preempt_for_emergency(self, now):
         victim = self._auction.get_task_id()

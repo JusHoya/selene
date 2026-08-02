@@ -29,6 +29,36 @@ class TaskStatus(str, Enum):
 REQUEUEABLE_STATUSES = (TaskStatus.PENDING, TaskStatus.INTERRUPTED)
 
 
+#: Statuses from which ``recover_tasks_for_robot`` takes a task off a robot.
+#:
+#: WIDER THAN ``get_task_for_robot``'s tuple and deliberately so; the two used
+#: to be the same literal and are now not, which is the kind of divergence that
+#: has to be written down or it gets "tidied" back. That one answers "what is
+#: this robot RUNNING" and feeds the IN_PROGRESS promotion and the ERROR
+#: re-queue, both of which must stay narrow -- widening it would license
+#: ``interrupt_task`` to yank a task out of a live auction, which is a change to
+#: auction semantics. This one answers "what would be STRANDED if this robot
+#: never spoke again", and the only wrong answer is a task that has already
+#: finished.
+#:
+#: COMPLETED and FAILED are excluded because "recovering" one resurrects
+#: finished work (pinned by ``test_recover_never_resurrects_a_terminal_task``).
+#: PENDING is excluded because it is already re-auctionable -- including it
+#: would make the operator alert's "N task(s) re-queued" count tasks that did
+#: not move.
+#:
+#: AUCTIONING and INTERRUPTED are the widening, and it is D3(a). At the
+#: ``TaskQueue`` API a task in either status can still carry a non-empty
+#: ``assigned_robot``; through the orchestrator as wired today it cannot, so
+#: this is NOT a live production leak being plugged. It is what makes the
+#: OFFLINE sweep total rather than status-shaped, so the next path that leaves
+#: ``assigned_robot`` set cannot silently re-open the hole.
+RECOVERABLE_STATUSES = (
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+    TaskStatus.AUCTIONING, TaskStatus.INTERRUPTED,
+)
+
+
 @dataclass
 class TaskEntry:
     task_id: str
@@ -165,6 +195,72 @@ class TaskEntry:
     #: Set by ``TaskQueue.spend_preemption`` and by nothing else.
     preemption_spent: bool = False
 
+    # ---- Added 2026-08-02 closing D2: the bounded skill retry. ----
+
+    #: How many times a SKILL has reported this task FAILED. THE RETRY BOUND,
+    #: and it is NEVER reset by anything -- that monotonicity is what makes the
+    #: retry sweep terminate without needing a fleet-change gate the way
+    #: ``wake_deferred_auctions`` does.
+    #:
+    #: Distinct from ``failed_auctions`` above, the same way that one is
+    #: distinct from ``auction_rounds``: ``failed_auctions`` counts auctions
+    #: that closed with NO BID (nobody tried), this counts attempts that RAN AND
+    #: FAILED. A task auctioned four times before anyone bid and then failed
+    #: once in the field has failed_auctions 0 (cleared by the assignment),
+    #: auction_rounds 4 and failed_attempts 1.
+    #:
+    #: 0 therefore means "no skill has ever reported this task failed", which is
+    #: what distinguishes a genuine skill failure from
+    #: ``inject_task_logic._reject``'s FAILED row: that one is written through
+    #: ``set_status`` rather than ``mark_failed``, so it never counts, and
+    #: ``retry_failed_tasks`` refuses it structurally rather than by matching on
+    #: ``status_reason``. A rejected operator injection -- "unknown robot",
+    #: "robot lacks capabilities" -- must never be auctioned to the fleet.
+    failed_attempts: int = 0
+
+    #: How many of ``depends_on`` must actually have COMPLETED for this task to
+    #: become ready. 0 MEANS "ALL OF THEM", which is exactly the rule this class
+    #: has always applied, so every existing task and every existing call site
+    #: is unchanged by this field existing.
+    #:
+    #: THE MISSION HAS TWO KINDS OF EDGE AND THIS QUEUE ENFORCED ONE.
+    #:
+    #: HARD / CAUSAL -- select_site -> excavate -> haul -> excavate ...
+    #: (``htn_planner._generate_cycles``). Quorum 0, untouched. You cannot haul
+    #: what was not excavated, and admitting a haul on a partial quorum would
+    #: put a mass in the ISRU ledger with no extraction behind it -- and that
+    #: ledger's entire value is being the one source of truth (D-06).
+    #:
+    #: SOFT / EVIDENTIAL -- survey -> select_site, the only one in the shipped
+    #: mission. ``htn_planner._pick_best_site`` scores the FUSED ResourceMap
+    #: posterior and never reads the survey task list at all, so losing one of
+    #: ten surveys degrades the CONFIDENCE of the choice; it does not invalidate
+    #: it. D2 was mission-fatal precisely because that soft edge was enforced as
+    #: if it were causal: ONE failed survey killed select_site permanently, and
+    #: every excavate and haul is generated only after select_site COMPLETES.
+    #:
+    #: 0 IS "ALL", NOT "NONE", AND THE ASYMMETRY IS DELIBERATE -- it makes a
+    #: quorum of zero UNREPRESENTABLE by the default. ``_pick_best_site`` falls
+    #: back to the zone centre when there are no readings at all
+    #: (``htn_planner.py:474-477``), so k=0 would let this mission choose an
+    #: extraction site having surveyed NOTHING and report success. That is the
+    #: shape of deviation D-29, where an exit-gate check passed vacuously on a
+    #: map with total_observations = 0, and this repository treats vacuous
+    #: success as a defect.
+    #:
+    #: NOT ON THE WIRE, deliberately. ``task_feed.task_rows`` builds an explicit
+    #: dict of TaskStatus.msg field names and the node copies it field by field,
+    #: so a new dataclass field publishes nothing and needs no rosidl run --
+    #: which this branch has not had. What the operator sees instead is
+    #: ``status_reason`` ('site_selected_partial') and a WARNING FleetAlert. The
+    #: cost is stated rather than hidden: the wire cannot say "this task HAS a
+    #: soft edge", only that a site was chosen on partial evidence after it did.
+    #:
+    #: Written by exactly one production call site
+    #: (``htn_planner.decompose_collect_ice``, for select_site) and read by
+    #: exactly one (``TaskQueue.dependencies_met``).
+    depends_on_quorum: int = 0
+
 
 class TaskQueue:
     def __init__(self):
@@ -190,7 +286,8 @@ class TaskQueue:
                  estimated_energy_cost: float = 0.0, estimated_duration: float = 0.0,
                  parent_task_id: str = "", depends_on: list[str] | None = None,
                  site_id: str = "", quantity_kg: float = 0.0,
-                 preferred_robot: str = "", emergency: bool = False) -> None:
+                 preferred_robot: str = "", emergency: bool = False,
+                 depends_on_quorum: int = 0) -> None:
         """Create a task. *emergency* is the operator's, and only the operator's.
 
         Trailing and defaulted, so every existing call site -- the four in
@@ -198,6 +295,10 @@ class TaskQueue:
         edit. ``inject_task_logic`` is the only caller that ever passes True;
         see ``TaskEntry.emergency`` for what the flag grants and what it does
         not.
+
+        *depends_on_quorum* is trailing and defaulted for the same reason and in
+        the same shape: 0 is "every dependency must be COMPLETED", which is what
+        every caller but one passes. See ``TaskEntry.depends_on_quorum``.
         """
         self._tasks[task_id] = TaskEntry(
             task_id=task_id, task_type=task_type,
@@ -212,6 +313,7 @@ class TaskQueue:
             quantity_kg=quantity_kg,
             preferred_robot=preferred_robot,
             emergency=bool(emergency),
+            depends_on_quorum=int(depends_on_quorum),
             status_changed=time.time(),
         )
 
@@ -358,14 +460,25 @@ class TaskQueue:
 
     def recover_tasks_for_robot(self, robot_id: str,
                                 reason: str = "heartbeat_timeout") -> list[str]:
-        """Reset ASSIGNED/IN_PROGRESS tasks for robot back to PENDING.
+        """Reset every NON-TERMINAL task held by *robot_id* back to PENDING.
 
         Returns re-queued task_ids.
+
+        D3(a): the status set is ``RECOVERABLE_STATUSES`` and is WIDER than the
+        ``(ASSIGNED, IN_PROGRESS)`` this used to test -- see that constant for
+        why, and for why ``get_task_for_robot``'s narrower tuple is deliberately
+        no longer the same literal.
+
+        RECOVERING AN AUCTIONING TASK DOES NOT CANCEL THE IN-FLIGHT
+        ``TaskAuction``, and it does not need to. ``_resolve_auction`` copes
+        either way: an assignment is legal from PENDING, and if the auction
+        resolves to a requeue instead then setting PENDING on a task already in
+        PENDING is a no-op change ``set_status`` swallows at its
+        ``previous == status`` guard.
         """
         recovered = []
-        active_statuses = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
         for t in list(self._tasks.values()):
-            if t.assigned_robot == robot_id and t.status in active_statuses:
+            if t.assigned_robot == robot_id and t.status in RECOVERABLE_STATUSES:
                 # D-20: a task taken off a dead robot is fresh work, not a
                 # task the fleet declined. It must not inherit a backoff.
                 self.clear_auction_backoff(t.task_id)
@@ -389,8 +502,118 @@ class TaskQueue:
         well as on success, so ``_on_robot_state`` saw an idle robot with no
         task and called mark_complete(). A failed excavate was recorded as a
         COMPLETED task in the orchestrator's own queue.
+
+        D2: it also COUNTS the attempt, and it is the only thing that does.
+        ``retry_failed_tasks`` uses that count both as its bound and as the test
+        that this FAILED row came from a skill rather than from
+        ``inject_task_logic._reject``, which writes FAILED through
+        ``set_status`` and must never be retried.
         """
+        task = self._tasks.get(task_id)
+        # Counted only on a REAL transition, mirroring set_status's own rule at
+        # its ``previous == status`` guard. A duplicate TaskResult for the same
+        # task must not burn a retry -- and ``_on_task_result`` has no re-entry
+        # guard of its own (defect D4), so this has to hold independently of
+        # whether that one lands.
+        if task is not None and task.status != TaskStatus.FAILED:
+            task.failed_attempts += 1
         self.set_status(task_id, TaskStatus.FAILED, reason)
+
+    @staticmethod
+    def attempts_exhausted(task: TaskEntry, max_attempts: int) -> bool:
+        """Has *task* spent every attempt it will ever get? THE predicate, once.
+
+        It was written out twice before D2's soft-quorum edge needed it a third
+        time: as ``retry_failed_tasks``' skip guard, and as
+        ``orchestrator_node._report_attempts_exhausted``'s, the latter under a
+        comment saying it is deliberately "the SAME predicate ... written the
+        same way round". That comment was an instruction to a human; this makes
+        it structural. Three copies of a bound is how a dependency starts being
+        treated as finished by a task the retry sweep is still going to re-run.
+
+        ``max_attempts <= 0`` MEANS RETRY FOREVER, so nothing is ever exhausted
+        -- the supported configuration ``retry_failed_tasks`` documents,
+        preserved here rather than re-derived. It is also this method's default
+        behaviour for a caller that has no bound to give: see
+        ``dependencies_met``.
+
+        It says nothing about whether the task FAILED. ``retry_failed_tasks``
+        has already filtered on that, and ``_dependency_resolved`` does so
+        immediately before calling this.
+        """
+        return 0 < int(max_attempts) <= task.failed_attempts
+
+    def retry_failed_tasks(self, max_attempts: int,
+                           reason: str = "") -> list[str]:
+        """Return every FAILED task that still has an attempt left to PENDING.
+
+        THE SIBLING OF ``wake_deferred_auctions``, and deliberately a separate
+        method rather than a clause in it: that one walks REQUEUEABLE_STATUSES
+        and a FAILED task is by construction not in them.
+
+        FAILED IS NOT ADDED TO REQUEUEABLE_STATUSES, and that is the decision. A
+        FAILED task must not be silently auctionable the way an INTERRUPTED one
+        is: it rests visibly in FAILED and becomes work again only when this
+        method says so, which is exactly the relationship ``abandon_auction``
+        has with ``wake_deferred_auctions``. ``get_next_ready`` therefore still
+        never returns a FAILED task, before or after a failure.
+
+        WHY RETRY IS A POLICY AND NOT A WORKAROUND. Every failure_reason a skill
+        can actually produce is transient or environmental -- 'Path blocked, no
+        alternate route', 'Drill actuator unavailable', 'Loading timed out'.
+        None is a statement that the task is impossible, and the agent itself
+        already treats them as recoverable: it fires FSMEvent.TASK_COMPLETE
+        rather than FAULT on a failed skill. The layer below already retries and
+        is already bounded -- ``PathFollower`` replans up to
+        MAX_REPLAN_ATTEMPTS = 3 before the skill fails at all -- which is both
+        why bounded retry is the layered design's own idiom and why the bound
+        HERE should be small.
+
+        ``failed_attempts <= 0`` IS THE GUARD THAT MATTERS. Only ``mark_failed``
+        increments it, and ``inject_task_logic._reject`` writes FAILED through
+        ``set_status`` instead -- so a rejected operator injection ("unknown
+        robot", "robot lacks capabilities") has a count of 0 and is never
+        resurrected. The test is structural rather than a match on
+        ``status_reason``, because a string comparison would silently start
+        auctioning phantom rows to the fleet the day somebody spells that
+        reason differently.
+
+        ``max_attempts <= 0`` DISABLES GIVING UP and retries forever. A
+        supported configuration, not a mistake, and the same edge case
+        ``task_feed.auction_failure_reason`` documents for ``max_rounds``.
+
+        ``failed_attempts`` IS NOT RESET, by this or by anything else. It is the
+        whole record of how many attempts have happened, exactly as
+        ``failed_auctions`` survives ``wake_deferred_auctions`` for an
+        already-abandoned task. That monotonicity is load-bearing: it is what
+        lets the caller run this sweep UNCONDITIONALLY rather than gated on a
+        fleet change, because a task can be retried at most
+        ``max_attempts - 1`` times in its entire life whatever the fleet does.
+        ``auction_rounds`` is not refunded either, unlike ``abort_auction``:
+        that round really did resolve, into an assignment that ran.
+        """
+        retried = []
+        for task in list(self._tasks.values()):
+            if task.status != TaskStatus.FAILED:
+                continue
+            if task.failed_attempts <= 0:
+                continue
+            if self.attempts_exhausted(task, max_attempts):
+                continue
+            # D-20, same reasoning as recover_tasks_for_robot: a retried task is
+            # fresh work, not a task the fleet declined.
+            self.clear_auction_backoff(task.task_id)
+            # Status FIRST, then clear the robot -- the listener reads
+            # assigned_robot to attribute the event.
+            self.set_status(task.task_id, TaskStatus.PENDING, reason)
+            task.assigned_robot = ""
+            # MUST be cleared, or the retried attempt can never terminate: the
+            # completion-inference fallback in ``_on_robot_state`` skips a task
+            # with this set, and D4's re-entry guard on ``_on_task_result`` will
+            # reject its TaskResult. The task would sit ASSIGNED forever.
+            task.terminal_reported = False
+            retried.append(task.task_id)
+        return retried
 
     def get_task(self, task_id: str) -> TaskEntry | None:
         return self._tasks.get(task_id)
@@ -404,8 +627,177 @@ class TaskQueue:
     def get_total_count(self) -> int:
         return len(self._tasks)
 
+    @staticmethod
+    def _dependency_resolved(dep: TaskEntry, max_attempts: int) -> bool:
+        """Has *dep* STOPPED MOVING? Clause (a) of the soft-edge rule.
+
+        RESOLVED means "nothing in this orchestrator will change this task's
+        status by itself", NOT "this task succeeded". The full table, every
+        member of ``TaskStatus``, because a status omitted from a table like
+        this is how a soft edge quietly becomes a hard one again -- or, worse,
+        how a survey still driving to its waypoint gets counted as finished:
+
+          COMPLETED    RESOLVED, and the only status that also COUNTS toward a
+                       quorum.
+          FAILED, attempts exhausted (``attempts_exhausted``)
+                       RESOLVED. This is D2's terminal state: nothing in
+                       ``TaskQueue`` or ``orchestrator_node`` moves a task out
+                       of it, and ``_report_attempts_exhausted`` has already
+                       raised the CRITICAL alert saying exactly that.
+          FAILED, attempts left
+                       NOT resolved. THE CASE THAT MAKES THIS METHOD WORTH
+                       HAVING: ``_retry_failed_tasks`` returns the task to
+                       PENDING within one 0.5 s tick, so calling it resolved
+                       would abandon a survey that is about to run again. It is
+                       a REAL race, not a hypothetical one -- ``mark_failed``
+                       runs from ``_on_task_result`` on a DDS callback thread of
+                       the MultiThreadedExecutor, so a dependency can flip to
+                       FAILED between ``_auction_tick``'s retry sweep and its
+                       ``get_next_ready`` in the SAME tick.
+          FAILED, ``failed_attempts == 0``
+                       NOT resolved. That row is ``inject_task_logic._reject``
+                       (written through ``set_status``, never counted): not a
+                       task that ran and failed, a request that was refused. It
+                       is also unretryable, so it would block a quorum forever;
+                       it cannot arise as a DEPENDENCY today only because
+                       injected tasks have no dependents, which is a fact about
+                       the caller and not a guarantee from here.
+          PENDING      NOT resolved -- work still owed. That includes a task
+                       inside D-20's backoff and one ABANDONED with
+                       ``auction_backoff_until == math.inf``: abandonment is
+                       explicitly NOT terminal (``wake_deferred_auctions``
+                       un-abandons it on any idle arrival), so calling it
+                       resolved would fire a quorum against a survey one fleet
+                       change away from running.
+          AUCTIONING   NOT resolved -- a bid may land this tick.
+          ASSIGNED     NOT resolved -- a robot holds it.
+          IN_PROGRESS  NOT resolved -- a skill is running.
+          INTERRUPTED  NOT resolved. A RESTING state (D-03), but it is in
+                       ``REQUEUEABLE_STATUSES`` and the auction re-dispatches
+                       it. So an operator cancel blocks the quorum, and that is
+                       the right answer: the operator who cancelled it is the
+                       one who can unblock it.
+
+        ``failed_attempts`` IS AUTHORITATIVE AND ``status_reason`` IS NOT.
+        The count is written by ``mark_failed`` -- this class, on the real
+        transition only -- and is never reset. ``TASK_ATTEMPTS_EXHAUSTED`` is
+        stamped by a 2 Hz sweep in the NODE, so between the third
+        ``mark_failed`` and the next ``_report_attempts_exhausted`` there is a
+        window of up to 500 ms in which the task IS exhausted and the string
+        does not say so, and ``check_and_advance`` runs on a
+        ReentrantCallbackGroup that can land inside it. ``status_reason`` is
+        also free text that several paths overwrite, so a string test would be
+        a test on the last writer.
+        """
+        if dep.status == TaskStatus.COMPLETED:
+            return True
+        if dep.status != TaskStatus.FAILED:
+            return False
+        return TaskQueue.attempts_exhausted(dep, max_attempts)
+
+    def dependencies_met(self, task: TaskEntry,
+                         max_attempts: int = 0) -> bool:
+        """Are *task*'s dependencies satisfied? THE ONE EXPRESSION OF THAT RULE.
+
+        TWO PRODUCTION CALLERS AND THAT IS THE POINT: ``_ready_tasks`` (2 Hz,
+        the auction) and ``htn_planner.check_and_advance`` (1 Hz, the only
+        thing that ever resolves the VIRTUAL select_site task -- ``_auction_tick``
+        skips it by task_type and never announces it). Those two used to answer
+        this question separately, ``htn_planner`` restating "every dependency
+        must be COMPLETED" for itself, so D2's deadlock lived in the copy and a
+        fix applied to ``_ready_tasks`` alone would have changed nothing an
+        operator could see. The register has paid for that shape twice already
+        (D-28's per-cell/per-step split, D-31's two distance totals), and
+        ``_ready_tasks`` was itself factored out of ``get_next_ready`` for the
+        same reason.
+
+        HARD EDGE -- ``depends_on_quorum == 0``, the default, every task in this
+        system but one -- IS BIT-FOR-BIT THE OLD RULE: every dependency
+        COMPLETED. See ``TaskEntry.depends_on_quorum`` for why relaxing one
+        would corrupt the ISRU ledger.
+
+        SOFT EDGE -- ``depends_on_quorum == k > 0`` -- requires BOTH clauses,
+        and the first is the one a reader skips:
+
+        (a) EVERY dependency RESOLVED -- see ``_dependency_resolved`` for the
+            per-status table. Without it select_site fires the instant the k-th
+            survey lands and the other nine are abandoned in flight: a deadlock
+            traded for silent evidence loss, which is a worse defect than D2.
+        (b) at least *k* of them actually COMPLETED. NEVER ZERO -- see
+            ``htn_planner.SELECT_SITE_SURVEY_QUORUM`` for why k=0 is D-29.
+
+        *max_attempts* is the retry bound clause (a) tests exhaustion against:
+        ``task_feed.TASK_MAX_ATTEMPTS`` at both production call sites. IT
+        DEFAULTS TO 0, meaning "retries never exhaust" exactly as it means
+        "never give up" in ``retry_failed_tasks`` -- so a FAILED dependency is
+        never resolved and every caller that does not pass it, INCLUDING EVERY
+        EXISTING TEST, gets today's behaviour unchanged.
+
+        A quorum LARGER than ``len(depends_on)`` is CLAMPED to it rather than
+        honoured. An unsatisfiable readiness predicate is the permanent silent
+        deadlock this whole change exists to remove; the clamped worst case is
+        "every dependency COMPLETED", which is the default this class has always
+        had. The cost is that a mis-set quorum is masked rather than loud, and
+        that is accepted rather than hidden.
+
+        A quorum over an EMPTY ``depends_on`` is vacuous, not deadlocked: the
+        first guard returns True, exactly as before.
+
+        AN UNKNOWN dependency id is NOT satisfied, in either branch, exactly as
+        before -- ``add_task`` never validates ``depends_on`` (a cycle is
+        representable; see ``get_transitive_dependents``), so a typo must block
+        loudly rather than let a dependency evaporate into a satisfied quorum.
+
+        CONCURRENT-SAFE BY CONSTRUCTION, which matters because ``_htn_advance``
+        runs on a ReentrantCallbackGroup under a 4-thread MultiThreadedExecutor
+        while ``_auction_tick`` mutates the queue. It iterates
+        ``task.depends_on`` -- a list nothing mutates after ``add_task`` -- and
+        touches ``self._tasks`` only through ``.get()``, so it cannot raise
+        "dictionary changed size during iteration".
+
+        HOT PATH: one pass, short-circuiting on the first unresolved dependency,
+        and no allocation in the quorum branch.
+        """
+        deps = task.depends_on
+        if not deps:
+            return True
+        quorum = int(task.depends_on_quorum)
+        if quorum <= 0:
+            # VERBATIM the expression this method replaced in ``_ready_tasks``.
+            # Every task that does not set a quorum takes this branch and cannot
+            # behave differently from the way it did before the field existed.
+            return all(
+                self._tasks.get(dep_id) is not None
+                and self._tasks[dep_id].status == TaskStatus.COMPLETED
+                for dep_id in deps
+            )
+        completed = 0
+        for dep_id in deps:
+            dep = self._tasks.get(dep_id)
+            if dep is None or not self._dependency_resolved(dep, max_attempts):
+                return False
+            if dep.status == TaskStatus.COMPLETED:
+                completed += 1
+        return completed >= min(quorum, len(deps))
+
+    def completed_dependencies(self, task: TaskEntry) -> int:
+        """How many of *task*'s dependencies are COMPLETED. FOR THE REPORT ONLY.
+
+        The DECISION is ``dependencies_met``; this is what tells an operator how
+        much evidence that decision was taken on. It lives here rather than in
+        the planner so "COMPLETED" is spelled once and cannot drift from the
+        predicate beside it. One production caller:
+        ``htn_planner.check_and_advance``.
+        """
+        return sum(
+            1 for dep_id in task.depends_on
+            if (self._tasks.get(dep_id) is not None
+                and self._tasks[dep_id].status == TaskStatus.COMPLETED)
+        )
+
     def _ready_tasks(self, moment: float, servable=None,
-                     through_backoff=None) -> list[TaskEntry]:
+                     through_backoff=None,
+                     max_attempts: int = 0) -> list[TaskEntry]:
         """The re-auctionable, dependency-satisfied tasks at *moment*.
 
         Factored out of ``get_next_ready`` so ``get_preemption_candidate`` asks
@@ -423,6 +815,12 @@ class TaskQueue:
         whose D-20 backoff is to be IGNORED for this query. None means the
         backoff binds on everything, which is ``get_next_ready``'s contract and
         must stay so.
+
+        *max_attempts* is the retry bound handed to ``dependencies_met``, and it
+        matters only for a task carrying a SOFT dependency quorum. 0 -- the
+        default, and what every direct TaskQueue caller and every test passes --
+        means "retries never exhaust", which is exactly this method's
+        pre-quorum behaviour.
         """
         ready = []
         for t in self._tasks.values():
@@ -437,13 +835,16 @@ class TaskQueue:
                     continue
                 if t.auction_backoff_until > moment:
                     continue
-            # All dependencies must be COMPLETED
-            deps_met = all(
-                self._tasks.get(dep_id) is not None
-                and self._tasks[dep_id].status == TaskStatus.COMPLETED
-                for dep_id in t.depends_on
-            )
-            if not deps_met:
+            # Dependency satisfaction, D2. ONE expression of the rule, shared
+            # with ``htn_planner.check_and_advance``, which used to restate it
+            # -- see ``dependencies_met``.
+            #
+            # Guarded on ``t.depends_on`` before the call, and that is a hot
+            # path decision rather than a style one: this loop runs at 2 Hz over
+            # the whole queue, and the ten survey waypoints have no dependencies
+            # at all, so they now skip a call and the generator object they used
+            # to allocate. Nothing scans more than it did.
+            if t.depends_on and not self.dependencies_met(t, max_attempts):
                 continue
             if servable is not None and not servable(t):
                 continue
@@ -455,13 +856,18 @@ class TaskQueue:
         """Sort key for "what runs next": priority, then emergency."""
         return (task.priority, 1 if task.emergency else 0)
 
-    def get_next_ready(self, now: float | None = None,
-                       servable=None) -> TaskEntry | None:
-        """Highest-priority re-auctionable task whose dependencies are COMPLETED.
+    def get_next_ready(self, now: float | None = None, servable=None,
+                       max_attempts: int = 0) -> TaskEntry | None:
+        """Highest-priority re-auctionable task whose dependencies are satisfied.
 
-        Unlike get_next_pending(), this method checks that every task_id in
-        the candidate's depends_on list has status COMPLETED before
-        considering it eligible. Tasks with no dependencies are always eligible.
+        Unlike get_next_pending(), this method checks the candidate's
+        ``depends_on`` list before considering it eligible: ORDINARILY every one
+        of those task_ids must have status COMPLETED. Tasks with no dependencies
+        are always eligible. A task carrying a SOFT dependency quorum
+        (``TaskEntry.depends_on_quorum``, which only select_site does) instead
+        needs every dependency RESOLVED and at least its quorum COMPLETED --
+        ``dependencies_met`` is the whole rule and *max_attempts* is the retry
+        bound it tests exhaustion against (0 = "retries never exhaust").
 
         Considers both PENDING and INTERRUPTED (REQUEUEABLE_STATUSES): an
         interrupted task is work the fleet still owes, and before D-03 the only
@@ -498,13 +904,14 @@ class TaskQueue:
         clock.
         """
         moment = time.monotonic() if now is None else float(now)
-        ready = self._ready_tasks(moment, servable=servable)
+        ready = self._ready_tasks(moment, servable=servable,
+                                  max_attempts=max_attempts)
         if not ready:
             return None
         return max(ready, key=self._rank)
 
-    def get_preemption_candidate(self, now: float | None = None,
-                                 servable=None) -> TaskEntry | None:
+    def get_preemption_candidate(self, now: float | None = None, servable=None,
+                                 max_attempts: int = 0) -> TaskEntry | None:
         """``get_next_ready``, except an UNSPENT EMERGENCY is not hidden by D-20.
 
         THE ONE CLAUSE THAT DIFFERS, and why it has to. An operator emergency
@@ -530,11 +937,15 @@ class TaskQueue:
         *servable* is honoured exactly as in ``get_next_ready``: a task no idle
         robot can bid on is not a preemption candidate either, because aborting
         a live auction to announce something nobody can bid on is the worst of
-        both outcomes.
+        both outcomes. *max_attempts* likewise, so the two eligibility queries
+        stay ONE question with one clause relaxed rather than two that can
+        drift; every operator injection has an empty ``depends_on`` and takes
+        ``dependencies_met``'s first guard, so nothing on this path changes
+        today.
         """
         moment = time.monotonic() if now is None else float(now)
         ready = self._ready_tasks(
-            moment, servable=servable,
+            moment, servable=servable, max_attempts=max_attempts,
             through_backoff=lambda t: t.emergency and not t.preemption_spent)
         if not ready:
             return None
@@ -680,6 +1091,42 @@ class TaskQueue:
     def get_dependent_tasks(self, task_id: str) -> list[TaskEntry]:
         """Return all tasks whose depends_on list contains the given task_id."""
         return [t for t in self._tasks.values() if task_id in t.depends_on]
+
+    def get_transitive_dependents(self, task_id: str) -> list[TaskEntry]:
+        """Every task DOWNSTREAM of *task_id*, directly or transitively.
+
+        BFS over ``get_dependent_tasks``, because an ORDINARY dependency is
+        satisfied only by COMPLETED: a dead survey blocks select_site, which
+        blocks every excavate, which blocks every haul. The direct dependents
+        alone would report one blocked task where the real number is the whole
+        downstream chain, and understating a blast radius in an operator alert
+        is the failure mode that alert exists to prevent.
+
+        IT IS NOT "CAN NEVER RUN", AND THAT SENTENCE USED TO STAND HERE. As of
+        D2's soft-quorum edge a dependent carrying ``depends_on_quorum > 0``
+        becomes ready once every dependency is RESOLVED -- which a
+        permanently-FAILED one is -- and at least its quorum COMPLETED. So this
+        set is the blast radius of the edge, and whether each member is
+        genuinely dead is ``dependencies_met``'s answer, not this method's. The
+        one caller, ``_report_attempts_exhausted``, says so in its alert.
+
+        THE VISITED SET IS REQUIRED RATHER THAN DEFENSIVE. ``add_task`` does not
+        validate ``depends_on`` at all, so a cycle is representable and a plain
+        recursion would not terminate on one.
+
+        *task_id* itself is never in the result, even if it is inside such a
+        cycle: it is the cause, not a casualty.
+        """
+        seen: set[str] = set()
+        frontier = [task_id]
+        while frontier:
+            current = frontier.pop()
+            for dependent in self.get_dependent_tasks(current):
+                if dependent.task_id in seen or dependent.task_id == task_id:
+                    continue
+                seen.add(dependent.task_id)
+                frontier.append(dependent.task_id)
+        return [self._tasks[tid] for tid in seen]
 
     def interrupt_task(self, task_id: str, metadata: dict,
                        reason: str = "") -> None:

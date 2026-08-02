@@ -1,6 +1,7 @@
 """Tests for TaskQueue."""
 
 from selene_orchestrator.task_queue import (
+    RECOVERABLE_STATUSES,
     REQUEUEABLE_STATUSES,
     TaskQueue,
     TaskStatus,
@@ -282,3 +283,98 @@ class TestNewTaskEntryFields:
         t = q.get_task('t1')
         assert (t.quantity_kg, t.preferred_robot, t.site_id) == \
             (12.5, 'hauler_02', 'site_abc')
+
+    def test_failed_attempts_defaults_to_zero(self):
+        """D2. 0 means "no skill has ever reported this task failed", which is
+        exactly what tells a genuine skill failure apart from
+        ``inject_task_logic._reject``'s FAILED row."""
+        q = TaskQueue()
+        q.add_task('t1', 'prospect', 0, 0)
+        assert q.get_task('t1').failed_attempts == 0
+
+
+class TestRecoverableStatuses:
+    """D3(a): a robot dropout could permanently orphan a task.
+
+    ``recover_tasks_for_robot`` covered only (ASSIGNED, IN_PROGRESS), so a task
+    that was AUCTIONING or INTERRUPTED when its robot timed out was never
+    recovered -- and because ``check_heartbeats`` skips a robot it has already
+    declared OFFLINE, the one and only recovery sweep for that robot had already
+    run and would never run again.
+
+    STATED HONESTLY: through the orchestrator as wired today, AUCTIONING and
+    INTERRUPTED with a non-empty ``assigned_robot`` is not reachable --
+    ``assign_to_robot`` is the only production writer of a non-empty
+    ``assigned_robot`` and it immediately sets ASSIGNED, and both paths that
+    leave the running family clear the robot. So this widening is NOT plugging a
+    live production leak. It is what makes the OFFLINE sweep total rather than
+    status-shaped, so the next path that leaves ``assigned_robot`` set cannot
+    silently re-open the hole.
+    """
+
+    def test_recover_covers_auctioning_and_interrupted(self):
+        q = TaskQueue()
+        q.add_task('t_auc', 'prospect', 0, 0)
+        q.add_task('t_int', 'excavate', 1, 1)
+        q.assign_to_robot('t_auc', 'scout_01')
+        q.assign_to_robot('t_int', 'scout_01')
+        # Force the two statuses the old tuple could not see, keeping the robot
+        # attached -- which is the state the defect is about.
+        q.set_status('t_auc', TaskStatus.AUCTIONING, 'auction_started')
+        q.set_status('t_int', TaskStatus.INTERRUPTED, 'operator_cancel_task')
+
+        recovered = q.recover_tasks_for_robot('scout_01')
+
+        assert set(recovered) == {'t_auc', 't_int'}
+        for tid in ('t_auc', 't_int'):
+            assert q.get_task(tid).status is TaskStatus.PENDING
+            assert q.get_task(tid).assigned_robot == ''
+
+    def test_recover_never_resurrects_a_terminal_task(self):
+        """The guard on the widening, not evidence of the fix.
+
+        This passes both before and after. It is what stops the widening from
+        ever being taken one status too far: "recovering" a COMPLETED or FAILED
+        task resurrects finished work.
+        """
+        q = TaskQueue()
+        q.add_task('done', 'prospect', 0, 0)
+        q.add_task('dead', 'excavate', 1, 1)
+        q.assign_to_robot('done', 'scout_01')
+        q.assign_to_robot('dead', 'scout_01')
+        q.mark_complete('done')
+        q.mark_failed('dead', 'drill stalled')
+        # mark_complete / mark_failed leave assigned_robot set, so these really
+        # are tasks "held by" scout_01 at the moment it dies.
+        assert q.get_task('done').assigned_robot == 'scout_01'
+        assert q.get_task('dead').assigned_robot == 'scout_01'
+
+        assert q.recover_tasks_for_robot('scout_01') == []
+        assert q.get_task('done').status is TaskStatus.COMPLETED
+        assert q.get_task('dead').status is TaskStatus.FAILED
+
+    def test_recover_leaves_a_pending_task_alone(self):
+        """PENDING is excluded because it is already re-auctionable.
+
+        Including it would make the operator alert's "N task(s) re-queued" count
+        tasks that did not move.
+        """
+        q = TaskQueue()
+        q.add_task('t1', 'prospect', 0, 0)
+        q.get_task('t1').assigned_robot = 'scout_01'   # stale, status PENDING
+        assert q.recover_tasks_for_robot('scout_01') == []
+
+    def test_every_task_status_is_classified(self):
+        """The drift guard that buys back the future-proofing of the rejected
+        ``not in (COMPLETED, FAILED)`` formulation.
+
+        Adding a TaskStatus member without deciding whether a dead robot
+        stranded in it must be recovered fails the build here, rather than
+        silently defaulting to "not recovered".
+        """
+        classified = set(RECOVERABLE_STATUSES) | {
+            TaskStatus.PENDING, TaskStatus.COMPLETED, TaskStatus.FAILED}
+        assert classified == set(TaskStatus)
+        # And the two tuples are deliberately no longer the same literal.
+        assert set(REQUEUEABLE_STATUSES) & set(RECOVERABLE_STATUSES) == {
+            TaskStatus.INTERRUPTED}

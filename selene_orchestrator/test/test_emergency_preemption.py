@@ -69,6 +69,9 @@ class _Logger:
     def warn(self, msg):
         self.lines.append(('warn', str(msg)))
 
+    def error(self, msg):
+        self.lines.append(('error', str(msg)))
+
     def debug(self, msg):
         self.lines.append(('debug', str(msg)))
 
@@ -113,6 +116,9 @@ class _FakeNode:
         self.published: list = []
         self.resolved: list[str] = []
         self.woke = 0
+        #: D2. The retry sweep runs on this tick too, so the latch it needs is
+        #: part of the node surface now.
+        self._attempts_exhausted_alerted: set[str] = set()
         self._logger = _Logger()
 
     # -- collaborators ------------------------------------------------------
@@ -168,6 +174,18 @@ class _FakeNode:
         self._auction.reset()
 
     # -- the production code under test ------------------------------------
+
+    def _retry_failed_tasks(self):
+        # D2. BOUND, not counted like _wake_on_fleet_change above, because
+        # every collaborator it touches here is real -- a real TaskQueue, a real
+        # _publish_alert, a real logger -- so binding it costs nothing and every
+        # preemption timeline in this file exercises the retry sweep for free.
+        # No task in this file ever goes FAILED, so it must be a no-op in all of
+        # them: if one of these tests moves, the sweep is reaching too far.
+        OrchestratorNode._retry_failed_tasks(self)
+
+    def _report_attempts_exhausted(self):
+        OrchestratorNode._report_attempts_exhausted(self)
 
     def _preempt_for_emergency(self, now):
         return OrchestratorNode._preempt_for_emergency(self, now)

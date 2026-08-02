@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
+from selene_orchestrator.task_feed import (
+    SITE_SELECTED,
+    SITE_SELECTED_PARTIAL,
+    TASK_MAX_ATTEMPTS,
+)
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus
 
 if TYPE_CHECKING:
@@ -39,11 +44,81 @@ see ``get_mission_status()['deposited_is_measured']``, which tells a consumer
 which of the two it got.
 """
 
+MAX_CYCLE_OVERPLAN_FACTOR: int = 4
+"""Hard cap on how many cycles a mission may plan, as a multiple of nominal.
+
+The ceiling is ``MAX_CYCLE_OVERPLAN_FACTOR * ceil(target / HOPPER_CAPACITY_KG)``
+haul tasks. It exists because ``check_and_advance``'s top-up is a FEEDBACK LOOP
+whose only feedback signal is the ledger: a haul that COMPLETES without its mass
+ever reaching ``MaterialInventory`` looks exactly like a haul that delivered
+nothing, and the loop would then append one cycle per completed haul forever.
+That path is real rather than hypothetical -- a skill that cannot read its fill
+sensor publishes NOTHING rather than a zero
+(``selene_agent/selene_agent/skills/excavate.py``), and D-42 is a worked example
+of a sensor channel becoming unreadable. Unbounded growth here is unbounded
+growth of ``selene_msgs/msg/TaskQueueState``, republished in full at 2 Hz over
+rosbridge.
+
+WHY 4, AND NOT LARGER. It is a bound on per-cycle YIELD, not on mass: a factor
+of ``k`` tolerates an average delivery down to ``1/k`` of ``HOPPER_CAPACITY_KG``.
+The only shortfall ever measured is the 19.0 kg per delivery of the 2026-07-31
+ten-robot run (register :947), i.e. 1.06x nominal -- so 4 has ~4x headroom over
+the only evidence there is. 2 was rejected because it puts a 10 kg/cycle mission
+EXACTLY at the bound, and a bound that binds in a plausible case is a silent
+under-delivery. 4 bounds a nominal 100 kg mission's queue at
+10 prospect + 1 select_site + 2*20 cycle tasks = 51 tasks.
+
+WHAT IT DOES NOT GUARANTEE. It is not a delivery guarantee and not a safety
+limit. When it binds the planner simply stops topping up and
+``get_mission_status()['complete']`` stays False -- which surfaces as a stalled
+MissionProgress bar and nothing louder. ``HTNPlanner`` is pure Python with no
+logger by construction (module docstring), so it cannot say so itself.
+"""
+
 SURVEY_WAYPOINT_COUNT: int = 10
 """Default number of survey waypoints generated for a PSR zone."""
 
 SURVEY_SPACING: float = 20.0
 """Hex-grid spacing (meters) for survey waypoint generation."""
+
+SELECT_SITE_SURVEY_QUORUM: int = 1
+"""How many surveys must actually COMPLETE before an extraction site is chosen.
+
+The quorum on the ONE soft dependency edge in this mission, carried on the
+select_site task as ``TaskEntry.depends_on_quorum``. It does NOT stand alone:
+``TaskQueue.dependencies_met`` still requires every survey to be RESOLVED first,
+so the mission never chooses a site while a scout is driving to a waypoint.
+
+NOT ZERO, AND THAT IS THE WHOLE POINT OF THE NUMBER. ``_pick_best_site`` has an
+explicit fallback for having no readings at all -- ``if not np.any(mean_grid >
+0.0): return zone_center`` -- so a quorum of 0 would let this planner choose an
+extraction site having surveyed NOTHING, generate every excavate and haul
+against it, and report success. That is the exact shape of deviation D-29, where
+an exit-gate check passed vacuously on a map with total_observations = 0. This
+repository treats vacuous success as a defect, so at least one survey must
+really have returned readings before the posterior is scored. With ten surveys
+dead the mission still STOPS -- loudly, on ten CRITICAL exhaustion alerts --
+and that is the design, not an oversight.
+
+NOT TEN EITHER, which is what the queue enforced until D2 and is what made ONE
+failed survey permanently kill the whole ISRU chain: survey -> select_site is
+EVIDENTIAL, not causal. ``_pick_best_site`` scores the fused ResourceMap
+posterior and never reads the survey task list, so a lost survey costs
+CONFIDENCE, not correctness.
+
+1 IS A FLOOR ON EVIDENCE, NOT A TARGET, and it is a weak one: one completed
+survey is one waypoint's disc of observations, and the site will be the best cell
+of that disc. This guarantees NOT-VACUOUS; it does not guarantee GOOD. The
+nominal plan is still ten waypoints and the ordinary path still completes all
+ten. WHAT IT COSTS WHEN IT BINDS is reported rather than inferred -- see the
+'site_selected_partial' status_reason and the WARNING FleetAlert in
+``orchestrator_node._htn_advance``.
+
+IT IS NOT A ROS PARAMETER. ``test_no_orphan_parameters.py``'s allow-list is the
+single name ``fleet_state_publish_rate`` and stays there; and a quorum over an
+evidential edge is a property of the decomposition, like ``TASK_MAX_ATTEMPTS``
+and ``navigator.MAX_REPLAN_ATTEMPTS``, not a per-deployment dial.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +284,17 @@ class HTNPlanner:
         self._deposited_kg: float = 0.0
         self._depot: tuple[float, float] = (50.0, 50.0)
         self._select_site_id: str = ""
-        self._cycles_generated: int = 0
+        # One-pass debounce on the cycle top-up. A shortfall must be observed
+        # on two CONSECUTIVE check_and_advance passes before a cycle is added.
+        # It exists for a measured race, not a hypothetical one: the agent
+        # publishes the 'unloaded' MaterialEvent (agent_node.py:787) BEFORE the
+        # TaskResult (:792), the two travel on different topics, and
+        # _htn_advance runs on a ReentrantCallbackGroup under a 4-thread
+        # executor -- so a pass can observe a haul already COMPLETED whose mass
+        # has not yet reached MaterialInventory. Undebounced, that window
+        # appends a spurious sixth cycle to an otherwise PERFECT 100 kg / 20 kg
+        # mission. One second of latency against a ~174 s cycle time.
+        self._shortfall_confirmed: bool = False
         self._zone_center: tuple[float, float] = (0.0, 0.0)
         self._zone_radius: float = 0.0
         # Allocated when SelectSite resolves. Every excavate and haul task the
@@ -224,6 +309,10 @@ class HTNPlanner:
         # into several the moment that slip exceeded its tolerance.
         self._site_id: str = ""
         self._site_position: tuple[float, float] | None = None
+        # (COMPLETED surveys, planned surveys) at the moment SelectSite
+        # resolved. (0, 0) until then. The REPORT that goes with the site, not
+        # an input to choosing it -- see ``check_and_advance``.
+        self._site_evidence: tuple[int, int] = (0, 0)
 
     # ------------------------------------------------------------------
     # Public API
@@ -244,12 +333,21 @@ class HTNPlanner:
         Returns the root mission task_id.
 
         SelectSite is a 'virtual' task (task_type='select_site') -- not
-        auctioned. It resolves when all survey deps complete. The planner
-        picks the best site from ResourceMap and generates Excavate+Haul
-        tasks.
+        auctioned. It resolves when every survey dep is RESOLVED (COMPLETED, or
+        FAILED with every attempt spent) and at least
+        ``SELECT_SITE_SURVEY_QUORUM`` of them COMPLETED -- the ONE soft
+        dependency edge in this mission, D2. The planner then picks the best
+        site from ResourceMap and generates Excavate+Haul tasks.
 
         Multiple Excavate+Haul cycles are created when
-        ``quantity > HOPPER_CAPACITY_KG``.
+        ``quantity > HOPPER_CAPACITY_KG``: ``ceil(quantity /
+        HOPPER_CAPACITY_KG)`` of them. That INITIAL count assumes every cycle
+        delivers a full hopper, which no measured cycle ever has (19.0 kg on
+        the 2026-07-31 run). It is a first guess, not a plan: ``check_and_advance``
+        tops the mission up against the LEDGER as deliveries land, so the
+        nominal count is the step size of a feedback loop rather than a yield
+        model. Nothing has been measured at decomposition time -- n=0 samples --
+        which is why the nominal is used here and only here.
         """
         self._mission_id = _uid("mission")
         self._target_kg = quantity_kg
@@ -257,7 +355,8 @@ class HTNPlanner:
         self._depot = depot
         self._zone_center = zone_center
         self._zone_radius = zone_radius
-        self._cycles_generated = 0
+        self._shortfall_confirmed = False
+        self._site_evidence = (0, 0)
 
         # --- 1. Survey waypoints ---
         waypoints = _generate_survey_waypoints(zone_center, zone_radius)
@@ -285,6 +384,16 @@ class HTNPlanner:
             priority=4.0,
             parent_task_id=self._mission_id,
             depends_on=survey_ids,
+            # THE ONLY SOFT EDGE IN THIS MISSION. survey -> select_site is
+            # EVIDENTIAL: losing a waypoint degrades the posterior, it does not
+            # invalidate the decision, and enforcing it as if it were causal is
+            # what made ONE failed survey kill the whole ISRU chain (D2). The
+            # excavate/haul chain in ``_generate_cycles`` is CAUSAL and keeps
+            # the default quorum of 0. It is 1 and NOT 0 because
+            # ``_pick_best_site`` falls back to the zone centre with no readings
+            # at all, so k=0 would choose a site having surveyed nothing -- the
+            # shape of D-29. See ``SELECT_SITE_SURVEY_QUORUM``.
+            depends_on_quorum=SELECT_SITE_SURVEY_QUORUM,
         )
 
         # Excavate+Haul cycles will be generated when SelectSite resolves
@@ -295,13 +404,42 @@ class HTNPlanner:
     def check_and_advance(self) -> None:
         """Called periodically (1 Hz). Advance virtual tasks and manage cycles.
 
-        For SelectSite tasks: if all ``depends_on`` are COMPLETED, query
-        ResourceMap for the best extraction site (highest mean, lowest
-        variance) within the survey zone, then generate Excavate and Haul
-        tasks with concrete coordinates.
+        For SelectSite tasks: if ``TaskQueue.dependencies_met`` says the survey
+        evidence allows it (every dependency RESOLVED and at least
+        ``SELECT_SITE_SURVEY_QUORUM`` COMPLETED), query ResourceMap for the best
+        extraction site (highest mean, lowest variance) within the survey zone,
+        then generate Excavate and Haul tasks with concrete coordinates. The
+        ``status_reason`` records which of the two happened:
+        ``SITE_SELECTED`` on full evidence, ``SITE_SELECTED_PARTIAL`` otherwise.
 
-        For mission tracking: check if total deposited >= target quantity.
-        If not enough, generate additional Excavate+Haul cycles.
+        For mission tracking: check if total deposited >= target quantity. If
+        not, and the cycles still UNDELIVERED cannot cover the shortfall at
+        ``HOPPER_CAPACITY_KG`` apiece, append ONE more Excavate+Haul cycle --
+        subject to a one-pass debounce (``_shortfall_confirmed``) and to
+        ``_cycle_ceiling()``.
+
+        THREE THINGS ABOUT THAT RULE ARE DELIBERATE.
+
+        * It compares against ``_count_undelivered_cycles()``, not against a
+          cumulative count of every cycle ever created. The cumulative form is
+          the D1 defect: the counter never decreases as work is delivered, so
+          ``needed_cycles > cycles_ever_created`` is UNSATISFIABLE for every
+          reachable state (``needed <= ceil(target/HOPPER) == created``
+          whenever ``deposited >= 0``). Exactly five cycles were ever created,
+          they delivered 94.85 kg against 100 kg, and no sixth could exist.
+        * A FAILED haul counts as still undelivered, so it SUPPRESSES a
+          replacement rather than provoking one. Appending a cycle here would
+          chain its excavate onto the failed haul (``_generate_cycles`` sequences
+          onto ``existing_hauls[-1]``), an excavate carries no dependency
+          quorum, and ``TaskQueue`` therefore requires that haul to be COMPLETED
+          for the replacement to become ready -- so it could never run. D2's
+          soft quorum does not change this: it is on select_site alone, and the
+          excavate/haul chain is deliberately still a HARD edge. Recovering a FAILED haul is a queue
+          concern, not a planner one; this branch deliberately does not
+          manufacture dead tasks to paper over it.
+        * ONE cycle per pass, never a batch. The loop runs at 1 Hz and is
+          idempotent, so a batch buys nothing, and a cap of one bounds the
+          damage of any stale ledger read to a single cycle.
         """
         if not self._select_site_id:
             return
@@ -310,22 +448,34 @@ class HTNPlanner:
         if site_task is None:
             return
 
-        # --- Resolve SelectSite when all survey deps are done ---
+        # --- Resolve SelectSite when the survey evidence allows it ---
         if site_task.status == TaskStatus.PENDING:
-            all_done = all(
-                self._queue.get_task(dep) is not None
-                and self._queue.get_task(dep).status == TaskStatus.COMPLETED
-                for dep in site_task.depends_on
-            )
-            if all_done:
+            # THE SAME PREDICATE THE AUCTION USES, not a second copy of it.
+            # What stood here was ``all(dep is COMPLETED)``, written out again
+            # -- so the queue and the planner each had their own idea of when a
+            # dependency was satisfied, and D2's deadlock lived in THIS one:
+            # select_site is virtual, ``_auction_tick`` skips it by task_type
+            # and never announces it, so nothing but this line ever resolves it.
+            # ``TaskQueue.dependencies_met`` is now the only expression of the
+            # rule and this is its 1 Hz caller.
+            if self._queue.dependencies_met(site_task, TASK_MAX_ATTEMPTS):
+                # Counted for the REPORT, never for the decision -- the decision
+                # is the line above. It is how much evidence the site was chosen
+                # on, and ``orchestrator_node._htn_advance`` turns a shortfall
+                # into a WARNING FleetAlert.
+                completed = self._queue.completed_dependencies(site_task)
+                total = len(site_task.depends_on)
+                self._site_evidence = (completed, total)
+
                 site_x, site_y = self._pick_best_site()
                 site_task.progress_metadata["site_x"] = site_x
                 site_task.progress_metadata["site_y"] = site_y
                 self._site_id = _uid("site")
                 self._site_position = (float(site_x), float(site_y))
-                self._queue.set_status(self._select_site_id,
-                                       TaskStatus.COMPLETED,
-                                       "site_selected")
+                self._queue.set_status(
+                    self._select_site_id, TaskStatus.COMPLETED,
+                    SITE_SELECTED if completed >= total
+                    else SITE_SELECTED_PARTIAL)
 
                 # Generate initial excavate+haul cycles
                 self._generate_cycles(site_x, site_y)
@@ -334,17 +484,19 @@ class HTNPlanner:
         self._update_deposited()
 
         # --- If deposited < target, generate more cycles if needed ---
+        shortfall = False
         if not self._is_mission_complete():
             site_x = site_task.progress_metadata.get("site_x")
             site_y = site_task.progress_metadata.get("site_y")
             if site_x is not None and site_y is not None:
                 remaining = self._target_kg - self._deposited_kg
                 needed_cycles = math.ceil(remaining / HOPPER_CAPACITY_KG)
-                if needed_cycles > self._cycles_generated:
-                    self._generate_cycles(
-                        site_x, site_y,
-                        count=needed_cycles - self._cycles_generated,
-                    )
+                shortfall = needed_cycles > self._count_undelivered_cycles()
+                if (shortfall and self._shortfall_confirmed
+                        and self._count_cycles() < self._cycle_ceiling()):
+                    self._generate_cycles(site_x, site_y, count=1)
+                    shortfall = False
+        self._shortfall_confirmed = shortfall
 
     def get_mission_status(self) -> dict:
         """Return mission progress summary.
@@ -370,6 +522,21 @@ class HTNPlanner:
     def get_site_id(self) -> str:
         """Ledger site id allocated when SelectSite resolved, or ""."""
         return self._site_id
+
+    def get_site_evidence(self) -> tuple[int, int]:
+        """(COMPLETED surveys, planned surveys) behind the selected site.
+
+        ``(0, 0)`` before SelectSite resolves. When the two differ the site was
+        chosen on PARTIAL evidence -- every survey RESOLVED, but some of them
+        having exhausted every attempt and stayed FAILED -- so the fused
+        posterior it was picked from is missing those waypoints' cells.
+
+        A REPORT AND NOT A GATE. Nothing here re-selects the site or blocks the
+        mission; the decision was ``TaskQueue.dependencies_met``'s and is
+        already taken by the time this can be read. One production caller,
+        ``orchestrator_node._htn_advance``, which raises the WARNING FleetAlert.
+        """
+        return self._site_evidence
 
     def get_site_position(self) -> tuple[float, float] | None:
         """World (x, y) of the selected extraction site, or None.
@@ -529,7 +696,6 @@ class HTNPlanner:
             )
 
             prev_dep = haul_id
-            self._cycles_generated += 1
 
     def _update_deposited(self) -> None:
         """Refresh deposited_kg from the ledger, or estimate it.
@@ -563,6 +729,43 @@ class HTNPlanner:
             ):
                 active += 1
         return active
+
+    def _count_undelivered_cycles(self) -> int:
+        """Count this mission's cycles whose haul has NOT COMPLETED.
+
+        A cycle is DELIVERED when its haul completes -- ``_update_deposited``
+        already keys the mission's progress on exactly that -- so the haul is
+        the task this counts, not the excavate.
+
+        DELIBERATELY UNLIKE ``_count_active_cycles``, which filters excavates
+        and excludes both COMPLETED and FAILED: here a FAILED haul is still
+        UNDELIVERED, so it suppresses a replacement cycle. See
+        ``check_and_advance``'s docstring for why manufacturing a replacement
+        chained onto a failed haul would produce a task that can never run.
+
+        Derived by scanning the queue rather than mirrored in a counter, for
+        the reason ``_cycles_generated`` no longer exists: a mirror counter that
+        only ever increments stops tracking the quantity its comparison needs
+        the instant the first haul is delivered.
+        """
+        return sum(
+            1 for t in self._queue.get_all_tasks()
+            if t.task_type == "haul"
+            and t.parent_task_id == self._mission_id
+            and t.status != TaskStatus.COMPLETED
+        )
+
+    def _count_cycles(self) -> int:
+        """Count every cycle this mission has ever planned, delivered or not."""
+        return sum(
+            1 for t in self._queue.get_all_tasks()
+            if t.task_type == "haul" and t.parent_task_id == self._mission_id
+        )
+
+    def _cycle_ceiling(self) -> int:
+        """Most cycles this mission may ever plan. See MAX_CYCLE_OVERPLAN_FACTOR."""
+        return MAX_CYCLE_OVERPLAN_FACTOR * math.ceil(
+            self._target_kg / HOPPER_CAPACITY_KG)
 
     def _is_mission_complete(self) -> bool:
         """Return True when deposited quantity meets or exceeds target."""
