@@ -114,7 +114,7 @@ class TestTaskRows:
             'preferred_robot', 'priority', 'progress', 'quantity_kg',
             'target_location', 'parent_task_id', 'depends_on',
             'required_capabilities', 'status_reason', 'status_changed',
-            'auction_rounds',
+            'auction_rounds', 'emergency',
         }
         q = TaskQueue()
         q.add_task('t1', 'excavate', 1.0, 2.0)

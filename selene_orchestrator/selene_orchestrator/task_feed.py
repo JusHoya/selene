@@ -140,6 +140,7 @@ def task_rows(task_queue) -> list[dict]:
             'status_reason': task.status_reason,
             'status_changed': float(task.status_changed),
             'auction_rounds': int(task.auction_rounds),
+            'emergency': bool(getattr(task, 'emergency', False)),
         })
     return rows
 
@@ -225,6 +226,18 @@ def resolve_auction_winner(task, bids: Iterable[Any],
 #: nobody bid on -- once, five times, or abandoned -- was still never STARTED,
 #: so PENDING remains the only honest status for it. What changed is the
 #: reason, not the state.
+#:
+#: ``AUCTION_PREEMPTED`` IS DELIBERATELY ABSENT and its absence is a decision,
+#: not the omission it looks like. Every reason in this map answers "an auction
+#: RESOLVED against this task; where does it land?", and the answer is a
+#: constant because the task was never started. A preempted auction did not
+#: resolve at all, so the honest landing place is not a constant: it is
+#: whatever the task was doing before the auction opened, which
+#: ``TaskQueue.abort_auction`` restores from ``status_before_auction``.
+#: Listing it here with a value of PENDING would be exactly the D-03 erasure --
+#: an INTERRUPTED task quietly re-PENDed -- reached through a lookup table.
+#: ``_resolve_auction`` is the only consumer of this map and the preempt path
+#: does not go through it.
 REQUEUE_STATUS_BY_REASON = {
     'auction_no_bids': TaskStatus.PENDING,
     'auction_backoff': TaskStatus.PENDING,
@@ -273,6 +286,113 @@ AUCTION_ABANDONED = 'auction_abandoned'
 
 #: What a woken task's ``status_reason`` becomes.
 AUCTION_FLEET_CHANGED = 'fleet_changed'
+
+
+# --------------------------------------------------------------------------- #
+#  Operator emergency preemption (2026-08-01)                                  #
+# --------------------------------------------------------------------------- #
+#
+# A DELIBERATE CHANGE TO AUCTION SEMANTICS, NOT A DEFECT FIX, and it is written
+# here in those terms because the alternative reading turns a decision into an
+# accident.
+#
+# Until now the orchestrator ran exactly one auction at a time and NOTHING could
+# interrupt it: ``_auction_tick`` returns early while ``TaskAuction.is_active()``
+# and no priority, however high, changed that. An operator injection at priority
+# 10.0 therefore waited for whatever was in flight, and the Phase 5 exit gate's
+# check 6 sometimes lost that race.
+#
+# The decision taken was NOT "make priority preempt". It was "let the operator
+# SAY it is an emergency, and preempt only then". A non-emergency priority-10
+# injection keeps exactly the old behaviour. The reason to draw the line there
+# rather than at priority is that priority is a scheduling number the planner
+# also writes, and inferring intent from it would mean any future task type
+# given a high number silently acquired the right to abort auctions.
+
+#: What the PREEMPTED task's ``status_reason`` becomes. It is written on the
+#: VICTIM, never on the emergency task: "my auction was taken away", not
+#: "I took one".
+AUCTION_PREEMPTED = 'auction_preempted'
+
+
+def should_preempt(running_task, candidate) -> bool:
+    """May *candidate* abort the in-flight auction for *running_task*?
+
+    Pure, so the whole decision is testable without a ROS node, an auction
+    object or a clock -- the same split, for the same reason, as
+    ``resolve_auction_winner`` above.
+
+    True iff ALL of:
+
+    * *candidate* is not None -- there is something to preempt FOR.
+    * ``candidate.emergency`` -- THE WHOLE CONTROL SURFACE. A priority-10
+      injection with this false waits, exactly as it did before this function
+      existed. There is no ROS parameter and no threshold: the operator's own
+      flag is the only input, so there is nothing to misconfigure and nothing
+      that can be tuned into "always preempt" by accident.
+    * ``not candidate.preemption_spent`` -- THE BOUND, and it is a bound on the
+      TOTAL number of auctions one injection may abort, not a rate. Nothing
+      ever clears ``emergency``, so without this the flag would be a standing
+      licence: an emergency nobody bids on is backed off, released again by
+      ``wake_deferred_auctions`` on every fleet change, and would abort
+      whatever fresh auction was in flight each time -- once per robot that
+      finishes anything, for the rest of the mission, with the victim's round
+      refunded every time so it could never complete one. One injection buys
+      ONE abort. A second could not help anyway: an abort frees the auction
+      SLOT and never a robot, so if the emergency did not attract a bid the
+      first time, the slot is not what it was short of.
+    * the two are not the same task -- a task cannot preempt its own auction,
+      which would abort a round and immediately re-open it, forever.
+    * ``candidate.priority > running_task.priority``, STRICTLY. THIS IS THE
+      TERMINATION ARGUMENT. Two emergencies at equal priority -- and every
+      operator injection is priority 10.0, so two emergencies are ALWAYS at
+      equal priority -- do not preempt each other. Without the strictness a
+      second emergency would abort the first one's auction, the first would
+      abort the second's on the next tick, and the fleet would trade the
+      auction slot back and forth without ever resolving a round. Equal
+      priority is settled by ``TaskQueue.get_next_ready``'s emergency
+      tie-break and then by waiting, which is finite.
+    * ``candidate.task_type != 'select_site'`` -- select_site is a VIRTUAL task
+      the HTN planner resolves and no robot ever bids on (``_auction_tick``
+      skips it). Aborting a real auction to open one that will never be
+      announced would strand the slot. It cannot arise today, because
+      ``inject_task_logic`` rejects every task_type outside
+      MANUAL_TASK_CAPABILITIES and only ``inject_task_logic`` sets
+      ``emergency``, but the guard is cheap and the coupling between those two
+      facts is not obvious from here.
+
+    *running_task* MAY BE None, and then an emergency candidate may preempt.
+    That is the case where the task whose auction is in flight has vanished
+    from the queue between the tick that started it and this one -- there is no
+    priority left to compare against and nothing that can be starved by taking
+    the slot back.
+
+    WHAT THIS FUNCTION DOES NOT DECIDE, and must not be read as having decided.
+    It answers "MAY this candidate preempt", never "WILL the preemption buy
+    anything". Whether an idle robot exists that can bid on the candidate, and
+    whether the D-06 ledger will let it be announced at all, are questions about
+    the fleet and the inventory that a pure function of two tasks cannot see;
+    ``orchestrator_node._preempt_for_emergency`` asks both BEFORE it aborts
+    anything. The split matters because an abort that is not followed by an
+    announcement in the same tick empties the auction slot and gives it to
+    nobody -- worse than not preempting, and the reason those gates are on the
+    caller's side of this boundary rather than bolted on here with a fleet
+    handle threaded through.
+    """
+    if candidate is None:
+        return False
+    if not getattr(candidate, 'emergency', False):
+        return False
+    if getattr(candidate, 'preemption_spent', False):
+        return False
+    if getattr(candidate, 'task_type', '') == 'select_site':
+        return False
+    if running_task is None:
+        return True
+    if getattr(candidate, 'task_id', '') == getattr(running_task, 'task_id', ''):
+        return False
+    return float(getattr(candidate, 'priority', 0.0)) > \
+        float(getattr(running_task, 'priority', 0.0))
 
 
 def auction_backoff_sec(failed_rounds: int, base_sec: float,

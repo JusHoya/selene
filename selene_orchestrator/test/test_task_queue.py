@@ -251,6 +251,13 @@ class TestNewTaskEntryFields:
         assert t.status_reason == ''
         assert t.auction_rounds == 0
         assert t.terminal_reported is False
+        # Added 2026-08-01 with operator emergency preemption. False is what
+        # every HTN-generated task must be: only inject_task_logic passes True.
+        assert t.emergency is False
+        # PENDING, not None: a task that has never been auctioned rests in
+        # PENDING anyway, so abort_auction can never restore a status the task
+        # could not legitimately be in.
+        assert t.status_before_auction is TaskStatus.PENDING
 
     def test_site_id_survives_interrupt_task(self):
         """THE reason site_id is a dataclass field and not a progress_metadata

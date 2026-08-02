@@ -102,6 +102,13 @@ function clockTime(ms) {
 // One task row's tooltip: everything that does not fit in six narrow columns.
 function rowTitle(task) {
   const parts = [`${task.id} — ${task.type || 'unknown'}`];
+  // The badge is three letters; this is where the semantics fit. Said in the
+  // past tense because that is what the flag records — the injection was armed
+  // as an emergency, so the orchestrator was permitted to abort an auction
+  // already in flight rather than queue behind it.
+  if (task.emergency) {
+    parts.push('EMERGENCY injection — allowed to preempt an auction in flight');
+  }
   if (task.assigned_robot) parts.push(`on ${task.assigned_robot}`);
   else if (task.preferred_robot) parts.push(`prefers ${task.preferred_robot}`);
   if (task.status_reason) parts.push(`reason: ${task.status_reason}`);
@@ -120,8 +127,16 @@ function TaskRow({ task, selected, onClick }) {
   const isInProgress = task.status === 'IN_PROGRESS';
   const progressPct = Math.round((task.progress || 0) * 100);
   const robotColorVal = robotColor(task.assigned_robot);
-  const rowClass =
-    'task-queue__row' + (selected ? ' task-queue__row--selected' : '');
+  // Coerced rather than read raw: a TaskQueueState published by an orchestrator
+  // that predates the field arrives with the key absent, and `undefined` here
+  // must render an ordinary row rather than throw or badge it. The reducer's
+  // projector already applies this rule; TaskRow is also handed hand-built
+  // records by other views and by tests, so it does not assume it went through
+  // the projector.
+  const isEmergency = !!task.emergency;
+  const rowClass = 'task-queue__row'
+    + (selected ? ' task-queue__row--selected' : '')
+    + (isEmergency ? ' task-queue__row--emergency' : '');
 
   return (
     <li
@@ -133,7 +148,21 @@ function TaskRow({ task, selected, onClick }) {
         {statusLabel(task.status)}
       </span>
       <span className="task-queue__id-cell">
-        <span className="task-queue__id">{truncate(task.id, 22)}</span>
+        {/* The id shares its line with the emergency badge rather than taking a
+            seventh grid column: .task-queue__row and .task-queue__col-header
+            declare the SAME six-column template, and adding a child to one and
+            not the other silently misaligns every row under the header. */}
+        <span className="task-queue__id-line">
+          {isEmergency ? (
+            <span
+              className="task-queue__emergency"
+              aria-label="emergency injection"
+            >
+              EMG
+            </span>
+          ) : null}
+          <span className="task-queue__id">{truncate(task.id, 22)}</span>
+        </span>
         {/* D-03: the reason the status last changed. This is the line that
             separates a cancelled task from a finished one — both used to look
             identical here because the client inferred COMPLETED from the id

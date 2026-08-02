@@ -84,6 +84,26 @@ string[] required_capabilities
 #   auction lifecycle (task_queue.py:181, task_feed.py:203/207/210)
 #     'auction_started' | 'preferred_robot' | 'auction_no_bids' |
 #     'preferred_robot_absent' | 'preference_dropped'
+#     'auction_preempted' -- this task's auction was ABORTED, not resolved.
+#                            An operator injected an EMERGENCY task at a higher
+#                            priority while this auction was in flight, and the
+#                            orchestrator handed it the single auction slot
+#                            (task_queue.abort_auction, called from
+#                            orchestrator_node._preempt_for_emergency). The
+#                            status returns to whatever it was BEFORE the
+#                            auction started: PENDING for a task that was never
+#                            started, INTERRUPTED for one an operator had
+#                            cancelled -- D-03's distinction survives the
+#                            preemption. `auction_rounds` is REFUNDED, because
+#                            the round was never resolved and charging it would
+#                            expire another operator's preferred_robot for a
+#                            reason that has nothing to do with that robot.
+#                            A preemption is the ORCHESTRATOR'S OWN CHOICE and
+#                            is not evidence the fleet declined the task, so it
+#                            deliberately does NOT feed the D-20 backoff:
+#                            failed_auctions and the backoff deadline are left
+#                            untouched. Bids collected in the aborted window are
+#                            discarded (TaskAuction.reset).
 #   auction backoff, D-20 (task_feed.auction_failure_reason,
 #                          task_queue.wake_deferred_auctions)
 #     'auction_backoff'   -- two or more consecutive auctions closed with no
@@ -128,3 +148,23 @@ builtin_interfaces/Time status_changed
 # bids, a heartbeat timeout, an operator cancel, or a preferred robot that did
 # not bid.
 uint32 auction_rounds
+
+# True when this task was injected by an operator with InjectTask.emergency
+# set. Origin: task_queue.TaskEntry.emergency, projected by task_feed.task_rows.
+#
+# WHAT IT MEANS: this task was injected as an emergency, so it was allowed to
+# abort ONE auction already in flight for a lower-priority task.
+# WHAT IT DOES NOT MEAN: that it did, or that it still may. The entitlement is
+# spent the first time it is used (task_queue.TaskEntry.preemption_spent) and
+# this field is never cleared, so a true here says what the OPERATOR asked for,
+# not what the task can still do. A preemption leaves its evidence on the
+# VICTIM's row, as status_reason 'auction_preempted', not here; an emergency
+# task that arrived while the auction slot was free preempted nothing.
+# It is also NOT a priority: priority is 10.0 for every operator injection, and
+# a non-emergency 10.0 waits its turn.
+#
+# HTN-generated tasks are never emergency -- only inject_task_logic sets it --
+# so this is false on every row the planner produced.
+#
+# Appended at the end so the wire layout of every existing field is unchanged.
+bool emergency

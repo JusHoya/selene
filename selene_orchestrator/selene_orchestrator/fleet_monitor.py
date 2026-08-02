@@ -220,6 +220,12 @@ class FleetMonitor:
         # D-20: monotonically increasing count of robots ARRIVING in IDLE.
         # See ``idle_arrivals``.
         self._idle_arrivals: int = 0
+        # Robots whose bid was discarded because the auction they bid on was
+        # ABORTED rather than resolved -- see ``note_stranded_bidders`` and the
+        # BIDDING branch of ``_note_idle_arrival``. A set, not a count: the
+        # question asked of it is "did THIS robot lose its auction to an abort?"
+        # and it has to be answered once and then forgotten.
+        self._stranded_bidders: set[str] = set()
         # D-21: when each robot's pose last actually changed. See
         # ``assess_motion``.
         self._last_pose_change: dict[str, float] = {}
@@ -460,13 +466,55 @@ class FleetMonitor:
         WORKING -> IDLE), leaving the charger (RECHARGING -> IDLE), recovering
         from a fault (ERROR -> IDLE via an operator cancel), or appearing for
         the first time.
+
+        THE BIDDING EXCLUSION HAS ONE EXCEPTION, ADDED 2026-08-01 WITH EMERGENCY
+        PREEMPTION, and it is an exception because the justification above stops
+        being true for exactly one transition. "An auction LOSS, the ordinary
+        churn of a robot that bid and did not win" describes a round that
+        RESOLVED. A preempted auction did not resolve: nothing was won, no task
+        left the queue, and the robot's bid was thrown away by
+        ``TaskAuction.reset()`` on the orchestrator's own initiative. That robot
+        is genuinely new capacity, and it is capacity the preemption itself
+        created -- so if it did not count here, the ONE thing that can release a
+        backed-off or abandoned task (``wake_deferred_auctions``, driven only by
+        ``idle_arrivals``) could never be reached by the capacity a preemption
+        frees. ``note_stranded_bidders`` is how the orchestrator names those
+        robots; the mark is consumed the first time the robot leaves BIDDING, so
+        a robot that goes on to WIN the next auction (BIDDING -> ASSIGNED) does
+        not carry a stale mark into some later ordinary loss.
         """
         previous = self._robots.get(robot_id, {}).get('fsm_state')
+        stranded = False
+        if previous == 'BIDDING' and fsm_state != 'BIDDING':
+            # Consumed on ANY exit from BIDDING, not just the IDLE one, so the
+            # mark cannot outlive the auction it was written for.
+            stranded = robot_id in self._stranded_bidders
+            self._stranded_bidders.discard(robot_id)
         if fsm_state != 'IDLE':
             return
-        if previous in ('IDLE', 'BIDDING'):
+        if previous == 'IDLE':
+            return
+        if previous == 'BIDDING' and not stranded:
             return
         self._idle_arrivals += 1
+
+    def note_stranded_bidders(self, robot_ids) -> None:
+        """Record robots whose auction was ABORTED rather than resolved.
+
+        Called by ``orchestrator_node._preempt_for_emergency`` with the bidders
+        on the auction it is about to discard. Nothing in this system tells a
+        bidder its auction went away -- there is no such message -- so the robot
+        sits in BIDDING until its own ``auction_timeout_sec`` (7.0 s,
+        ``agent_node``) expires and then returns to IDLE. Without this mark that
+        arrival is indistinguishable from an ordinary auction loss and
+        ``_note_idle_arrival`` drops it.
+
+        Idempotent, and marking a robot that never becomes idle costs nothing:
+        the mark is consumed on the robot's next departure from BIDDING in any
+        direction, and a robot that is not in BIDDING at all simply never
+        matches.
+        """
+        self._stranded_bidders.update(str(rid) for rid in robot_ids)
 
     @property
     def idle_arrivals(self) -> int:
@@ -610,6 +658,34 @@ class FleetMonitor:
     def get_idle_robots(self) -> list[str]:
         """Return robot_ids currently in IDLE state."""
         return [rid for rid, s in self._robots.items() if s['fsm_state'] == 'IDLE']
+
+    def get_idle_robots_with_capabilities(self, capabilities) -> list[str]:
+        """IDLE robots holding EVERY capability in *capabilities*.
+
+        ALL of them, on ONE robot -- not the union across the idle set. A task
+        requiring ['excavate', 'haul'] is served by a single vehicle that can do
+        both, and a set-union test would report an idle scout plus an idle
+        hauler as able to service it.
+
+        An empty or missing requirement matches every idle robot, which is the
+        pre-existing behaviour of every task the HTN planner emits without
+        explicit capabilities.
+
+        WHY THIS EXISTS. ``_auction_tick``'s idle gate was ``if not idle:
+        return`` with no capability test, so a single idle excavator was enough
+        to open -- and burn -- a whole auction round for a prospect-only task
+        that no idle robot could ever bid on. Each burned round is charged to
+        D-20's backoff, and a task inside its backoff is invisible to
+        ``get_next_ready``; that is how an operator's EMERGENCY injection could
+        put itself to sleep and then watch a priority-5.0 survey take the one
+        capable robot. Announcing only what some idle robot could actually bid
+        on is the fix, and it is a SKIP rather than a RETURN in the caller so a
+        top-priority task nobody can serve does not starve the queue behind it.
+        """
+        required = set(capabilities or ())
+        return [rid for rid, s in self._robots.items()
+                if s['fsm_state'] == 'IDLE'
+                and required.issubset(set(s['capabilities'] or ()))]
 
     def get_robots_with_capability(self, capability: str) -> list[str]:
         """Return robot_ids that have the given capability."""

@@ -113,6 +113,21 @@ a single sentence covering both would be false about one of them.
   are n = 1, back-derived from one manoeuvre in one run. Until
   ``scripts/validate_phase5.sh`` runs on WSL2 and checks 6, 9 and 11 report
   PASS or FAIL rather than SKIP, D-34 and D-35 stay OPEN.
+* **The EMERGENCY half — ``injection_carries_emergency``, the emergency flag on
+  both injection transports, the ``TaskAnnouncement.emergency`` read in
+  ``_on_announcement`` and its assertion in check 6, ``queue_snapshots``,
+  ``preemption_precondition``, ``preemption_outcome``, ``evaluate_preemption``
+  and ``preemption_sentence`` — was written on 2026-08-01 on that same Windows
+  box and is IMPLEMENTED AND NOT YET DEMONSTRATED.** Its pure halves are
+  unit-tested in the ROS-free lane by
+  ``selene_orchestrator/test/test_phase5_probe_emergency.py``. NO PART OF IT HAS
+  SEEN A LIVE ORCHESTRATOR: no run of this file has yet issued an emergency
+  injection, no ``auction_preempted`` has been observed on
+  ``/orchestrator/task_queue``, and the corroboration clause has never returned
+  anything but the value a unit test handed it. What it changes is the STIMULUS
+  for checks 5 and 6, which is why both rows now state in their own words that
+  they measure the emergency path and that the non-emergency path is
+  deliberately untested by them.
 
 OUTPUT PROTOCOL
 ---------------
@@ -395,6 +410,91 @@ GOTO_NO_STATE_REASON = 'publishes no state'
 #: settle loop it replaces; what changed is that its expiry is no longer a
 #: verdict. See freeing_receipt().
 FREE_CORROBORATION_SEC = 10.0
+
+# ---- Checks 5 and 6: the EMERGENCY injection. -----------------------------
+#
+# The stimulus for these two rows changed on 2026-08-01. It is now an EMERGENCY
+# operator injection, and that is a change to the orchestrator's auction
+# semantics rather than a defect fix, so the rows have to say what they now
+# measure and what they deliberately no longer measure. Everything in this block
+# exists to keep those two sentences identical wherever they are printed.
+
+#: What "emergency" means, in one sentence. Spelled once because checks 5 and 6
+#: describe the SAME stimulus in the same report, and two hand-written
+#: paraphrases of one semantics change is how a reader ends up believing the
+#: gate tested two different things.
+EMERGENCY_SEMANTICS = (
+    'emergency=True means the orchestrator MAY abort an auction that is '
+    'already in flight and announce this task in the same 0.5s tick instead of '
+    'waiting for that auction to resolve — a deliberate change to auction '
+    'semantics, not a defect fix')
+
+#: Said by BOTH rows, because a reader who sees only one of them must still be
+#: told what this gate did not measure. The old behaviour is still the behaviour
+#: of every non-emergency injection, including every priority-10 one, and
+#: nothing in this gate exercises it.
+EMERGENCY_NOT_TESTED = (
+    'a NON-emergency priority-10 injection keeps the old wait-your-turn '
+    'behaviour and is deliberately NOT exercised by this row')
+
+#: ``/orchestrator/task_queue``, spelled once. It now has two readers — check
+#: 9's reaction latency and check 6's preemption corroboration — and a literal
+#: that drifted between them would leave one of them silently measuring an empty
+#: buffer, which is a PASS-shaped failure.
+TASK_QUEUE_TOPIC = '/orchestrator/task_queue'
+
+#: The ``TaskStatus.status`` a queue entry carries while its auction is open.
+QUEUE_STATUS_AUCTIONING = 'AUCTIONING'
+
+#: ``selene_orchestrator.task_feed.AUCTION_PREEMPTED``. Duplicated here rather
+#: than imported: this file's module-level imports are stdlib only by design, so
+#: that it imports on a box with no ROS and the ROS-free lane can pin its pure
+#: halves. The duplication is guarded — ``test_phase5_probe_emergency.py``
+#: compares this literal against ``task_feed``'s own when that package is
+#: importable, and ``importorskip``s when it is not (register D-36). Without
+#: that guard a drift here would turn the corroboration clause into a permanent
+#: "not corroborated", i.e. a FAIL naming the wrong system.
+AUCTION_PREEMPTED = 'auction_preempted'
+
+#: How stale the newest ``/orchestrator/task_queue`` snapshot before the
+#: injection may be and still be read as describing the injection instant,
+#: seconds. The snapshot comes off a 2 Hz timer, so this is four periods:
+#: enough that scheduler jitter or one dropped websocket frame does not void the
+#: clause, short enough that a snapshot from a different phase of the run cannot
+#: stand in for the injection. Past it the clause is NOT APPLICABLE and asserts
+#: nothing — a gate must not certify what it did not measure.
+PREEMPT_SNAPSHOT_STALENESS_SEC = 2.0
+
+#: The orchestrator's auction-tick period, seconds —
+#: ``OrchestratorNode.__init__``'s ``create_timer(0.5, self._auction_tick)``.
+#:
+#: WHY THE CLAUSE NEEDS IT, AND WHY MAX_TRANSPORT_LATENCY_SEC WAS NOT ENOUGH.
+#: A preemption can only happen on a tick, and the first tick after the
+#: injection lands up to one whole period later. Proving an auction was still
+#: open AT the injection therefore proves nothing about whether the orchestrator
+#: ever got a chance to preempt it: with 0.05 s of window left the orchestrator
+#: correctly takes ``_auction_tick``'s ``is_timed_out`` branch, resolves the
+#: auction and preempts nothing — exactly as specified — and a clause with no
+#: tick margin would call that a FAIL. MAX_TRANSPORT_LATENCY_SEC is 0.25 and is
+#: there for websocket arrival lag; borrowing it would cover half a period and
+#: would be borrowing a number for a purpose it was not measured for.
+#:
+#: Requiring the auction to still be open one full period after the injection is
+#: STRICTER, not looser: it makes the clause say NOT APPLICABLE on runs where it
+#: previously named a victim, and NOT APPLICABLE asserts nothing.
+ORCHESTRATOR_AUCTION_TICK_SEC = 0.5
+
+#: Verdicts of the preemption corroboration clause.
+#:
+#: NOT_APPLICABLE asserts nothing and can never fail a row. NOT_CORROBORATED is
+#: a FAIL. THERE IS DELIBERATELY NO VALUE THAT PASSES CHECK 6: the clause only
+#: ever adds a problem or a sentence, and the row is passed by its own
+#: announcement/assignment correlation or not at all. A corroboration that could
+#: pass a row on its own would be a second, weaker definition of check 6 hiding
+#: inside the first.
+PREEMPT_CORROBORATED = 'corroborated'
+PREEMPT_NOT_APPLICABLE = 'not_applicable'
+PREEMPT_NOT_CORROBORATED = 'not_corroborated'
 
 #: visualization_msgs/Marker constants, spelled out so this file needs no
 #: message class to interpret a recorded marker.
@@ -901,7 +1001,8 @@ class ProbeNode:
 
         # robot_id -> list of sample dicts, oldest first.
         self.states = {rid: [] for rid in self.fleet}
-        self.announcements = []      # (recv_time, task_id, task_type, x, y)
+        # (recv_time, task_id, task_type, x, y, emergency)
+        self.announcements = []
         self.assignments = []        # (recv_time, task_id, robot_id, x, y)
         self.maps = {}               # (sec, nanosec) -> ResourceMap message
         self.markers = {}            # (sec, nanosec) -> Marker message
@@ -1011,10 +1112,21 @@ class ProbeNode:
         return _cb
 
     def _on_announcement(self, msg):
+        # ``emergency`` is index 5 and IS READ — by check 6, which asserts that
+        # the flag the injection carried came back out on the wire. It is
+        # recorded here rather than left off because a field written by
+        # ``_publish_announcement`` and read by nobody is this repository's
+        # single most-repeated defect (CLAUDE.md lists seven), and the honest
+        # way to close that pattern is a reader, not a comment about its
+        # absence. ``getattr`` with a False default so a workspace built before
+        # the field existed degrades to "no emergency was announced" instead of
+        # crashing the callback thread — the same shape as the ``pose_valid``
+        # read in ``_make_state_cb``.
         with self.lock:
             self.announcements.append((
                 time.time(), msg.task_id, msg.task_type,
-                float(msg.target_location.x), float(msg.target_location.y)))
+                float(msg.target_location.x), float(msg.target_location.y),
+                bool(getattr(msg, 'emergency', False))))
 
     def _on_assignment(self, msg):
         with self.lock:
@@ -1161,7 +1273,35 @@ class ProbeNode:
             time.sleep(0.02)
         return None
 
-    def inject_task(self, task_type, x, y, quantity=0.0, robot_id=''):
+    def injection_carries_emergency(self):
+        """Does THIS WORKSPACE's ``InjectTask.srv`` have the emergency field?
+
+        ASKED OF THE GENERATED TYPE, NOT INFERRED FROM A SERVICE REPLY, AND
+        ASKED ONCE FOR BOTH TRANSPORTS. rosbridge builds its request out of the
+        same generated type this node imported, so a single answer is correct
+        for the websocket ``call_service`` path and for the rclpy fallback
+        alike. That is what stops the two transports asking for different
+        auction semantics inside one run — the failure mode where check 6
+        measures emergency preemption on a box with tornado and wait-your-turn
+        on a box without it, and reports the same sentence for both.
+
+        WHY IT IS ASKED AT ALL. A workspace built before the field exists must
+        DEGRADE, not crash. Generated request classes use ``__slots__``, so
+        assigning a field they do not have raises AttributeError, and
+        rosbridge's ``populate_instance`` raises NonexistentFieldException on
+        the same input — either would take out check 5 and, through it, checks 6
+        and 9, on a build whose only sin is being older than this probe. Same
+        rule and same reason as the ``pose_valid`` ``getattr`` in
+        ``_make_state_cb`` (register D-31).
+        """
+        try:
+            return hasattr(self._inject_type.Request(), 'emergency')
+        except Exception as exc:                 # pragma: no cover - type drift
+            log('InjectTask.Request() would not build: %s' % (exc,))
+            return False
+
+    def inject_task(self, task_type, x, y, quantity=0.0, robot_id='',
+                    emergency=False):
         request = self._inject_type.Request()
         request.task_type = task_type
         request.target_location.x = float(x)
@@ -1169,6 +1309,12 @@ class ProbeNode:
         request.target_location.z = 0.0
         request.quantity = float(quantity)
         request.assigned_robot_id = robot_id
+        if hasattr(request, 'emergency'):
+            # Written even when False, so this path can never leave the field
+            # at whatever the generated default happens to be and call it a
+            # decision. Guarded by hasattr for the reason
+            # injection_carries_emergency() states.
+            request.emergency = bool(emergency)
         return self._call(self._inject_client, request, 10.0)
 
     def override(self, robot_id, command, x=0.0, y=0.0):
@@ -2160,9 +2306,10 @@ def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing, task_id=''):
     own timing as a system defect.
 
     CALLED AFTER THE INJECTION, NOT BEFORE IT. The task is already queued at
-    priority 10.0 by the time this runs; see the stimulus-timeline comment in
-    ``main`` for why that ordering is what removes the race with the 0.5 s
-    auction tick.
+    priority 10.0, and since 2026-08-01 tagged ``emergency``, by the time this
+    runs; see the stimulus-timeline comment in ``main`` for why that ordering is
+    what removes the race with the 0.5 s auction tick, and why the emergency
+    semantics did not make it unnecessary.
 
     WHY THE FALLBACK EXISTS. At startup the HTN decomposition queues ten survey
     tasks, and with the default two scouts both go busy within seconds and stay
@@ -2251,8 +2398,311 @@ def pick_prospect_robot(probe, fleet, deadline_sec, allow_freeing, task_id=''):
                    % (deadline_sec, freed, note))
 
 
+def queue_snapshots(frames):
+    """Normalise recorded ``/orchestrator/task_queue`` frames for the clause below.
+
+    *frames* is what ``RosbridgeClient.frames`` returns —
+    ``(arrived, topic, msg, nbytes)`` — and the result is
+    ``[(arrived, {task_id: (status, status_reason)}), ...]``, oldest first, with
+    anything undecodable dropped rather than guessed at.
+
+    SEPARATE FROM THE PREDICATES THAT READ IT, and pure, so the ROS-free lane
+    can pin the decoding independently of the decisions. These frames are JSON
+    this probe did not build; a key that moved would otherwise surface as a
+    wrong verdict about the orchestrator rather than as a decoding failure in
+    the gate, which is the D-10 shape at reduced amplitude.
+
+    ``status_reason`` defaults to '' rather than raising: a build whose
+    TaskStatus predates the field is a build with no preemption to corroborate,
+    and ``evaluate_preemption`` refuses that run for a reason it can name.
+    """
+    out = []
+    for frame in frames:
+        arrived, _topic, msg, _nbytes = frame
+        if not isinstance(msg, dict):
+            continue
+        tasks = {}
+        for task in msg.get('tasks') or []:
+            if not isinstance(task, dict):
+                continue
+            task_id = str(task.get('task_id') or '')
+            if not task_id:
+                continue
+            tasks[task_id] = (str(task.get('status') or ''),
+                              str(task.get('status_reason') or ''))
+        out.append((float(arrived), tasks))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def preemption_precondition(snapshots, inject_time, injected_task_id,
+                            auction_timeout):
+    """Was another task PROVABLY under auction at the injection? -> (id, note).
+
+    The id is None whenever nothing can be proved, and the note always names
+    WHICH observation was used and over WHAT window — this clause exists to
+    corroborate a semantics change, and a corroboration that cannot say what it
+    looked at corroborates nothing.
+
+    THE OBSERVATION. The newest ``/orchestrator/task_queue`` snapshot that
+    arrived AT OR BEFORE ``inject_time``. That topic is a complete 2 Hz snapshot
+    of the task table (D-03), carrying ``status`` and ``status_reason`` per
+    entry, and it is the only instrument in this probe that can see an auction
+    that this gate is not itself the cause of. ``probe.announcements`` cannot:
+    it records that a task was announced, never that its auction is still open,
+    and it can never see a ``status_reason`` at all — so a precondition
+    established from the DDS stream could never have its consequence checked by
+    the same instrument, and every websocket-less run would become a FAIL about
+    the wrong thing.
+
+    THE PROOF OBLIGATION, AND WHY IT IS NOT JUST "IT SAID AUCTIONING". A task
+    seen AUCTIONING 0.4 s before the injection may have resolved 0.1 s before
+    it, in which case there was nothing to preempt and demanding a preemption
+    would fail a conforming system. So this asks for something stronger and
+    checkable: the LAST snapshot in which the candidate was NOT auctioning fixes
+    an upper bound on when its auction could have opened, and an auction cannot
+    CLOSE BY TIMEOUT before that instant plus ``auction_timeout_sec``. When that
+    earliest possible timeout is still in the future at the orchestrator's first
+    opportunity to act on the injection, the auction was in flight, provably,
+    rather than probably.
+
+    "BY TIMEOUT" IS LOAD-BEARING AND IT IS A WEAKER PREMISE THAN THE ONE THIS
+    CLAUSE WAS FIRST WRITTEN ON. Until 2026-08-01 ``TaskAuction`` genuinely had
+    a single exit — ``is_timed_out``, consumed only by ``_resolve_auction`` —
+    and this docstring said so. The emergency-preemption change added a SECOND
+    exit, ``_preempt_for_emergency``'s own ``self._auction.reset()``, so
+    "cannot have resolved" is no longer implied by the arithmetic: an auction
+    can now vanish early, and the thing that vanishes it is a preemption. That
+    matters here because the failure it opens is not a missed detection but a
+    MISATTRIBUTED one — a preemption caused by something other than this
+    injection (a second operator, a dashboard emergency issued mid-run, or the
+    D-42 hazard of a whole second SELENE stack on the same domain) leaves
+    ``auction_preempted`` on a victim, and ``preemption_outcome`` would credit
+    it to this gate's request. The defence is the PRIOR-PREEMPTION SCAN below:
+    if any preemption is already visible before the injection, this clause
+    refuses the run rather than attributing the next one to itself.
+
+    THREE CONSERVATISMS, ALL IN THE SAFE DIRECTION. ``arrived`` is websocket
+    arrival, later than the orchestrator's publish by the transport latency
+    check 9 measures, so MAX_TRANSPORT_LATENCY_SEC is subtracted from the bound
+    before it is used — without it the bound leans toward claiming "in flight",
+    which is the direction that manufactures failures. The staleness cap uses
+    the same inflated ``arrived``, which makes a marginal snapshot look older
+    and pushes the clause toward NOT APPLICABLE. And the deadline the bound is
+    compared against is ``inject_time`` plus one full
+    ORCHESTRATOR_AUCTION_TICK_SEC, because a preemption can only happen on a
+    tick and the first tick after the injection is up to a period away.
+    """
+    pre = [item for item in snapshots if item[0] <= inject_time]
+    if not pre:
+        return None, ('no %s snapshot arrived at or before the injection, so '
+                      'the queue state at that instant was never observed'
+                      % (TASK_QUEUE_TOPIC,))
+
+    # THE PRIOR-PREEMPTION SCAN. Whole recording up to the injection, every
+    # task, not just the eventual victim: any preemption already visible means
+    # something OTHER than this request is issuing emergencies at this
+    # orchestrator, and this clause cannot then tell its own consequence from
+    # somebody else's. NOT APPLICABLE, with the mechanism named, because a gate
+    # that credits itself with another actor's effect is worse than one that
+    # declines to measure.
+    for snap_arrived, snap_tasks in pre:
+        for other_id, other in snap_tasks.items():
+            if other[1] == AUCTION_PREEMPTED:
+                return None, (
+                    'a preemption was ALREADY visible before this injection — '
+                    '%s carried status_reason %r in the %s snapshot %.2fs '
+                    'before it. Something other than this request is issuing '
+                    'emergency injections at this orchestrator (a second '
+                    'operator, the dashboard, or a second SELENE stack sharing '
+                    'the domain — register D-42), so a preemption observed '
+                    'after the injection cannot be attributed to it and this '
+                    'clause asserts nothing'
+                    % (other_id, AUCTION_PREEMPTED, TASK_QUEUE_TOPIC,
+                       inject_time - snap_arrived))
+
+    arrived, tasks = pre[-1]
+    age = inject_time - arrived
+    if age > PREEMPT_SNAPSHOT_STALENESS_SEC:
+        return None, ('the newest %s snapshot before the injection arrived '
+                      '%.2fs before it, past the %.1fs this clause will treat '
+                      'as describing the injection instant, so what the '
+                      'orchestrator was auctioning at that moment is unknown'
+                      % (TASK_QUEUE_TOPIC, age, PREEMPT_SNAPSHOT_STALENESS_SEC))
+
+    candidates = [task_id for task_id, entry in tasks.items()
+                  if entry[0] == QUEUE_STATUS_AUCTIONING
+                  and task_id != injected_task_id]
+    if not candidates:
+        return None, ('no auction was in flight at injection — the %s snapshot '
+                      '%.2fs before it showed %d task(s) and none of them, '
+                      'other than the injected task itself, in %s'
+                      % (TASK_QUEUE_TOPIC, age, len(tasks),
+                         QUEUE_STATUS_AUCTIONING))
+
+    unproven = []
+    for task_id in candidates:
+        opened_after = None
+        for snap_arrived, snap_tasks in pre:
+            entry = snap_tasks.get(task_id)
+            if entry is None or entry[0] != QUEUE_STATUS_AUCTIONING:
+                opened_after = snap_arrived
+        if opened_after is None:
+            unproven.append('%s was already %s in the oldest snapshot '
+                            'recorded, so the instant its auction opened was '
+                            'never observed and its age cannot be bounded'
+                            % (task_id, QUEUE_STATUS_AUCTIONING))
+            continue
+        earliest_timeout = (opened_after - MAX_TRANSPORT_LATENCY_SEC
+                            + float(auction_timeout))
+        # The orchestrator's FIRST OPPORTUNITY TO ACT, not the injection
+        # instant. _auction_tick runs on a 0.5 s timer and a preemption can
+        # only happen on one of those ticks; an auction with 0.05 s of window
+        # left at the injection is correctly RESOLVED by that tick rather than
+        # preempted, and requiring it to still be open at inject_time would
+        # make the gate fail a conforming orchestrator.
+        must_survive_until = inject_time + ORCHESTRATOR_AUCTION_TICK_SEC
+        if earliest_timeout <= must_survive_until:
+            unproven.append('%s was %s at the injection but had been so for '
+                            'long enough that its own %.1fs auction window '
+                            'could have expired before the orchestrator\'s '
+                            'next %.1fs auction tick (%.2fs of slack), so it '
+                            'cannot be shown there was anything left to '
+                            'preempt when the orchestrator could first have '
+                            'acted'
+                            % (task_id, QUEUE_STATUS_AUCTIONING,
+                               float(auction_timeout),
+                               ORCHESTRATOR_AUCTION_TICK_SEC,
+                               must_survive_until - earliest_timeout))
+            continue
+        return task_id, ('%s was %s in the %s snapshot %.2fs before the '
+                         'injection, and its auction opened no earlier than '
+                         '%.2fs before that, so with a %.1fs auction window it '
+                         'could not have timed out for another %.2fs — %.2fs '
+                         'past the orchestrator\'s next %.1fs auction tick, so '
+                         'it was in flight when the orchestrator could first '
+                         'have acted on the injection'
+                         % (task_id, QUEUE_STATUS_AUCTIONING, TASK_QUEUE_TOPIC,
+                            age, arrived - opened_after,
+                            float(auction_timeout),
+                            earliest_timeout - inject_time,
+                            earliest_timeout - must_survive_until,
+                            ORCHESTRATOR_AUCTION_TICK_SEC))
+    return None, ('%d task(s) were %s at the injection but none provably still '
+                  'in flight: %s'
+                  % (len(candidates), QUEUE_STATUS_AUCTIONING,
+                     '; '.join(unproven)))
+
+
+def preemption_outcome(snapshots, victim, inject_time):
+    """Did *victim* leave AUCTIONING carrying 'auction_preempted'? -> (status, note).
+
+    Reads the first post-injection snapshot in which *victim* is no longer
+    AUCTIONING and reports what carried it out. ``status_reason`` is a durable
+    field on the queue entry, not an event, so the 2 Hz snapshot cannot miss it:
+    it stands until the task is next auctioned, and the emergency task holds the
+    single auction slot for a full ``auction_timeout_sec`` before that can
+    happen.
+
+    NEVER RETURNS A VALUE THAT PASSES A ROW. The two outcomes are "corroborated"
+    and "not corroborated"; the caller turns the second into a problem and the
+    first into a sentence.
+    """
+    post = [item for item in snapshots if item[0] > inject_time]
+    if not post:
+        return PREEMPT_NOT_CORROBORATED, (
+            '%s was under auction at the injection but no %s snapshot arrived '
+            'after it, so nothing was observed either way'
+            % (victim, TASK_QUEUE_TOPIC))
+    for arrived, tasks in post:
+        entry = tasks.get(victim)
+        if entry is None:
+            return PREEMPT_NOT_CORROBORATED, (
+                '%s vanished from the queue snapshot %.2fs after the '
+                'injection without ever being seen leaving %s, so no '
+                'status_reason was carried for it'
+                % (victim, arrived - inject_time, QUEUE_STATUS_AUCTIONING))
+        status, reason = entry
+        if status == QUEUE_STATUS_AUCTIONING:
+            continue
+        if reason == AUCTION_PREEMPTED:
+            return PREEMPT_CORROBORATED, (
+                '%s left %s %.2fs after the injection, to %s with '
+                'status_reason %r'
+                % (victim, QUEUE_STATUS_AUCTIONING, arrived - inject_time,
+                   status, reason))
+        return PREEMPT_NOT_CORROBORATED, (
+            '%s left %s %.2fs after the injection, but to %s with '
+            'status_reason %r rather than %r — the emergency injection did not '
+            'abort it'
+            % (victim, QUEUE_STATUS_AUCTIONING, arrived - inject_time, status,
+               reason or '(empty)', AUCTION_PREEMPTED))
+    return PREEMPT_NOT_CORROBORATED, (
+        '%s was still %s in every one of the %d snapshot(s) recorded after the '
+        'injection, the newest %.2fs after it'
+        % (victim, QUEUE_STATUS_AUCTIONING, len(post),
+           post[-1][0] - inject_time))
+
+
+def evaluate_preemption(snapshots, inject_time, injected_task_id,
+                        auction_timeout, emergency_carried, queue_note):
+    """The CONDITIONAL half of check 6. -> (status, note).
+
+    CONDITIONAL, NOT A NEW UNCONDITIONAL ASSERTION. Check 6's row is PRD row 4,
+    "Operator-injected task enters auction and gets assigned"; nothing in it
+    concerns preemption. What the emergency stimulus adds is a consequence that
+    is only observable WHEN AN AUCTION WAS IN FLIGHT, and on a fleet with no
+    auction open at the injection there is nothing to observe. So there are
+    three outcomes and only one of them can fail the row:
+
+    * NOT APPLICABLE — the precondition did not hold, or the instrument that
+      would have measured it was not available. Asserts nothing, and SAYS SO in
+      the report rather than passing silently, which is the difference between
+      a gate that declined to measure and a gate that measured and was happy.
+    * CORROBORATED — the victim left AUCTIONING with ``auction_preempted``.
+    * NOT CORROBORATED — the precondition held and the consequence did not
+      arrive. The caller adds this to check 6's problem list, so the row FAILS.
+
+    *queue_note*, when non-empty, is the reason the queue snapshot stream was
+    unusable and is reported verbatim; the caller owns that string because only
+    it knows whether the gap was the websocket or the message type.
+    """
+    if not emergency_carried:
+        return PREEMPT_NOT_APPLICABLE, (
+            'the injection did not carry emergency=True (this workspace\'s '
+            'InjectTask.srv has no such field), so no preemption was requested '
+            'and none is required')
+    if queue_note:
+        return PREEMPT_NOT_APPLICABLE, queue_note
+    if not snapshots:
+        return PREEMPT_NOT_APPLICABLE, (
+            'no %s snapshot was decoded from the websocket recording at all, '
+            'so the queue state around the injection was never observed'
+            % (TASK_QUEUE_TOPIC,))
+    victim, why = preemption_precondition(snapshots, inject_time,
+                                          injected_task_id, auction_timeout)
+    if victim is None:
+        return PREEMPT_NOT_APPLICABLE, why
+    status, note = preemption_outcome(snapshots, victim, inject_time)
+    return status, '%s; %s' % (why, note)
+
+
+def preemption_sentence(status, note):
+    """The clause's one sentence for the report, in the probe's own voice."""
+    if status == PREEMPT_CORROBORATED:
+        return 'PREEMPTION CORROBORATED: %s' % (note,)
+    if status == PREEMPT_NOT_APPLICABLE:
+        return ('preemption corroboration NOT APPLICABLE and nothing about '
+                'preemption is asserted by this row: %s' % (note,))
+    return 'PREEMPTION NOT CORROBORATED: %s' % (note,)
+
+
 def run_injection(results, probe, ws, target_xy):
-    """Check 5 only. Returns ``(task_id, inject_time)``; task_id is '' on failure.
+    """Check 5 only. Returns ``(task_id, inject_time, emergency)``.
+
+    ``task_id`` is '' on failure; ``emergency`` is whether the request really
+    carried the flag, which check 6 needs in order to know whether it is allowed
+    to require a preemption.
 
     EXPECTED WALL CLOCK: under a second, up to 15 s if the websocket call has to
     time out and fall back.
@@ -2266,6 +2716,13 @@ def run_injection(results, probe, ws, target_xy):
     available, because that is the transport the dashboard uses and PRD row 4's
     method says "inject via dashboard". Without tornado it falls back to the ROS
     service, and the row names which transport was used — never silently.
+
+    THE INJECTION IS AN EMERGENCY ONE, ON BOTH TRANSPORTS, FROM ONE DECISION.
+    ``probe.injection_carries_emergency()`` is consulted once, off the generated
+    type, and the same answer builds the websocket ``args`` dict and the rclpy
+    ``Request``. Two independent spellings of the same flag is exactly how one
+    transport would end up measuring emergency preemption and the other
+    wait-your-turn, under one report sentence that could not be true of both.
     """
     target_x, target_y = target_xy
     transport = 'rosbridge websocket (call_service)'
@@ -2273,14 +2730,27 @@ def run_injection(results, probe, ws, target_xy):
     message = ''
     ok = False
 
+    # Decided BEFORE either transport is chosen, so both carry the same thing.
+    # A build whose InjectTask.srv predates the field gets False here and is
+    # injected exactly as it was before this change — no crash, and check 6's
+    # corroboration clause turns itself off rather than failing that build for
+    # not doing something it was never asked to do.
+    emergency = probe.injection_carries_emergency()
+
     if ws is not None and ws.available:
+        args = {'task_type': 'prospect',
+                'target_location': {'x': target_x, 'y': target_y, 'z': 0.0},
+                'quantity': 0.0,
+                'assigned_robot_id': ''}
+        if emergency:
+            # Omitted rather than sent as False on an older build: rosbridge's
+            # populate_instance raises NonexistentFieldException on a field the
+            # .srv does not have, which would fail check 5 on a workspace that
+            # is merely older than this probe.
+            args['emergency'] = True
         reply = ws.call_service(
             '/orchestrator/inject_task', 'selene_msgs/srv/InjectTask',
-            {'task_type': 'prospect',
-             'target_location': {'x': target_x, 'y': target_y, 'z': 0.0},
-             'quantity': 0.0,
-             'assigned_robot_id': ''},
-            timeout_sec=15.0)
+            args, timeout_sec=15.0)
         if reply is not None and reply.get('result', False):
             values = reply.get('values') or {}
             ok = bool(values.get('success'))
@@ -2295,26 +2765,44 @@ def run_injection(results, probe, ws, target_xy):
         # the queue and harmless to the fleet, and it is the price of not
         # reporting a false FAIL on a slow bridge.
         transport = 'ROS service client (rclpy)'
-        response = probe.inject_task('prospect', target_x, target_y)
+        response = probe.inject_task('prospect', target_x, target_y,
+                                     emergency=emergency)
         if response is not None:
             ok = bool(response.success)
             task_id = str(response.task_id)
             message = str(response.message)
 
     inject_time = time.time()
+    if emergency:
+        emergency_note = (
+            'THIS IS AN EMERGENCY INJECTION: emergency=True is set on the '
+            'InjectTask request over BOTH transports — the rosbridge '
+            'call_service args and the rclpy fallback — from one decision taken '
+            'off the generated type, so the two cannot disagree about the '
+            'semantics this row measures. %s. And %s'
+            % (EMERGENCY_SEMANTICS, EMERGENCY_NOT_TESTED))
+    else:
+        emergency_note = (
+            'NOT AN EMERGENCY INJECTION: this workspace\'s InjectTask.srv has '
+            'no emergency field, so the request could not carry one and this '
+            'row measured the pre-emergency wait-your-turn semantics. Check '
+            '6\'s preemption corroboration reports itself NOT APPLICABLE on '
+            'this run and asserts nothing')
     results.measured(5, transport=transport, task_id=task_id,
-                     target=[target_x, target_y])
+                     target=[target_x, target_y], emergency=emergency)
     if not ok:
-        results.set(5, FAIL, 'inject_task via %s returned success=False (%s)'
-                    % (transport, message or 'no message'))
-        return '', inject_time
-    results.set(5, PASS, 'inject_task via %s returned task_id=%s (%s)'
-                % (transport, task_id, message or 'no message'))
-    return task_id, inject_time
+        results.set(5, FAIL,
+                    'inject_task via %s returned success=False (%s). %s'
+                    % (transport, message or 'no message', emergency_note))
+        return '', inject_time, emergency
+    results.set(5, PASS, 'inject_task via %s returned task_id=%s (%s). %s'
+                % (transport, task_id, message or 'no message', emergency_note))
+    return task_id, inject_time, emergency
 
 
 def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
-                        target_xy, note, chosen=''):
+                        target_xy, note, chosen='', ws=None, emergency=False,
+                        queue_topic_available=False):
     """Check 6 — the injected id, through announcement and assignment.
 
     *chosen* is the robot ``pick_prospect_robot`` returned. IT IS REPORTED AND
@@ -2323,8 +2811,25 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
     were the same would be claiming a correlation nobody measured. When they
     differ the row says so.
 
+    WHAT THE EMERGENCY STIMULUS CHANGES HERE, AND WHAT IT DOES NOT. The primary
+    assertion is unchanged and is still the whole of the PASS: the injected id
+    has to appear on ``/orchestrator/task_announcement`` and on
+    ``/orchestrator/task_assignment`` with its target matched to 1e-3, inside
+    ``auction_timeout_sec`` + 10 s. What is added is a CONDITIONAL
+    corroboration — see ``evaluate_preemption`` — which can turn a PASS into a
+    FAIL and can never do the reverse. The row now measures the emergency path
+    and only the emergency path, and says so.
+
     EXPECTED WALL CLOCK: ``auction_timeout_sec`` + 10 s (about 15 s at the
     shipped default of 5.0).
+
+    THE FLAG IS ALSO READ OFF THE WIRE. ``TaskAnnouncement.emergency`` is
+    recorded by ``_on_announcement`` and, when the injection really carried the
+    field, this row requires the announcement for the injected task_id to carry
+    it too. That is the whole reason the announcement hop is not another
+    "declared and never read" field: without a reader, an edit dropping
+    ``msg.emergency`` from ``_publish_announcement`` would turn one unit test
+    red and nothing else in the system, live or measured, would notice.
 
     THE BUDGET STARTS HERE, NOT AT THE INJECTION. ``main`` queues the task
     before it frees a robot, so the injected task can sit correctly PENDING for
@@ -2354,12 +2859,63 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
                 assignment = record
         time.sleep(0.2)
 
+    # ---- The emergency clause, computed ONCE and reported on every path. ----
+    #
+    # EVALUATED HERE, AFTER THE CORRELATION LOOP, because the loop has by now
+    # been running for tens of seconds past the injection and the websocket
+    # buffer is never cleared or windowed — the snapshots covering the injection
+    # instant and the half-second after it are all still in it. Evaluating
+    # earlier would ask the question before the answer could have arrived.
+    #
+    # IT IS COMPUTED ON THE FAILURE PATHS TOO. A row that fails its primary
+    # assertion is exactly the row whose reader most wants to know whether the
+    # emergency path was even exercised, and dropping the sentence there would
+    # make "check 6 failed" mean two different things on two different runs.
+    if ws is None or not ws.available:
+        queue_note = ('this clause reads %s, and this probe subscribes to that '
+                      'topic ONLY over the rosbridge websocket — none was '
+                      'available on this run, so the queue state at the '
+                      'injection was never observed'
+                      % (TASK_QUEUE_TOPIC,))
+    elif not queue_topic_available:
+        queue_note = ('this build has no selene_msgs/msg/TaskQueueState, so %s '
+                      'was never subscribed and the queue state at the '
+                      'injection was never observed (that topic arrives with '
+                      'D-03)' % (TASK_QUEUE_TOPIC,))
+    else:
+        queue_note = ''
+    snapshots = (queue_snapshots(ws.frames(TASK_QUEUE_TOPIC))
+                 if ws is not None and ws.available else [])
+    preempt_status, preempt_note = evaluate_preemption(
+        snapshots, inject_time, task_id, auction_timeout, emergency, queue_note)
+    preempt_sentence = preemption_sentence(preempt_status, preempt_note)
+
+    if emergency:
+        emergency_sentence = (
+            'THE STIMULUS FOR THIS ROW IS AN EMERGENCY INJECTION, so what is '
+            'measured here is the emergency path and nothing else: %s. And %s'
+            % (EMERGENCY_SEMANTICS, EMERGENCY_NOT_TESTED))
+    else:
+        emergency_sentence = (
+            'THE STIMULUS FOR THIS ROW WAS NOT AN EMERGENCY INJECTION: this '
+            'workspace\'s InjectTask.srv has no emergency field, so this run '
+            'measured the pre-emergency wait-your-turn semantics and %s'
+            % (EMERGENCY_NOT_TESTED,))
+
+    # Recorded before any branch returns, so --json-out carries the clause on a
+    # failed row as well as a passed one.
+    results.measured(6, task_id=task_id, emergency=emergency,
+                     preemption=preempt_status, preemption_note=preempt_note,
+                     task_queue_snapshots=len(snapshots))
+
     if announcement is None:
         results.set(6, FAIL,
                     'no task_announcement carrying task_id=%s within %.0fs of '
                     'a prospect-capable robot being idle (%s). The old gate '
                     'accepted ANY announcement here, and ten HTN survey tasks '
-                    'are queued at startup' % (task_id, budget, note))
+                    'are queued at startup. %s. %s'
+                    % (task_id, budget, note, emergency_sentence,
+                       preempt_sentence))
         return
     announce_latency = announcement[0] - inject_time
     if assignment is None:
@@ -2373,12 +2929,12 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
         results.set(6, FAIL,
                     'task %s was announced %.2fs after injection but was never '
                     'assigned within the following %.0fs. %d assignment(s) of '
-                    'OTHER tasks were seen in that window%s (%s)'
+                    'OTHER tasks were seen in that window%s (%s). %s. %s'
                     % (task_id, announce_latency, budget, len(others),
                        ' — the auction ran and this task did not win it'
                        if others else
                        ' — no auction resolved at all in that window',
-                       note))
+                       note, emergency_sentence, preempt_sentence))
         return
 
     assign_latency = assignment[0] - inject_time
@@ -2402,6 +2958,24 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
         problems.append('winner %s lacks the prospect capability (%s)'
                         % (winner, winner_state['capabilities']))
 
+    # THE FLAG, END TO END ON THE WIRE. The injection set
+    # InjectTask.emergency; this asserts TaskAnnouncement.emergency came back
+    # out carrying it, through DDS, on the announcement for THIS task_id.
+    #
+    # Asserted only when the request really carried the field — on a workspace
+    # whose InjectTask.srv predates it, `emergency` is False, the announcement
+    # is False, and there is nothing to check. It is a one-directional test for
+    # that reason: False == False would also hold on a build where
+    # _publish_announcement never sets the field at all.
+    announced_emergency = announcement[5] if len(announcement) > 5 else False
+    if emergency and not announced_emergency:
+        problems.append(
+            'the injection carried emergency=True but the task_announcement '
+            'for %s carried emergency=False — the flag did not survive '
+            'inject_task_logic -> TaskEntry -> _publish_announcement, so the '
+            'stimulus this row believes it applied is not the one that reached '
+            'the wire' % (task_id,))
+
     winner_note = ''
     if chosen and winner != chosen:
         winner_note = ('. The auction was won by %s, not by %s, which is the '
@@ -2410,19 +2984,34 @@ def correlate_injection(results, probe, task_id, inject_time, auction_timeout,
                        'because nothing here measured a link between them'
                        % (winner, chosen))
 
+    # THE CLAUSE CAN FAIL THIS ROW AND CAN NEVER PASS IT. It is appended to
+    # `problems`, so a run whose primary correlation succeeded but whose
+    # provably-in-flight auction was not aborted is a FAIL; a CORROBORATED or
+    # NOT APPLICABLE clause adds a sentence and no assertion, and the row is
+    # still passed by the announcement/assignment correlation above or not at
+    # all.
+    if preempt_status == PREEMPT_NOT_CORROBORATED:
+        problems.append(preempt_sentence)
+        # Already inside the problem list; appending it again below would print
+        # the same sentence twice in one cell.
+        tail = emergency_sentence
+    else:
+        tail = '%s. %s' % (emergency_sentence, preempt_sentence)
+
     results.measured(6, task_id=task_id, winner=winner, witness=chosen,
                      announce_latency_sec=round(announce_latency, 3),
                      assign_latency_sec=round(assign_latency, 3),
-                     idle_wait_sec=round(idle_wait, 3))
+                     idle_wait_sec=round(idle_wait, 3),
+                     announced_emergency=announced_emergency)
     if problems:
-        results.set(6, FAIL, '; '.join(problems))
+        results.set(6, FAIL, '%s. %s' % ('; '.join(problems), tail))
     else:
         results.set(6, PASS,
                     'task %s announced %.2fs and assigned to %s %.2fs after '
                     'injection, target matched to 1e-3; %.1fs of that was the '
-                    'gate waiting for an idle prospect-capable robot (%s)%s'
+                    'gate waiting for an idle prospect-capable robot (%s)%s. %s'
                     % (task_id, announce_latency, winner, assign_latency,
-                       idle_wait, note, winner_note))
+                       idle_wait, note, winner_note, tail))
 
 
 def evaluate_queue_latency(results, probe, ws, task_id, queue_topic_available):
@@ -2518,8 +3107,7 @@ def evaluate_queue_latency(results, probe, ws, task_id, queue_topic_available):
     poll_deadline = (assigned_at + MAX_QUEUE_REACTION_SEC
                      + QUEUE_POLL_MARGIN_SEC)
     while True:
-        for arrived, _topic, msg, _nbytes in ws.frames(
-                '/orchestrator/task_queue'):
+        for arrived, _topic, msg, _nbytes in ws.frames(TASK_QUEUE_TOPIC):
             if not isinstance(msg, dict):
                 continue
             for task in msg.get('tasks') or []:
@@ -2533,7 +3121,7 @@ def evaluate_queue_latency(results, probe, ws, task_id, queue_topic_available):
             break
         time.sleep(QUEUE_POLL_INTERVAL_SEC)
     if reaction is None:
-        snapshots = len(ws.frames('/orchestrator/task_queue'))
+        snapshots = len(ws.frames(TASK_QUEUE_TOPIC))
         # Record the half that WAS measured before returning: the transport
         # number is real whether or not the snapshot ever arrived, and losing it
         # from --json-out would make the two failures indistinguishable there.
@@ -3550,7 +4138,7 @@ def main(argv):
             websocket.subscribe('/orchestrator/resource_map',
                                 'selene_msgs/msg/ResourceMap')
             if task_queue_type is not None:
-                websocket.subscribe('/orchestrator/task_queue',
+                websocket.subscribe(TASK_QUEUE_TOPIC,
                                     'selene_msgs/msg/TaskQueueState')
             for rid in fleet:
                 websocket.subscribe('/%s/state' % (rid,),
@@ -3607,6 +4195,13 @@ def main(argv):
 
         # ---- The stimulus timeline. ----
         #
+        # THE INJECTION IS AN EMERGENCY ONE. ``run_injection`` sets
+        # ``emergency=True`` on the InjectTask request over whichever transport
+        # carries it, so checks 5 and 6 measure the emergency path — the path on
+        # which the orchestrator may abort an auction already in flight — and
+        # neither row says anything about a non-emergency priority-10
+        # injection. Both rows state that in their own detail line.
+        #
         # INJECT FIRST, FREE A ROBOT SECOND. The other order races the
         # orchestrator's own 0.5 s auction tick and loses about as often as it
         # wins. ``pick_prospect_robot`` returns the moment a robot reports IDLE;
@@ -3623,20 +4218,28 @@ def main(argv):
         # other scout is busy and neither the excavator nor the hauler can bid
         # on a prospect task.
         #
-        # Queueing the task first removes the race rather than widening a
-        # timeout around it. ``get_next_ready`` returns
-        # ``max(ready, key=priority)`` (``task_queue.py:269``) and an injected
-        # task is priority 10.0 (``orchestrator_node.py:468``) against 5.0 for a
-        # survey, so once it is in the queue it is the next task auctioned
-        # whenever an idle robot next appears — whichever side of the tick the
-        # stimulus landed on.
+        # THAT ARGUMENT USED TO END "and a priority-10 task cannot preempt an
+        # auction in flight". IT NO LONGER DOES, and the ordering is kept
+        # anyway, for two reasons that survive the semantics change. First,
+        # preemption is permission, not a guarantee: the orchestrator falls
+        # through into the ordinary start-auction path, which still returns
+        # early when ``get_idle_robots()`` is empty, so a task queued after the
+        # robot was freed can still lose the slot it was freed for. Second, and
+        # this is new, check 6's corroboration clause compares the queue
+        # snapshot taken BEFORE the injection with the snapshots after it; an
+        # injection issued after the fleet was perturbed would leave the clause
+        # nothing clean to compare against. Queueing the task first removes the
+        # race rather than widening a timeout around it: ``get_next_ready``
+        # returns ``max(ready, key=priority)`` (``task_queue.py:269``) and an
+        # injected task is priority 10.0 (``orchestrator_node.py:468``) against
+        # 5.0 for a survey.
         #
         # SIDE EFFECT, STATED: the task is now injected even on runs where no
         # robot can be freed, so one extra PENDING prospect task at (inject_x,
         # inject_y) may outlive the gate. It is a real survey task at priority
         # 10.0 and the fleet will run it like any other; the previous order left
         # the same task behind whenever the injection succeeded.
-        task_id, inject_time = run_injection(
+        task_id, inject_time, emergency = run_injection(
             results, probe, websocket, (args.inject_x, args.inject_y))
         chosen, note = pick_prospect_robot(
             probe, fleet, args.idle_wait,
@@ -3651,7 +4254,10 @@ def main(argv):
             correlate_injection(results, probe, task_id, inject_time,
                                 auction_timeout,
                                 (args.inject_x, args.inject_y), note,
-                                chosen=chosen)
+                                chosen=chosen, ws=websocket,
+                                emergency=emergency,
+                                queue_topic_available=(
+                                    task_queue_type is not None))
             evaluate_queue_latency(results, probe, websocket, task_id,
                                    task_queue_type is not None)
 

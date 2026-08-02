@@ -30,6 +30,43 @@ float32 quantity
 # discards for any robot not in BIDDING or ASSIGNED, i.e. exactly the busy robot
 # it was meant to serve, after having already re-PENDed that robot's task.
 string assigned_robot_id
+
+# EMERGENCY. A DELIBERATE CHANGE TO AUCTION SEMANTICS, not a defect fix.
+#
+# True asks the orchestrator to ABORT an auction that is already in flight for
+# a DIFFERENT, LOWER-priority task and open this one in the same tick
+# (task_feed.should_preempt, orchestrator_node._preempt_for_emergency). The
+# aborted task is restored to the status it held before that auction started,
+# its round is refunded, and it is re-announced on a later tick.
+#
+# WHAT IT DOES NOT MEAN.
+#   * It does NOT force-assign. The emergency task still enters the auction and
+#     still has to attract a bid -- everything the assigned_robot_id comment
+#     above says about preference-not-assignment applies unchanged.
+#   * It does NOT free a busy robot. A robot mid-task is still mid-task; the
+#     preemption ends an AUCTION, not an ASSIGNMENT. Use OverrideRobot
+#     'cancel_task' for that, exactly as before.
+#   * It does NOT change priority. Priority is still 10.0 for every operator
+#     injection, emergency or not, and priority alone still does NOT preempt:
+#     a non-emergency priority-10 injection waits for the in-flight auction to
+#     resolve, which is the pre-existing behaviour and is deliberately kept so
+#     that "urgent" remains something the operator says rather than something
+#     the orchestrator infers.
+#   * It does NOT preempt another emergency at the same priority. Equal
+#     priority never preempts, which is what makes the mechanism terminate
+#     rather than letting two injections abort each other's auctions forever.
+#   * It does NOT grant a standing right to abort auctions. It buys exactly ONE
+#     abort, spent only on a tick that goes on to announce this task in the
+#     same pass -- so an emergency no idle robot is capable of, or one the D-06
+#     ledger will not let be announced, aborts nothing at all rather than
+#     aborting a fresh auction every time any robot anywhere finishes a task.
+#     See task_queue.TaskEntry.preemption_spent.
+#
+# Appended at the end, before the '---', so the wire layout of every existing
+# request field is unchanged. False is the default a ROS 2 bool takes, and
+# false is exactly today's behaviour, so an older client that does not set it
+# gets what it has always got.
+bool emergency
 ---
 bool success
 string task_id

@@ -13,6 +13,28 @@ const TASK_TYPES = [
   { value: 'haul', label: 'Haul to Depot' },
 ];
 
+// What this panel SENT, in this panel's own voice, for the feedback line.
+//
+// Not derived from the orchestrator's reply. The reply is rendered verbatim
+// beside it and says what the ORCHESTRATOR decided; this says what left the
+// browser. An operator who believed they had armed the control and had not
+// needs to be able to tell those two apart, and a backend that silently ignored
+// the field would otherwise be indistinguishable from a control that never set
+// it.
+//
+// "ELIGIBLE TO", not "will". The dashboard does not own the preemption rule —
+// the orchestrator preempts only a LOWER-priority auction (task_feed's
+// should_preempt), and on most injections there is no auction in flight to
+// preempt at all. Promising a preemption here would make this line a lie on the
+// majority of injections.
+function emergencySummary(armed) {
+  return armed
+    ? 'sent with emergency = TRUE — eligible to preempt a lower-priority'
+      + ' auction already in flight'
+    : 'sent with emergency = false — waits for any auction already in flight to'
+      + ' resolve';
+}
+
 function TaskInjector({ state, dispatch, callService }) {
   // Wave2-A4: Local form state
   const [taskType, setTaskType] = useState('prospect');
@@ -20,6 +42,12 @@ function TaskInjector({ state, dispatch, callService }) {
   const [targetY, setTargetY] = useState('');
   const [quantity, setQuantity] = useState('0');
   const [assignedRobot, setAssignedRobot] = useState('');
+  // OFF by default, and re-set to OFF after every accepted injection (see the
+  // reset block in confirmSubmit). An arming control that persists is the
+  // accident: the operator arms it once for a genuine emergency and every
+  // routine injection for the rest of the shift silently carries preemption
+  // authority with it.
+  const [emergency, setEmergency] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -116,6 +144,20 @@ function TaskInjector({ state, dispatch, callService }) {
         // force-assigns on this field — the task enters the auction either way
         // and the preferred robot wins only if it bids.
         assigned_robot_id: assignedRobot || '',
+        // A DELIBERATE CHANGE TO AUCTION SEMANTICS, not a priority. Priority
+        // alone has never been able to jump an auction that is already open:
+        // the orchestrator runs one auction at a time and a higher-priority
+        // task waits for the running one to resolve. This flag is what asks it
+        // to abort that auction instead.
+        //
+        // ALWAYS SENT, never omitted when false. `emergency` is a trailing
+        // field on InjectTask.srv, so rosbridge would default it to false for
+        // us — but then the request the operator can read in a network trace
+        // would not contain the field they just decided about, and a key that
+        // appears only in the dangerous case is one nobody can prove is wired.
+        // Sending it both ways is what makes the "false by default" assertion
+        // in the test suite a measurement rather than an absence.
+        emergency,
       };
       const result = await callService(
         SERVICES.INJECT_TASK,
@@ -130,22 +172,35 @@ function TaskInjector({ state, dispatch, callService }) {
           // rather than a generic success this component made up.
           message: result.message || `Injected ${result.task_id || 'task'}`,
           taskId: result.task_id || '',
+          sent: emergencySummary(emergency),
         });
         // Reset form on success
         setTargetX('');
         setTargetY('');
         setQuantity('0');
         setAssignedRobot('');
+        // DISARMED HERE, and only here. Not in the error branches: an injection
+        // that was rejected for a bad coordinate is one the operator is about
+        // to retry, and silently dropping the emergency flag between the two
+        // attempts would send the retry with different semantics from the one
+        // they confirmed. Success is the point at which the decision has been
+        // spent.
+        setEmergency(false);
       } else {
         setFeedback({
           type: 'error',
           message: (result && result.message) || 'inject failed',
+          // What was sent matters MOST on a failure — a rejected emergency is
+          // the case where the operator needs to know whether the request they
+          // are about to retry carried preemption authority.
+          sent: emergencySummary(emergency),
         });
       }
     } catch (err) {
       setFeedback({
         type: 'error',
         message: err?.message || 'service call failed',
+        sent: emergencySummary(emergency),
       });
     } finally {
       setSubmitting(false);
@@ -240,8 +295,48 @@ function TaskInjector({ state, dispatch, callService }) {
           </div>
         )}
 
-        <button type="submit" disabled={!canSubmit}>
-          {submitting ? 'Submitting\u2026' : 'Submit'}
+        {/* THE EMERGENCY ARMING CONTROL.
+            This is not a priority dial and it is not styled like one. Priority
+            has never been able to jump a running auction \u2014 the orchestrator
+            auctions one task at a time and everything else waits, whatever its
+            priority. Arming this asks the orchestrator to ABORT the auction it
+            is running, which is a change to auction semantics and costs the
+            aborted task a round trip. The consequence is spelled out in BOTH
+            states rather than only when armed, because "what happens if I leave
+            this alone" is the question an operator actually has, and a control
+            that only speaks when armed teaches nothing about the default. */}
+        <div
+          className={'task-injector__emergency'
+            + (emergency ? ' task-injector__emergency--armed' : '')}
+        >
+          <label className="task-injector__emergency-arm">
+            <input
+              type="checkbox"
+              checked={emergency}
+              onChange={(e) => setEmergency(e.target.checked)}
+              aria-label="emergency"
+            />
+            <span className="task-injector__emergency-title">
+              {emergency ? '\u26a0 EMERGENCY \u2014 ARMED' : 'Emergency'}
+            </span>
+          </label>
+          <div className="task-injector__emergency-consequence">
+            {emergency
+              ? 'preempts an auction already in flight: a lower-priority auction'
+                + ' is aborted and this task is auctioned instead'
+              : 'off \u2014 this task waits for an auction already in flight to'
+                + ' resolve before it is auctioned'}
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className={emergency ? 'task-injector__submit--emergency' : undefined}
+        >
+          {submitting
+            ? 'Submitting\u2026'
+            : (emergency ? 'Submit EMERGENCY' : 'Submit')}
         </button>
       </form>
 
@@ -253,9 +348,13 @@ function TaskInjector({ state, dispatch, callService }) {
       )}
 
       {showConfirm && (
-        <div className="task-injector__confirm">
+        <div
+          className={'task-injector__confirm'
+            + (emergency ? ' task-injector__confirm--emergency' : '')}
+        >
           <p>
-            Inject <strong>{taskType}</strong> task at ({targetX}, {targetY})
+            Inject{emergency ? ' EMERGENCY' : ''} <strong>{taskType}</strong>
+            {' '}task at ({targetX}, {targetY})
             {needsQuantity
               ? (quantityValue > 0
                 ? `, target ${quantityValue} kg`
@@ -265,6 +364,24 @@ function TaskInjector({ state, dispatch, callService }) {
               ? `, prefer ${assignedRobot} (still auctioned)`
               : ' (auction)'}?
           </p>
+          {/* The second step of the arming. The checkbox above is one click;
+              this is where the cost is stated, at the moment it is about to be
+              paid. The stranded-bidder sentence is not decoration: a robot that
+              already bid on the aborted auction is told nothing, and stays in
+              BIDDING — unable to bid on anything, including this emergency —
+              until its own auction timeout expires. That is shipped agent
+              behaviour (selene_agent/agent_node.py, _handle_bidding), and it is
+              the reason an emergency injection is not free. */}
+          {emergency && (
+            <p className="task-injector__confirm-emergency">
+              EMERGENCY: if a lower-priority auction is already in flight, the
+              orchestrator ABORTS it and auctions this task instead. The aborted
+              task returns to the queue with its round refunded, but any robot
+              that had already bid on it stays in BIDDING until its own auction
+              timeout expires — it can bid on nothing until then, including
+              this. Leave the control off and this task simply waits its turn.
+            </p>
+          )}
           <div>
             <button type="button" onClick={confirmSubmit}>
               Confirm
@@ -283,6 +400,12 @@ function TaskInjector({ state, dispatch, callService }) {
           {feedback.message}
           {feedback.taskId && (
             <span className="task-injector__feedback-id">{feedback.taskId}</span>
+          )}
+          {/* What the BROWSER sent, beside what the orchestrator replied. See
+              emergencySummary() for why these are two separate sentences and
+              not one. */}
+          {feedback.sent && (
+            <span className="task-injector__feedback-sent">{feedback.sent}</span>
           )}
         </div>
       )}

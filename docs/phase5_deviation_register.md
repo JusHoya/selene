@@ -39,6 +39,20 @@ cause.** The headline measurement is the gate:
     2026-07-31   9 passed / 0 failed / 2 skipped   (exit 2 — a SKIP is not a pass)
     2026-08-01  10 passed / 1 failed / 0 SKIPPED   (exit 1)   at 9c1a4d7
 
+**Amended again later on 2026-08-01 with D-44, and D-44 is a different kind of
+entry from every other one here.** It does not record something that was wrong.
+It records a DECISION — that an operator injection tagged `emergency` may abort
+an auction already in flight, while a non-emergency priority-10.0 injection
+still waits — which this document and `CLAUDE.md` had until then deliberately
+left open, in those words. It then records the six defects the first
+implementation of that decision carried and the eighth "declared and never read"
+field it introduced, all found by adversarial review **before any of it ran**.
+**Nothing in D-44 has been demonstrated**: no `colcon build`, no live
+injection, no `auction_preempted` observed on the wire, and the exit gate not
+re-run. **Check 6's stimulus has changed** — it now injects an emergency — so a
+future PASS on that row would mean "the emergency path works", not "the race was
+fixed", and the non-emergency path is no longer exercised by any gate row.
+
 **Zero skips is the finding.** Checks 6 and 9 produced verdicts for the first
 time, so PRD exit-gate rows 3 and 4 are **measured at last** rather than
 unmeasurable — that is D-34 closed, on the gate's own output. **The gate still
@@ -87,7 +101,10 @@ behaviour was observed on a running system and the observation is named.
 For **IMPLEMENTED, NOT DEMONSTRATED** it means only that the defect is gone from
 the source and a test that fails without the fix passes with it. The split is
 stated per entry and summarised in the table below. **The Phase 5 exit gate has
-now been run and it does not pass** — see D-10 and "Recommended disposition".
+now been run TEN times and, as of runs 9 and 10 (2026-08-01, `d7f0f3e`), **it PASSES**
+— 11/0/0, exit 0, twice — see D-10, D-44's gate block and "Recommended
+disposition". Read D-44 before quoting the green: check 6's preemption
+corroboration reported NOT APPLICABLE on both runs.
 
 This document exists because a deviation was being carried by a single line in a
 shell script. `scripts/validate_phase5.sh` printed, into its own report footer:
@@ -126,14 +143,36 @@ permission slip. This file replaces it.
 | FR-MAP-4 RViz2 Visualization | P1 | D-08 | **Closed — implemented, overlay never seen** | published and machine-paired live; **its 2026-07-30 hot-cell figure is SUPERSEDED** (odom frame); **no RViz2 has ever rendered it, and that is still true on 2026-08-01** |
 | FR-MAP-1(e)(f) fused map on the wire | P0 | D-09 | **Closed — demonstrated** | largest live `ResourceMap` websocket frame 362 B (gate check 3, all three runs) |
 | Navigation slope limit | P1 | D-28, D-32 | **Closed 2026-08-01 — measured, enforced, demonstrated** | 54-trial capability campaign (`docs/slope_capability_2026-08-01.json`); limit 20°, enforced **per step**; every agent in the 2026-08-01 gate run logged depot and recharge pad **REACHABLE** |
-| Phase 5 exit gate itself | — | D-10, D-29, D-34, D-35, D-42 | **Run, three times. DOES NOT PASS** | 8/1/2 (exit 1), then 9/0/2 (exit 2), then **10 passed / 1 failed / 0 skipped (exit 1)** on 2026-08-01 at `9c1a4d7`. **Zero skips**: rows 3 and 4 measured at last. The remaining failure is D-42, cause unknown |
+| Phase 5 exit gate itself | — | D-10, D-29, D-34, D-35, D-42, **D-44** | **Run TEN times. PASSES — runs 9 and 10, both 11/0/0 exit 0** | 8/1/2 (exit 1), 9/0/2 (exit 2), then **10/1/0 (exit 1)** at `9c1a4d7`; runs 4-8 are recorded in `CLAUDE.md` and the regenerated report, **not in this document** (see the run-ledger note below). Run 8 was **9 passed / 1 failed / 1 skipped (exit 1)**, check 6 the only failure. **Runs 9 and 10, 2026-08-01 at `d7f0f3e` (dirty), are the first greens this gate has ever produced: 11 passed / 0 failed / 0 skipped, exit 0, twice.** Read D-44’s gate block before quoting them — **check 6 passed with its preemption corroboration clause reporting NOT APPLICABLE on both runs, so neither run measured a preemption**; the emergency path is demonstrated separately by `scripts/demo_emergency_preemption.py` |
+
+> **RUN LEDGER — a gap in this document, stated rather than papered over.**
+> This register was written against the **third** gate run and its summary rows,
+> its D-10 heading and its "Recommended disposition" all still said "three
+> times" until this amendment. The gate has in fact been run **eight** times.
+> Runs 4-7 were never written into this document at all and their individual
+> tallies are **not recoverable from anything in the tree**; run 8 is recorded
+> in `docs/phase5_validation_report.md` and in the commit message of `d7f0f3e`.
+> The headline figures below have been corrected to the eighth run. **Runs 4-7
+> remain unrecorded here, and this note exists so that absence is visible
+> rather than inferred.** The rule this register applies to superseded numbers
+> applies to missing ones too.
+>
+> One consequence worth stating plainly: `CLAUDE.md` was for a period **more
+> current than the document it names as the authority on Phase 5 status.** That
+> is the wrong way round, and it is the reason this amendment corrects the
+> summary rows rather than only appending a new entry.
 
 All nine Phase 5 requirements are **code-complete**, every deviation this
 register named against them has a fix in the tree, and as of the evening of
 2026-07-31 most of them have been **observed working on a running system**. What
-has not happened is a green exit gate: the gate has now been run **three** times
-and returned exit 1, exit 2 and exit 1. **Phase 5 cannot be recorded as
-closed.** See "Recommended disposition".
+has not happened is a green exit gate: ~~the gate has now been run **three**
+times and returned exit 1, exit 2 and exit 1~~ — **SUPERSEDED, see the run
+ledger above: the gate has been run EIGHT times, the best result is 9 passed /
+1 failed / 1 skipped (exit 1). ~~and it has NOT been re-run since D-44 landed.~~
+**SUPERSEDED: it HAS been re-run, twice, and runs 9 and 10 are both 11 passed /
+0 failed / 0 skipped, exit 0 — the first greens this gate has produced. See
+D-44's gate block, including why neither of them measured a preemption.**
+**Phase 5 cannot be recorded as closed.** See "Recommended disposition".
 
 **The implemented / demonstrated distinction is load-bearing and this register
 will not collapse it**, even now that most entries have crossed it. Two things
@@ -145,8 +184,12 @@ no longer on that list** — they were unmeasured in both 2026-07-31 runs for th
 reason recorded as D-34, and on 2026-08-01, with D-34 fixed on both sides, they
 produced verdicts and both PASSed.
 
-**Thirty-two deviations have been opened since this register's first draft —
-D-11 through D-42.** D-11..D-18 came from verifying the 2026-07-30 closures
+**Thirty-four deviations have been opened since this register's first draft —
+D-11 through D-44.** (This sentence read "Thirty-two … D-11 through D-42" and
+was already one behind when D-43 landed; it is corrected here and the count now
+includes **D-43**, the path follower that orbited its waypoints, and **D-44**,
+which is not a defect at all but the record of a DECISION — see that entry for
+why it carries a number anyway.) D-11..D-18 came from verifying the 2026-07-30 closures
 rather than accepting them. **D-19..D-37 were opened on the evening of
 2026-07-31**, and they divide into three groups worth naming separately:
 
@@ -192,8 +235,14 @@ Two lists remain required reading: "Open items carried forward" for what a
 closure deliberately does not cover, and "Verification limits" for what nobody
 has checked.
 
-**Two deviations are open as of 2026-08-01: D-37 and D-42, and neither has a
-known cause.** Everything else this register has ever opened is closed.
+~~**Two deviations are open as of 2026-08-01: D-37 and D-42, and neither has a
+known cause.**~~ **SUPERSEDED later on 2026-08-01. D-42 is CLOSED** — root-caused
+to a second `battery_node` on a shared ROS domain, reproduced on demand and the
+fix demonstrated against the reproduction (see that entry). **ONE deviation is
+open and its cause is unknown: D-37.** D-43 was opened and closed the same day.
+**D-44 is open in a different sense and must not be counted with D-37**: it
+records a DECISION rather than a defect, it has no unknown cause, and what it
+lacks is a demonstration — nothing in it has run.
 
 **A process failure is recorded in D-01 and D-02 themselves.** Every other
 2026-07-30 closure in this register was put through an adversarial review and
@@ -1313,7 +1362,48 @@ time array would add ~1 MB per message for a field nothing reads.
 > partly because the fleet's own map was empty — see the superseded-figure note
 > under D-08 — so treat 362 B as a floor, not a typical load.
 
-## D-10 — the exit gate tests less than its report implies — RUN THREE TIMES. THE GATE DOES NOT PASS
+## D-10 — the exit gate tests less than its report implies — RUN TEN TIMES. THE GATE PASSES AS OF RUNS 9 AND 10 (11/0/0, exit 0, both)
+
+> **CHECK 6'S STIMULUS CHANGED, 2026-08-01 (late), and this is where gate
+> changes are recorded.** This heading read "RUN THREE TIMES" until this
+> amendment; see the run ledger under "Status summary" for why that was five
+> runs stale and what is and is not recoverable about runs 4-7.
+>
+> **The eighth run is the best result the gate has produced: 9 passed /
+> 1 failed / 1 skipped, exit 1** (`docs/phase5_validation_report.md`, source
+> commit `0cf8080`, working tree dirty). **Check 6 is the only failure** and
+> check 9 SKIPs purely as its consequence — its own text says so: "task
+> manual_0000 was never assigned, so there is no orchestrator event to react
+> to". Checks 1, 2, 3, 4, 5, 7, 8, 10 and 11 all PASS.
+>
+> **Two changes to the gate follow from D-44, and neither widens anything.**
+>
+> 1. **The check-6 injection is now made with `emergency=True`, and the report
+>    row says so in the probe's own voice.** This is a change of STIMULUS, not
+>    of threshold: every prior assertion in check 6 survives byte-for-byte — the
+>    announcement carrying the injected `task_id`, the assignment carrying it,
+>    announced and assigned targets matched to 1e-3, the winner publishing state
+>    and holding the `prospect` capability, and the same `auction_timeout + 10.0`
+>    budget. **The consequence is that no gate row exercises the non-emergency
+>    wait-your-turn path any more**, and the probe discloses that on the PASS
+>    path as well as the FAIL paths.
+> 2. **A CONDITIONAL corroboration clause, which can fail the row and can never
+>    pass it.** If a task other than the injected one was observed AUCTIONING at
+>    injection time — and provably still in flight at the orchestrator's next
+>    tick, not merely at `inject_time` — check 6 additionally requires that task
+>    to be seen leaving AUCTIONING with `status_reason 'auction_preempted'`. If
+>    no auction was in flight, or the build cannot carry the field, or no
+>    snapshot decoded, or a preemption was already visible **before** the
+>    injection, the clause reports itself NOT APPLICABLE **with its reason
+>    named** and asserts nothing. It is only ever appended to the row's
+>    `problems` list. **A gate must not certify what it did not measure**, and
+>    `correlate_injection`'s own docstring already set that standard: "IT IS
+>    REPORTED AND NEVER ASSERTED."
+>
+> **⚠ NEITHER HAS RUN.** The gate has not been executed since D-44 landed, so
+> no version of check 6 has ever issued an emergency injection and the clause
+> has only ever returned values a unit test handed it. The numbers go in D-44's
+> TODO block, not here, and not until the ninth run exists.
 
 > **FOUR CHANGES TO THE GATE, 2026-08-01 (late), after D-42 was root-caused.**
 > None of them widens a threshold and none makes a failing measurement pass; two
@@ -4328,6 +4418,528 @@ excavate task exists for the first time in these runs.
 
 ---
 
+## D-44 — operator EMERGENCY preemption: a deliberate change to auction semantics, and the six defects the first implementation of it carried — DECIDED AND IMPLEMENTED 2026-08-01, UNIT-TESTED, **NOT DEMONSTRATED, EXIT GATE NOT RE-RUN**
+
+**THIS IS NOT A DEFECT FIX AND MUST NOT BE READ AS ONE.** Every other entry in
+this register records something that was wrong and was corrected. This one
+records a DECISION, taken by the operator, to change what the orchestrator's
+auction means — and then the defects the first implementation of that decision
+carried, found by adversarial review before any of it ran.
+
+### THE RACE THIS DECISION ANSWERS, STATED BEFORE THE ANSWER
+
+Check 6 asks that an operator-injected task be announced **and assigned**,
+correlated by `task_id`. It has failed on that second clause. The failure text
+the eighth run produced is the one in `docs/phase5_validation_report.md:22`:
+
+    task manual_0000 was announced 2.91s after injection but was never assigned
+    within the following 15s. 1 assignment(s) of OTHER tasks were seen in that
+    window — the auction ran and this task did not win it (no robot became IDLE
+    in 60s, so scout_01 was freed with an operator cancel_task first ...)
+
+**The mechanism was understood before this change and it has NOT been papered
+over.** The orchestrator runs one auction at a time — `_auction_tick` returns
+early while `self._auction.is_active()` and the auction has not timed out. The
+gate injects the task FIRST and only then waits for a prospect-capable robot to
+go idle; on the eighth run none did, so after 60 s the probe manufactured one
+with an operator `cancel_task`. That cancel arrives while an auction for a
+DIFFERENT task is already in flight, the freed robot bids on that in-flight
+task, and the injected task's next round finds no bidder.
+
+Two readings that were checked and are **not** the fault, recorded so this entry
+does not relitigate them: `get_next_ready` really does take the `max` over the
+ready set (`task_queue.py:501-505`), and `wake_deferred_auctions` really is
+wired to `FleetMonitor.idle_arrivals` — an earlier reading of mine that the wake
+had no production caller was WRONG and is withdrawn, **and that withdrawal
+stands**. (D-44 changed only the sort KEY that `max` is taken over, from
+priority alone to `(priority, 1 if emergency else 0)` — `self._rank`,
+`task_queue.py:455-456`. Priority still decides first, and an emergency at 10.0
+does not beat an ordinary task at 12.0.)
+
+**So the injected task was never blocked by a missing capability. It lost a
+race for a single auction slot it had no way to take.** Giving it a way to take
+that slot is a change to what an auction MEANS — a queued task could previously
+rely on an auction it had started running to completion — and that is why the
+answer below is a decision and not a fix.
+
+### THE DECISION, AND WHAT IT SUPERSEDES
+
+This register and `CLAUDE.md` both carried, until this entry, the sentence:
+
+> Whether a priority-10 operator injection should PREEMPT an in-flight auction
+> is a change to auction semantics and is left as an explicit decision, not made
+> silently to turn a row green.
+
+**That decision has now been taken, and it is narrower than the sentence
+implies.** An operator injection may abort an auction already in flight **if and
+only if the request is tagged as an emergency** — a new trailing
+`bool emergency` on `InjectTask.srv`. A NON-emergency priority-10.0 injection
+keeps exactly the pre-existing behaviour and waits for the auction to resolve.
+
+**The line is drawn at the flag and not at the number, deliberately.** Priority
+is a scheduling value the HTN planner also writes; inferring "abort the auction"
+from it would mean any future task type given a high number silently acquired
+the right to interrupt the fleet. `emergency` can only be set by
+`inject_task_logic`, i.e. only by a human at the console. There is **no ROS
+parameter** — the operator's own flag is the whole control surface, so there is
+nothing to misconfigure and nothing that can be tuned into "always preempt".
+
+### EVERY WIRE FIELD ADDED, AND WHO READS IT
+
+Three fields, all `bool emergency`, all **appended last** so the wire layout of
+every existing field is unchanged — the convention this repository already
+states on `TaskAnnouncement.quantity_kg`. Plus one new `status_reason` value.
+
+| where | line | written by | read by |
+|---|---|---|---|
+| `selene_msgs/srv/InjectTask.srv` (request, before the `---`) | `:69` | the dashboard's `TaskInjector`, and the gate probe over both transports | `inject_task_logic` via `getattr(request, 'emergency', False)` (`orchestrator_node.py:547`) |
+| `selene_msgs/msg/TaskAnnouncement.msg` | `:39` | `_publish_announcement` | `ProbeNode._on_announcement`, asserted by gate check 6 — see "the eighth field" below |
+| `selene_msgs/msg/TaskStatus.msg` | `:170` | `task_rows` (`task_feed.py:143`) → the orchestrator's 2 Hz `TaskQueueState` | `projectTaskRow` (`useFleetState.js:130`) → `TaskQueue.jsx`'s `EMG` badge |
+| `TaskStatus.status_reason` gains `'auction_preempted'` | `:87`, `:161` | `abort_auction` (`task_queue.py:341`) | the gate probe's conditional corroboration clause; the dashboard task feed |
+
+**`emergency` is the first field in this repository whose zero-initialisation is
+benign, and that is worth stating because the last one was not.** `pose_valid`
+had to be fail-safe-false and paid for it: ROS 2 initialises `bool` to false, a
+subscriber cannot tell "set false" from "never set", and so a workspace built
+one package at a time silently dropped robots out of the distance total. Here
+false means "not an emergency", which is *exactly* the pre-change behaviour, so
+a stale workspace, an older client, or a message from a pre-change orchestrator
+degrades to wait-your-turn rather than preempting spuriously. The
+`getattr(request, 'emergency', False)` at `orchestrator_node.py:547` is the same
+defence one layer up, for the ROS-free test stubs and any client that predates
+the field.
+
+**One comment in `InjectTask.srv` had to be reconciled rather than left to be
+read as a contradiction.** That file already says of `assigned_robot_id`: "It is
+NOT a way to pre-empt a busy robot. Use OverrideRobot 'cancel_task' first." That
+is still true, and it is about preempting a **robot**. `emergency` preempts an
+**auction** and frees no robot at all. The new field's comment block draws that
+line explicitly, because the two sentences sit in one file and a reader who took
+them as disagreeing would be right to.
+
+### WHAT THE VICTIM PAYS, AND WHY EACH PART
+
+| effect | decision | why |
+|---|---|---|
+| `status` | RESTORED from `status_before_auction`, not forced to PENDING | D-03: a task an operator cancelled rests in INTERRUPTED; re-PENDing it on the way out of an aborted auction is that erasure through a side door |
+| `auction_rounds` | REFUNDED, floored at 0 | the round never resolved. Charging it would let one operator's emergency silently expire a DIFFERENT operator's `preferred_robot`, which is supposed to mean "the robot you asked for did not bid", not "somebody jumped the queue" |
+| `failed_auctions`, `auction_backoff_until` | LEFT ALONE | a preemption is the orchestrator's own scheduling choice, not evidence the FLEET declined the task. Feeding D-20's backoff would punish the victim; clearing it would reward it. Neither is true |
+| collected bids | DISCARDED (`TaskAuction.reset`) | they were made for a round that will not resolve |
+
+### THE SIX DEFECTS THE FIRST IMPLEMENTATION CARRIED
+
+Found by adversarial review of the working tree, before the change had ever run.
+**Four of the six are about what BOUNDS a preemption, and none of them was
+visible from the unit tests** — `test_emergency_preemption.py`'s 42 tests (it
+collects **58** now; the repairs for these six defects are the difference, and
+that gap is the evidence for this paragraph rather than a discrepancy in it) were
+all correct and all green while every one of these held.
+
+1. **NOTHING BOUNDED HOW MANY AUCTIONS ONE EMERGENCY COULD ABORT.** `emergency`
+   is never cleared, so the flag was a STANDING licence rather than an event. An
+   emergency nobody bids on is backed off by D-20; `wake_deferred_auctions`
+   releases it on every fleet change and, for a merely-backed-off task, resets
+   `failed_auctions` to 0 so it can never escalate to ABANDONED — the one state
+   `get_next_ready` skips. Reproduced at **25 preemptions over 25 cycles**, with
+   the victim's `auction_rounds` refunded every time so it never completed a
+   single round, which additionally holds an operator's `preferred_robot`
+   preference open past `inject_preferred_robot_max_rounds` forever.
+   **FIXED** — `TaskEntry.preemption_spent`, latched by
+   `TaskQueue.spend_preemption` before the abort. **One injection buys one
+   abort.** A second could not help anyway: an abort frees the auction SLOT and
+   never a robot, so if the emergency did not attract a bid the first time, the
+   slot is not what it was short of.
+2. **THE PREEMPTION WAS SPENT ON TICKS THAT COULD NOT USE IT.**
+   `_preempt_for_emergency` ran BEFORE `_auction_tick`'s idle gate and
+   unconditionally. With no idle robot — which on the exit gate's own stimulus
+   ordering is the NORMAL state, since it injects first and frees a robot second
+   — it destroyed a round, discarded a live bid, announced nothing, and stranded
+   the victim's bidder in BIDDING for the agent's own 7.0 s `auction_timeout_sec`.
+   **That is LONGER than the 5.0 s the orchestrator's own auction had left**, so
+   the tick was net negative: an auction about to resolve became an empty slot
+   plus an unavailable robot. **FIXED** — the abort happens only after the same
+   two gates `_auction_tick` applies below it have been checked, so
+   "the fall-through will announce it" is a checked fact.
+3. **THE CANDIDATE WAS CHOSEN BEFORE A GATE THAT COULD REFUSE TO ANNOUNCE IT.**
+   `should_preempt` is pure and filters only `select_site`; it cannot see the
+   D-06 ledger. `inject_task_logic` accepts a `haul`, and `_auction_tick`
+   refuses to announce a haul whose site has no available mass. Reproduced:
+   survey_a preempted, its bids discarded, `is_active()` False, **nothing
+   announced** — and then permanently stuck, because the blocked emergency
+   stayed `get_next_ready`'s answer on every subsequent tick. **FIXED** —
+   `_authorise_quantity` is consulted before anything is destroyed, and a new
+   AST test asserts both paths apply both gates so a future third gate cannot be
+   added on one side only.
+4. **BLOCKER: THE EMERGENCY WAS INVISIBLE TO THE DECISION MEANT TO ACT ON IT.**
+   The candidate came from `get_next_ready`, which SKIPS a task inside its D-20
+   backoff — and the emergency, injected into a fleet busy enough to be worth an
+   emergency, is the likeliest task in the queue to be in one. It got there
+   trivially: `_auction_tick`'s idle gate was a bare `if not idle` with **no
+   capability match**, so a single idle EXCAVATOR opened and burned a whole
+   round of a prospect-only emergency auction; round 3 is a 20 s backoff, and
+   for that whole window a priority-5.0 survey was free to take the slot and the
+   one capable robot. **This is the register's own described check-6 failure,
+   reproduced end to end with the change in place.**
+   **FIXED ON BOTH SIDES.** `get_next_ready(now, servable=...)` skips a task no
+   IDLE robot is capable of, so the round is never opened and the backoff never
+   accrues; and `TaskQueue.get_preemption_candidate` sees an **unspent**
+   emergency through a backoff accrued any other way, releasing it with
+   `release_auction_backoff` — which keeps `failed_auctions`, so D-20's
+   escalation to ABANDONED still terminates.
+   **The capability predicate is the FLEET'S OWN ANSWER, not a guess**:
+   `agent_node` declines an announcement its HAL does not cover
+   (`agent_node.py:894-895`) using the same set it publishes in
+   `RobotState.capabilities` (`agent_node.py:1512`). And it **SKIPS rather than
+   RETURNS**: a top-priority emergency excavate with the only excavator busy
+   must not stop ten surveys being auctioned to three idle scouts.
+5. **THE RESCUE THAT WOULD HAVE COVERED (4) WAS BLIND TO IT.**
+   `FleetMonitor._note_idle_arrival` excludes `BIDDING -> IDLE` on the stated
+   grounds that it "is an auction LOSS, the ordinary churn of a robot that bid
+   and did not win". **That justification is false for the transition a
+   preemption creates**: no auction resolved, nothing was won, and the robot is
+   genuinely new capacity — capacity the preemption itself created. Since
+   `_wake_on_fleet_change` is driven only by `idle_arrivals`, an emergency at
+   `auction_backoff_until == inf` could never be woken by the robot its own
+   preemption freed, and `inf` has no other exit. **FIXED** —
+   `FleetMonitor.note_stranded_bidders` marks the bidders whose bids `reset()`
+   is about to discard; the mark is consumed on the robot's next departure from
+   BIDDING in ANY direction, so a robot that goes on to win the next auction
+   does not carry a stale mark into a later ordinary loss. **The exclusion is
+   narrowed, not removed.**
+6. **THE GATE PROBE'S NEW CLAUSE COULD FAIL A CONFORMING ORCHESTRATOR, AND
+   COULD CREDIT ITSELF WITH SOMEBODY ELSE'S PREEMPTION.** Two separate faults in
+   `scripts/phase5_probe.py`:
+   * `preemption_precondition` proved the victim's auction had time left AT
+     `inject_time`, not at the orchestrator's **next opportunity to act**, which
+     is up to one 0.5 s `_auction_tick` period later. With ~0.05 s of window
+     left the orchestrator correctly takes the `is_timed_out` branch — spec item
+     8 is "while an auction is active and NOT timed out" — and the clause
+     reported PREEMPT_NOT_CORROBORATED, which `correlate_injection` appends to
+     check 6's `problems`. A new way to fail the one row the gate is trying to
+     turn green, caused by the orchestrator behaving exactly as specified.
+     Estimated ~10-12% of runs on which an auction is in flight at the
+     injection. **FIXED** — `ORCHESTRATOR_AUCTION_TICK_SEC`, derived from the
+     orchestrator's own timer rather than borrowed from
+     `MAX_TRANSPORT_LATENCY_SEC` (0.25, present for websocket lag and half the
+     period it would have had to cover). The margin only ever moves a run toward
+     NOT APPLICABLE, which **asserts less**.
+   * The clause's proof obligation cited a premise **this very change
+     falsified**: "`TaskAuction` has no early-close path — `is_timed_out` is its
+     only exit". `_preempt_for_emergency`'s own `self._auction.reset()` is a
+     second exit, added 190 lines away in the same change. The hazard it opens
+     is misattribution, not missed detection: a preemption caused by something
+     else (a second operator, a dashboard emergency mid-run, or **the D-42
+     second-stack hazard**) leaves `auction_preempted` on a victim and the
+     clause would credit it to this gate's request. **FIXED** — the docstring
+     now says "cannot close BY TIMEOUT" and names the second exit, and a
+     PRIOR-PREEMPTION SCAN refuses the whole clause when any preemption is
+     already visible before the injection.
+
+### AND ONE FIELD THAT WAS WRITTEN AND NEVER READ — THE EIGHTH
+
+`TaskAnnouncement.emergency` was the single hop on the whole chain with no
+reader, and the comment disclosing it **named a reader that did not exist**
+("the exit-gate probe"): `ProbeNode._on_announcement` built a 5-tuple and was
+not extended. Every other hop is genuinely read — srv → `inject_task_logic` →
+`TaskEntry.emergency` → `should_preempt` / `get_next_ready`'s tie-break →
+`task_rows` → `TaskStatus.emergency` → `projectTaskRow` → `TaskQueue.jsx`.
+**FIXED BY GIVING IT THE READER THE COMMENT CLAIMED**, not by softening the
+comment: the probe records it and check 6 asserts that an injection made with
+`emergency=True` produced an announcement carrying it. An edit that dropped
+`msg.emergency` from `_publish_announcement` now fails the gate, not only a unit
+test.
+
+### WHAT IS PROVEN BY UNIT TEST — measured on this tree, 2026-08-01
+
+**Every number in this section was re-measured by the author of this entry on
+the working tree, not quoted from an implementation report.** Python 3.11.6 /
+pytest, Windows host, no ROS.
+
+| lane | at `d7f0f3e` | with this change | Δ |
+|---|---|---|---|
+| gate lane (`selene_orchestrator;selene_isru`) | 649 passed, 3 skipped | **793 passed, 3 skipped** | **+144** |
+| five-package lane | 1228 passed, 1 skipped | **1372 passed, 1 skipped** | **+144** |
+| dashboard (Jest) | 101 passed, 7 suites | **122 passed, 9 suites** | **+21** |
+| `flake8` over the six paths | 0 findings, exit 0 | **0 findings, exit 0** | — |
+
+Both baselines were taken from a **detached `git worktree` at `d7f0f3e`**, not
+from memory, and the +144 reconciles exactly against the files that produced it:
+
+    test_emergency_preemption.py            58   (new)
+    test_phase5_probe_emergency.py          56   (new)
+    test_emergency_preemption_timeline.py   15   (new)
+    test_conftest_mirrors_msgs.py      27 -> 40  (+13, the new srv/ walk)
+    test_e2e_integration.py            11 -> 13  (+2)
+    ------------------------------------------------
+                                            144
+
+`test_task_queue.py`, `test_task_feed.py`, `test_inject_task_handler.py` and
+`test_terrain_guard.py` are all **unchanged in count** (25, 19, 22, 51): their
+edits are field-set mirrors and two exact-string mirrors, tightened or equal.
+**No test was deleted and no assertion was loosened.**
+
+**A note on the five-package baseline, because `CLAUDE.md` recorded 1220 and the
+worktree measures 1228.** The difference is not drift: `46994e6` added
+`selene_agent/test/test_operator_goto_reports_refusal.py`, which collects
+**exactly 8 tests**, after the 1220 figure was taken. The gate lane is unaffected
+because that file is in neither of its two packages, and it measures 649 at
+`d7f0f3e` on the nose. Both lanes therefore moved by the same +144, which is
+what should happen when every touched Python file lives in `selene_orchestrator`.
+
+**MUTATION-TESTED, AND THREE OF THEM RE-RUN INDEPENDENTLY FOR THIS ENTRY.** The
+implementation reported ten surgical reverts of the orchestrator change, nine of
+the probe clause and five of the dashboard. This entry's author re-applied three
+of them to the working tree, ran the whole gate lane against each, and restored
+the file byte-exact:
+
+| mutation | gate lane |
+|---|---|
+| `should_preempt` ignores the emergency flag (anything may preempt) | **4 failed**, 789 passed |
+| `get_next_ready` loses the `(priority, emergency)` tie-break | **1 failed**, 792 passed |
+| `_publish_announcement` stops copying `emergency` onto the wire | **1 failed**, 792 passed |
+| _(clean tree, for comparison)_ | 0 failed, 793 passed |
+
+Each reproduced the count the implementation reported for it. The remaining
+twenty-one mutations are **reported, not independently re-run**, and are recorded
+here as reported rather than as verified.
+
+### WHAT IS NOT DEMONSTRATED, AND IT IS THE LARGER HALF
+
+**Read this section before quoting anything above.** By this register's own
+standard a green test is not a demonstration, and the whole of D-44 is on the
+weak side of that line.
+
+1. **NO `colcon build` HAS REGENERATED THE THREE INTERFACES.** `InjectTask.srv`,
+   `TaskAnnouncement.msg` and `TaskStatus.msg` were edited as text. No `rosidl`
+   run has turned them into Python classes on this tree, so **the three new wire
+   fields have never existed as generated code and have carried no traffic.**
+   Everything above that mentions them was exercised against the hand-written
+   stubs in `selene_orchestrator/test/conftest.py`. That those stubs now mirror
+   `srv/` as well as `msg/` is the guard against the vacuous case, and it is a
+   guard, not a substitute.
+2. **NO EMERGENCY INJECTION HAS EVER BEEN ISSUED**, by the dashboard, by the
+   probe, or by hand.
+3. **NO `auction_preempted` HAS EVER BEEN OBSERVED ON THE WIRE.** Every
+   occurrence of that string in this repository is in source, in a test, or in
+   this document.
+4. **`_preempt_for_emergency` HAS NEVER RUN INSIDE A ROS NODE.** Every timeline
+   in `test_emergency_preemption_timeline.py` drives the real `_auction_tick`,
+   `TaskQueue`, `TaskAuction` and `FleetMonitor` with the clock, the executor and
+   the robots faked. It is the strongest evidence here and it is still not a run.
+5. **THE EXIT GATE HAS NOT BEEN RE-RUN.** See the block below.
+6. **Nothing has been rendered in a browser.** The dashboard's 21 new tests are
+   jsdom, which does not paint, so nothing here is evidence that the armed
+   injector is visually distinct or that the `EMG` badge is legible — the same
+   caveat this register attached to the 2026-08-01 test-double session.
+
+### THE RESIDUE — the mid-BIDDING robot, and it is not small
+
+**A preemption frees the auction SLOT. It does not free a ROBOT, and the robot
+it strands is the one most likely to have been able to serve the emergency.**
+
+When `_preempt_for_emergency` calls `self._auction.reset()`
+(`orchestrator_node.py:2356`) the collected bids are discarded. **Nothing in
+this system tells a bidder its auction was withdrawn** — `abort_auction`
+publishes no `TaskAssignment`, and the agent's loss path only fires on a
+`TaskAssignment` for the same `task_id` going to someone else. So the stranded
+robot sits in `BIDDING` until its own agent-side timer expires:
+`_handle_bidding` fires `AUCTION_LOST` only after `auction_timeout_sec`, which
+is **7.0 s** (`agent_node.py:167`, whose comment reads "slightly > orchestrator's
+5s").
+
+Three consequences follow, and all three are structural rather than tuning:
+
+* **7.0 s is longer than the 5.0 s the orchestrator's own auction had left.** A
+  preemption at the very start of a victim's auction makes that robot
+  unavailable for LONGER than letting the auction resolve would have.
+* **The stranded robot cannot bid on the emergency that displaced it.**
+  `_on_task_announced` returns immediately unless the FSM is IDLE
+  (`agent_node.py:890-891`), and the emergency's announcement is one-shot in the
+  round the preemption opened. A robot that was mid-bid when the emergency
+  arrived is excluded from it for up to 7 s.
+* **It is mitigated but not removed.** The idle/capability gate (defect 2) means
+  the preemption is only spent on a tick where some *other* idle robot can serve
+  the emergency, so the stranded robot is no longer the sole hope; and
+  `note_stranded_bidders` (defect 5) means its eventual `BIDDING -> IDLE` at last
+  counts as a fleet change. **Neither shortens the 7.0 s.**
+
+**The clean fix is a withdrawal message the orchestrator does not have**, and it
+is deliberately not invented here: adding one means a new message type, a new
+subscription on every agent, and a new FSM transition on a path that has never
+been run, to remove a bounded 7 s stall in a feature that has never been run
+either. It is recorded as **open item 28** so the omission reads as a decision.
+
+One further residue, smaller, and named because the review found it rather than
+the implementation: `_publish_bid_withdrawal` publishes `bid_score = -1.0`, and
+`resolve_auction_winner` guards only on `if not bid_list`, so a lone withdrawal
+is a non-empty list and currently **wins** its auction at −1.0. That is
+pre-existing and untouched by this work, but any change that increases
+withdrawal traffic increases exposure to it. **Open item 29.**
+
+### THE EXIT GATE HAS NOW BEEN RE-RUN — TWICE — AND IT PASSES
+
+**Runs nine and ten, 2026-08-01, source commit `d7f0f3e` (working tree dirty),
+ROS 2 Jazzy, Gazebo Harmonic 8.11.0, fleet 2/1/1, `prebuilt:=true`. Both:
+`11 passed, 0 failed, 0 skipped`, exit 0.** The first green in this gate's
+history. Reports: `/root/selene/phase5_validation_report.md` and
+`…_run10.md`; run nine is copied into `docs/phase5_validation_report.md`,
+which until now was the superseded eight-check gate at `251e84d`.
+
+| recorded | run 9 | run 10 |
+|---|---|---|
+| tally / exit | 11 / 0 / 0, exit 0 | 11 / 0 / 0, exit 0 |
+| check 6 | **PASS** | **PASS** |
+| corroboration clause | **NOT APPLICABLE** | **NOT APPLICABLE** |
+| clause's named reason | "no auction was in flight at injection — the `/orchestrator/task_queue` snapshot **0.15 s** before it showed 11 task(s) and none of them, other than the injected task itself, in AUCTIONING" | same, at **0.07 s**, 11 task(s) |
+| `auction_preempted` on the wire | **none** | **none** |
+| announce latency from injection | 60.35 s | 60.43 s |
+| assign latency from injection | 65.85 s, to `scout_01` | 65.43 s, to `scout_01` |
+| of which the gate's own idle wait | **60.0 s** | **60.0 s** |
+| orchestrator-side announce / assign | **0.35 s / 5.85 s** | **0.43 s / 5.43 s** |
+| check 9 | PASS — transport 7 ms (median of 596), queue reaction 3 ms | PASS — transport 6 ms (median of 592), reaction **0 ms** |
+| check 4's 0.061 m IDLE excursion | **did not recur** | **did not recur** |
+
+**READ THE THIRD ROW BEFORE READING THE SECOND.** The clause reported NOT
+APPLICABLE on both runs, which is case (c) of the three warnings this block used
+to carry, and it is the one that came true: **check 6 passed for the ORDINARY
+reason — priority 10.0 took an auction slot that was already free — and neither
+gate run measured a preemption at all.** A good green and a poor piece of
+evidence for this entry. Nothing in these two runs demonstrates the emergency
+path, and the row must not be quoted as though it did.
+
+**Why the gate cannot reach that path, stated so the next reader does not think
+it a flake.** An auction only ever OPENS when an idle robot could bid on it
+(`_auction_tick`'s idle gate, plus `servable=` as of this entry), and every idle
+robot that CAN bid on an announcement bids immediately and leaves IDLE
+(`agent_node._on_task_announced`). So an auction in flight has, by construction,
+already consumed the robots that could serve an emergency of the same
+capability. The gate injects from `pick_prospect_robot`, which by construction
+runs when nothing capable is idle. The conjunction preemption needs — *an
+auction in flight AND an idle capable robot* — is therefore not one this gate's
+timeline produces, and widening the gate to force it would be the gate
+manufacturing its own subject.
+
+### THE PREEMPTION ITSELF WAS DEMONSTRATED SEPARATELY, AND IT REQUIRED FOUR RUNS
+
+`scripts/demo_emergency_preemption.py` (new, this entry) exists for exactly the
+gap above and asserts nothing else. It watches `/orchestrator/task_queue` for a
+task genuinely AUCTIONING **alongside a BUSY prospect-capable robot**, frees that
+robot with an `OverrideRobot` `cancel_task` — the same supported operator path
+`phase5_probe.pick_prospect_robot` uses, and it says so in its own output — and
+injects into the window that creates.
+
+**A/B, live, 2026-08-01, ROS 2 Jazzy, fleet 3/1/1, identical stimulus and
+identical timing (injection 0.001 s after the window was seen):**
+
+| | `emergency=True` | `--no-emergency` (the control) |
+|---|---|---|
+| victim | `survey_84f855c7` | `survey_cda448f0` |
+| robot freed to make the window | `scout_02` | `scout_01` |
+| victim left AUCTIONING as | **PENDING** | ASSIGNED |
+| victim `status_reason` | **`auction_preempted`** | `''` |
+| victim `auction_rounds` | **1 → 0 (refunded)** | 1 → 1 (charged) |
+| `TaskAnnouncement.emergency` on the wire | **True** | False |
+| injected task assigned to | `scout_02` | `scout_01` |
+
+**That `auction_preempted` is the first ever observed on the wire in this
+project, and the `1 → 0` beside it is `abort_auction`'s round refund observed
+rather than modelled.** The control is the half that matters most to the
+decision the operator took: under a stimulus identical in every respect except
+the flag, a **non-emergency priority-10.0 injection did not preempt**, its victim
+resolved normally, and the injection still reached a robot. The boundary is at
+the flag, and it is now measured on both sides rather than only asserted.
+
+**THE CONJUNCTION WAS MANUFACTURED AND THE SCRIPT SAYS SO IN ITS OWN OUTPUT.**
+A fleet a script perturbed is not a fleet that arrived there on its own; nothing
+above should be read as "this happens unprompted". What is demonstrated is that
+when the state arises, the mechanism does what D-44 specifies.
+
+**THE INSTRUMENT WAS REFUTED THREE TIMES FIRST, AND ALL THREE WERE DEFECTS IN
+THE INSTRUMENT.** Recorded because 2026-08-01's second lesson is that measuring
+apparatus needs running too, and three of that day's four instrument defects were
+*reporting success*: (1) it injected the moment any auction was in flight, which
+is the case in which every idle capable robot has already bid, so gate (a)
+correctly refused and nothing was shown; (2) it trusted its own cached
+`RobotState` to call a robot IDLE, and a **6 ms**-old sample was enough to be
+wrong — the robot had already bid, and the orchestrator's own `get_idle_robots`
+no longer counted it; (3) it accepted "an idle robot exists" as the
+precondition, which is true of the FIRST auction of every run and is exactly the
+unusable case. None of the three was visible from reading the script. All three
+are pinned by `selene_orchestrator/test/test_demo_preemption_witness.py`
+(22 tests), which also pins the D-42 shape the script originally had: a
+module-level `sys.exit` on a failed `import rclpy` made it unreachable by every
+documented test lane, the same way `battery_node.py`'s arithmetic was.
+
+### WHAT THIS ENTRY DOES NOT CLAIM
+
+* **NOTHING HERE HAS RUN**, itemised in full under "WHAT IS NOT DEMONSTRATED"
+  above. **This entry is IMPLEMENTED, NOT DEMONSTRATED**, and by this register's
+  own standard that is the weaker of the two by a long way.
+* **It does not claim check 6 will now pass.** It removes one identified
+  mechanism by which the injected task loses its auction. Whether that is THE
+  mechanism on WSL2 is unmeasured, and the honest statement is that the exit
+  gate has been run eight times and has not passed.
+* **CHECK 6 NOW MEASURES A DIFFERENT STIMULUS FROM ITS EIGHT PRIOR RUNS.** The
+  injection it makes is an emergency injection. So "check 6 passes" would mean
+  "the emergency path works", not "the race was fixed", and **the non-emergency
+  wait-your-turn path is no longer exercised by any gate row**. The probe says
+  this in its own voice on both the PASS and the FAIL paths.
+* **The preemption is unreachable on the modal check-6 timeline, by design.**
+  `_preempt_for_emergency` is called only from inside
+  `if self._auction.is_active()`. Where no auction is in flight at the
+  injection, priority 10.0 already put the task at the head of the queue and the
+  flag buys nothing — an A/B over an identical 20 s timeline with the flag on
+  and off produces byte-identical announce/assign traces. That is the
+  specification, not a gap in it, and the probe's clause reports NOT APPLICABLE
+  on exactly those runs rather than certifying what it did not measure.
+* **`get_next_ready(servable=...)` is a behaviour change beyond the auction
+  slot.** An auction is no longer opened for a task no idle robot is capable of.
+  It is a strict improvement on the argument above — such a round was guaranteed
+  to close with no bids — but it changes which task is announced on a mixed
+  fleet, and no live run has exercised it.
+
+### WHERE THIS DECISION IS RECORDED, AND WHAT IT TOUCHES
+
+**The decision itself lives here.** `docs/PRD.md`'s formal register stops at
+DD-6 and is a Sprint-0 artefact; this entry deliberately does not add a DD-7,
+because the argument, the six defects and the undemonstrated status are the
+substance and a four-column table cannot carry them. The precedent is
+`selene_sim/launch/rviz.launch.py:26-53`, which records a decision by naming
+every rejected alternative and then stating how the project's honest
+self-description changes. **That last move applies here too**: the honest
+statement about this orchestrator changes from
+
+> the orchestrator runs one auction at a time, and a queued task waits for the
+> auction in flight to resolve
+
+to
+
+> …**except an operator injection tagged `emergency`, which may abort it once**.
+
+**Cross-references.**
+
+* **D-10** (the exit gate) — check 6's stimulus and its new conditional
+  corroboration clause are changes to the gate, and D-10 is where gate changes
+  are recorded. The clause **can fail the row and can never pass it**.
+* **D-20** (the auction backoff) — `abort_auction` deliberately leaves
+  `failed_auctions` and `auction_backoff_until` untouched, and
+  `release_auction_backoff` keeps `failed_auctions` so D-20's escalation to
+  ABANDONED still terminates. Defect 1 above is a D-20 interaction:
+  `wake_deferred_auctions` resets `failed_auctions` to 0 for a
+  merely-backed-off task, which is what made an unbounded emergency possible.
+* **D-03** (INTERRUPTED as a resting status) — `status_before_auction` exists so
+  an aborted auction cannot erase that distinction through a side door.
+* **D-06** (the ISRU mass ledger) — `_authorise_quantity` is the gate that
+  defect 3 was chosen ahead of.
+* **D-42** (the second SELENE stack) — named in the probe's prior-preemption
+  scan as one of the three ways an `auction_preempted` could appear on the wire
+  without this gate having caused it.
+* **Open items 28-31**, for the residue this entry does not close: the stranded
+  bidder, the winning withdrawal, the non-emergency path no gate row exercises
+  any more, and the `servable` predicate no live run has seen.
+
+---
+
 ## FR-MAP-3 - adaptive survey never ran - CLOSED 2026-07-30
 
 Not a Phase 5 deviation: FR-MAP-3 is P0 **Phase 4** scope
@@ -5110,29 +5722,84 @@ Added 2026-08-01:
     `build-and-test` job does run `colcon test` under ROS 2 **Humble**, which is
     not the distro the operator's workspace uses.
 
+**Items 28-31 were added 2026-08-01 (late) by D-44.** All four are residue of
+the emergency-preemption decision, and none of them is a defect in it — they are
+the things that decision deliberately did not do.
+
+28. **A PREEMPTED BIDDER IS NOT TOLD, AND SITS IN `BIDDING` FOR UP TO 7.0 s.**
+    `_preempt_for_emergency` discards the collected bids with
+    `TaskAuction.reset()` (`orchestrator_node.py:2356`) and **nothing informs the
+    robots that made them**: `abort_auction` publishes no `TaskAssignment`, and
+    the agent's loss path fires only on a `TaskAssignment` for the same task
+    going elsewhere. The stranded robot exits through its own timer —
+    `_handle_bidding` → `AUCTION_LOST` after `auction_timeout_sec = 7.0`
+    (`agent_node.py:167`) — which is **longer than the 5.0 s the orchestrator's
+    auction had left**, and it cannot bid on the emergency that displaced it
+    because `_on_task_announced` returns unless the FSM is IDLE
+    (`agent_node.py:890-891`) and the announcement is one-shot.
+    **Not fixed, deliberately.** The clean remedy is an auction-withdrawal
+    message: a new message type, a subscription on every agent and a new FSM
+    transition, all on a path that has never been run, to remove a bounded 7 s
+    stall in a feature that has never been run either. Two mitigations are in
+    place and neither shortens the 7 s: the preemption is spent only on a tick
+    where some *other* idle robot can serve the emergency, and
+    `FleetMonitor.note_stranded_bidders` makes the eventual `BIDDING -> IDLE`
+    count as a fleet change. **Recorded so the omission cannot later be read as
+    an oversight.**
+29. **A LONE BID WITHDRAWAL STILL WINS ITS AUCTION AT −1.0.**
+    `_publish_bid_withdrawal` publishes `bid_score = -1.0`,
+    `resolve_auction_winner` takes `max(bid_list, key=bid_score)` and guards only
+    on `if not bid_list`, so a withdrawal-only list is non-empty and elects the
+    robot that withdrew. **Pre-existing, untouched by D-44, and surfaced by its
+    review rather than by it.** It is listed here because preemption is a new
+    source of withdrawal traffic, so exposure to it can only grow.
+30. **THE NON-EMERGENCY PRIORITY-10 PATH IS NO LONGER EXERCISED BY ANY GATE
+    ROW.** Check 6 now injects an emergency. The old wait-your-turn behaviour is
+    still the specified behaviour for a priority-10.0 injection without the flag,
+    it is covered by unit tests, and **no integration-level check measures it any
+    more.** A regression in it would be invisible to the exit gate.
+31. **`get_next_ready(servable=…)` CHANGES WHICH TASK IS ANNOUNCED ON A MIXED
+    FLEET, AND NO LIVE RUN HAS EXERCISED IT.** An auction is no longer opened for
+    a task no IDLE robot is capable of. The argument for it is strong — such a
+    round was guaranteed to close with no bids, and burning it was how the
+    emergency accrued the D-20 backoff that hid it — and the predicate is the
+    fleet's own (`agent_node.py:894-895` tests the same capability set it
+    publishes at `:1512`). It is still a scheduling change to the orchestrator's
+    hot path, taken on a branch whose exit gate has not been re-run.
+
 ---
 
 ## Recommended disposition
 
-**Phase 5 cannot be closed. The exit gate has now been run three times and it
-does not pass** — 8/1/2 (exit 1), then 9/0/2 (exit 2), then **10 passed /
-1 failed / 0 skipped (exit 1)** on 2026-08-01 at `9c1a4d7`. That is the whole
-answer. Everything below is detail on it, and the detail has changed shape twice
-since the revision before last: **the problem is no longer that nothing has been
-run, and it is no longer that the instrument cannot see.**
+**Phase 5 cannot be closed. The exit gate has now been run EIGHT times and it
+does not pass.** ~~three times — 8/1/2 (exit 1), then 9/0/2 (exit 2), then
+**10 passed / 1 failed / 0 skipped (exit 1)** on 2026-08-01 at `9c1a4d7`~~ —
+**SUPERSEDED; see the run ledger under "Status summary".** The best result is
+the eighth: **9 passed / 1 failed / 1 skipped, exit 1**, 2026-08-01, with
+**check 6 the only failure** and check 9 SKIPping as its consequence. That is
+the whole answer. Everything below is detail on it, and the detail has changed
+shape three times since the revision before last: **the problem is no longer
+that nothing has been run, it is no longer that the instrument cannot see, and
+as of D-44 it is no longer an undecided design question either.**
 
 **What the third run changed.** **Zero skips.** Checks 6 and 9 produced verdicts
 for the first time and both PASSed, so **PRD exit-gate rows 3 and 4 are measured
 at last** — that is D-34 closed on the gate's own output. The remaining failure
-is check 11, and it is neither the system nor the aim of the check: the gate
+was check 11, and it was neither the system nor the aim of the check: the gate
 selected a robot reporting 0.0% battery and never established that it could
 perform the manoeuvre, so the energy-critical rule overrode the operator command
-six milliseconds after the FSM accepted it. **That 0% is D-42 and its cause is
-unknown.**
+six milliseconds after the FSM accepted it. ~~That 0% is D-42 and its cause is
+unknown.~~ **SUPERSEDED: D-42 was root-caused later the same day** to a second
+`battery_node` on a shared ROS domain, and **check 11 now passes, twice, on two
+different targets.**
 
 **All six deviations this register carried as open are closed** (D-28, D-30,
-D-31, D-32, D-34, D-35), and five new ones were opened (D-38..D-42). **Two are
-open now, D-37 and D-42, and neither has a known cause.**
+D-31, D-32, D-34, D-35), and five new ones were opened (D-38..D-42). ~~**Two are
+open now, D-37 and D-42, and neither has a known cause.**~~ **SUPERSEDED later
+on 2026-08-01: D-42 is closed, D-43 was opened and closed, and D-44 was opened.
+ONE deviation is open with an unknown cause — D-37.** D-44 is open in a
+different sense: it is a DECISION rather than a defect, nothing about it is
+unexplained, and what it lacks is a demonstration.
 
 What is true, and it is a great deal more than it was on 2026-07-30. Phase 5 is
 **code-complete against all nine requirements**. The workspace builds — six
@@ -5156,16 +5823,38 @@ What is missing:
    verdicts, and the run had **zero skips**. D-35's coin flip is fixed too — the
    bearing is chosen off the robot's heading and the window is derived from
    `scout.yaml`, both visible in the run's own output — and the 12 s literal was
-   **deleted, not raised**. **What remains is check 11's missing precondition**:
-   it issues an override to a robot without establishing that the robot can obey
-   it, and on 2026-08-01 it chose one at 0% battery. Fixing the check is cheap;
-   **finding out why that robot reported 0% is D-42 and comes first**, because a
-   gate taught to avoid a robot in a state nobody understands is a gate taught to
-   look away. `$HOME/selene/phase5_validation_report.md` was regenerated **by**
-   the 2026-08-01 run and is not green; the in-tree
-   `docs/phase5_validation_report.md` **is still the superseded eight-check gate
-   at `251e84d`** and must be replaced by the output of a green run, never
-   hand-edited.
+   **deleted, not raised**. ~~**What remains is check 11's missing
+   precondition**: it issues an override to a robot without establishing that
+   the robot can obey it, and on 2026-08-01 it chose one at 0% battery … finding
+   out why that robot reported 0% is D-42 and comes first…~~ **SUPERSEDED: D-42
+   was root-caused, check 11 was given the precondition, and check 11 now
+   passes.**
+
+   **WHAT REMAINS, as of the late amendment on 2026-08-01, IS CHECK 6 AND
+   NOTHING ELSE.** The eighth run is **9 passed / 1 failed / 1 skipped, exit 1**;
+   check 6 is the only failure and check 9 SKIPs purely as its consequence, so
+   **one row is the whole distance between exit 1 and exit 0.** That row was
+   never a defect — it was an undecided design question, and **D-44 decides it**:
+   an operator injection tagged `emergency` may abort an auction already in
+   flight, once; a non-emergency priority-10.0 injection deliberately does not.
+
+   **⚠ THE NINTH RUN HAS NOT HAPPENED, AND UNTIL IT DOES NOTHING HERE MAY BE
+   READ AS PROGRESS ON THE GATE.** D-44 is implemented, unit-tested and **not
+   demonstrated**: no `colcon build` has regenerated the three changed
+   interfaces, no emergency injection has ever been issued, and no
+   `auction_preempted` has ever been seen on the wire. The next action is a
+   six-package `colcon build` on WSL2 followed by `scripts/validate_phase5.sh`,
+   and the results go in **D-44's TODO block**. Note also that a green check 6
+   would now mean "the emergency path works", not "the race is fixed" — the
+   stimulus changed, and open item 30 records that no gate row exercises the
+   non-emergency path any more.
+
+   On the artefacts: `$HOME/selene/phase5_validation_report.md` was regenerated
+   by the 2026-08-01 runs; the in-tree `docs/phase5_validation_report.md`
+   ~~**is still the superseded eight-check gate at `251e84d`**~~ — **SUPERSEDED:
+   `d7f0f3e` regenerated it from the eighth run, and it is now the only in-tree
+   artefact carrying check 6's failure text.** It must be replaced by the output
+   of a green run, **never hand-edited.**
 
 2. **The ODE abort's cause is unknown, and this is the largest open risk in the
    repository.** Three reproducible SIGABRTs; no root cause. The terrain-edge
@@ -5271,5 +5960,39 @@ would have refused the entire mission; the same limit enforced per step admits
 it.** The register carried a correct observation attached to a wrong model of
 what it meant for four revisions, and only measuring the vehicle settled it.
 
-**What has not moved: D-37's cause is unknown, D-42's cause is unknown, RViz2
-has never been started, and the gate does not pass.**
+~~**What has not moved: D-37's cause is unknown, D-42's cause is unknown, RViz2
+has never been started, and the gate does not pass.**~~ **THREE OF THOSE FOUR
+MOVED LATER ON 2026-08-01, and the sentence is corrected rather than deleted so
+the movement is visible.** D-42 was root-caused, reproduced on demand and fixed;
+RViz2 **has** been started and the `docs/PRD.md:1504` side-by-side has been
+performed; and D-43 took the path follower off the list of things that quietly
+cost the mission its ISRU chain.
+
+**A third closing note, 2026-08-01 (late), because D-44 is a different kind of
+entry and should not be read as the same lesson twice.** Every other entry in
+this register records something that was wrong. D-44 records a **decision** —
+one this document had, for eight gate runs, deliberately declined to make on the
+system's behalf, in the words "left as an explicit decision, not made silently
+to turn a row green". Declining it was right, and taking it now is not a
+reversal: it was taken by the operator, in the open, with the boundary drawn at
+a flag rather than at a priority number so that no future task type inherits the
+right to interrupt the fleet by being given a large one.
+
+**And the review of that decision's first implementation found six defects,
+four of them about what BOUNDS a preemption, while forty-two unit tests were
+green and correct.** That is this register's oldest lesson arriving at a new
+address: the tests were not wrong, they were tests of the mechanism rather than
+of its limits. An unbounded emergency preempted twenty-five auctions in
+twenty-five cycles; a preemption was spent on ticks where it could announce
+nothing; and the emergency was invisible, inside its own backoff, to the very
+decision built to act on it.
+
+**What has not moved: D-37's cause is unknown.** ~~and the gate does not pass.~~
+**The gate now passes — runs 9 and 10, 2026-08-01, 11/0/0 exit 0 — but neither
+run measured a preemption (D-44), and every PRD exit-gate METHOD remains a human
+one that no script performed.**
+**What is new and is not the same thing: D-44 is implemented, unit-tested and
+UNDEMONSTRATED — no `colcon build`, no live injection, no `auction_preempted`
+ever seen on the wire, and the exit gate NOT re-run.** By this register's own
+standard that is the weaker half of the distinction it exists to draw, and the
+ninth run is what would change it.

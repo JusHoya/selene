@@ -60,9 +60,11 @@ from selene_orchestrator.orchestrator_node import (  # noqa: E402
 )
 from selene_orchestrator.task_auction import TaskAuction, Bid  # noqa: E402
 from selene_orchestrator.task_feed import (  # noqa: E402
+    AUCTION_PREEMPTED,
     REQUEUE_STATUS_BY_REASON,
     TaskEventLog,
     resolve_auction_winner,
+    should_preempt,
 )
 from selene_orchestrator.task_queue import TaskQueue, TaskStatus  # noqa: E402
 
@@ -130,6 +132,9 @@ class _Orchestrator:
         self.announcements = []
         self.assignments = []
         self.alerts = []
+        #: (victim_task_id, emergency_task_id) per preemption, so a test can
+        #: assert the slot changed hands rather than inferring it from status.
+        self.preemptions = []
         self._next_id_counter = 0
         self._clock = 1000.0
         self.material_ctx = _MaterialEventContext(
@@ -157,12 +162,16 @@ class _Orchestrator:
         return f'manual_{n:04d}'
 
     def inject(self, task_type, x=0.0, y=0.0, quantity=0.0,
-               assigned_robot_id=''):
+               assigned_robot_id='', emergency=False):
         req = types.SimpleNamespace(
             task_type=task_type,
             target_location=types.SimpleNamespace(x=x, y=y, z=0.0),
             quantity=quantity,
             assigned_robot_id=assigned_robot_id,
+            # Present rather than left to inject_task_logic's getattr default,
+            # so an emergency path driven through this harness is really
+            # driven and not merely defaulted.
+            emergency=emergency,
         )
         resp = types.SimpleNamespace(success=False, task_id='', message='')
         fleet_monitor = types.SimpleNamespace(get_robot=self.get_robot)
@@ -186,13 +195,33 @@ class _Orchestrator:
     def tick_auction(self):
         """Run one cycle of the auction state machine (copies _auction_tick
         logic). Starts an auction if idle work exists, or resolves a
-        timed-out one."""
+        timed-out one.
+
+        IT IS A COPY AND NOTHING COMPARES THE TWO. That is worth saying out
+        loud every time this method is extended: a behaviour added to
+        ``_auction_tick`` and not added here makes every e2e test of it green
+        against a re-implementation. The 2026-08-01 emergency preemption is
+        mirrored below through the SAME production helpers the node uses
+        (``should_preempt``, ``TaskQueue.abort_auction``) rather than
+        re-decided here, so the decision itself cannot drift even though the
+        control flow around it is duplicated. The tick-level assertions on the
+        real ``_auction_tick`` live in test_emergency_preemption.py.
+        """
         self._clock += 1.0
 
         if self.auction.is_active():
             if self.auction.is_timed_out(self._clock):
                 self._resolve()
-            return
+                return
+            running_id = self.auction.get_task_id()
+            candidate = self.task_queue.get_next_ready()
+            if not should_preempt(self.task_queue.get_task(running_id),
+                                  candidate):
+                return
+            self.task_queue.abort_auction(running_id, AUCTION_PREEMPTED)
+            self.auction.reset()
+            self.preemptions.append((running_id, candidate.task_id))
+            # Fall through and open the emergency's auction in this same tick.
 
         idle = self.get_idle_robots()
         if not idle:
@@ -599,3 +628,63 @@ def test_e2e_operator_events_reach_the_history():
     assert 'AUCTIONING' in actions
     assert 'ASSIGNED' in actions
     assert orch.events.seq_next == len(orch.events.snapshot())
+
+
+def test_e2e_an_emergency_injection_takes_the_auction_slot_and_is_assigned():
+    """The whole path an operator emergency travels, 2026-08-01.
+
+    inject(emergency=True) -> the running auction is aborted -> the emergency
+    is announced in the SAME tick -> a robot bids -> it is assigned. The victim
+    is not cancelled and not charged: it goes back to PENDING with its round
+    refunded, and it is auctioned again afterwards.
+    """
+    orch = _Orchestrator([_Robot('scout_01', ['prospect'])])
+    ordinary = orch.inject('prospect', x=1.0, y=1.0)
+    orch.tick_auction()
+    assert orch.auction.get_task_id() == ordinary.task_id
+    # An operator injection is priority 10.0, so drop the victim below it --
+    # a preemption requires a STRICTLY lower priority and two injections are
+    # always equal.
+    orch.task_queue.get_task(ordinary.task_id).priority = 5.0
+
+    urgent = orch.inject('prospect', x=2.0, y=2.0, emergency=True)
+    orch.tick_auction()
+
+    assert orch.preemptions == [(ordinary.task_id, urgent.task_id)]
+    assert orch.auction.get_task_id() == urgent.task_id
+    victim = orch.task_queue.get_task(ordinary.task_id)
+    assert victim.status == TaskStatus.PENDING
+    assert victim.status_reason == AUCTION_PREEMPTED
+    assert victim.auction_rounds == 0, 'the aborted round must be refunded'
+    assert victim.failed_auctions == 0
+    assert victim.auction_backoff_until == 0.0
+
+    orch.submit_bid(urgent.task_id, 'scout_01', score=0.5)
+    orch.close_auction()
+    assert orch.task_queue.get_task(urgent.task_id).status == TaskStatus.ASSIGNED
+
+    # The victim is still live work and is auctioned again once the slot frees.
+    orch.robot_state('scout_01', 'IDLE', '')
+    orch.tick_auction()
+    assert orch.auction.get_task_id() == ordinary.task_id
+
+
+def test_e2e_a_non_emergency_injection_waits_for_the_auction_in_flight():
+    """The operator's decision, at the e2e altitude.
+
+    Identical to the test above except for the flag. Priority 10.0 alone
+    preempts nothing, which is the behaviour every injection has always had.
+    """
+    orch = _Orchestrator([_Robot('scout_01', ['prospect'])])
+    ordinary = orch.inject('prospect', x=1.0, y=1.0)
+    orch.tick_auction()
+    orch.task_queue.get_task(ordinary.task_id).priority = 5.0
+
+    urgent = orch.inject('prospect', x=2.0, y=2.0, emergency=False)
+    orch.tick_auction()
+
+    assert orch.preemptions == []
+    assert orch.auction.get_task_id() == ordinary.task_id
+    assert orch.task_queue.get_task(ordinary.task_id).status == \
+        TaskStatus.AUCTIONING
+    assert orch.task_queue.get_task(urgent.task_id).status == TaskStatus.PENDING

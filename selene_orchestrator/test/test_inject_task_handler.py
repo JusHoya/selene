@@ -53,11 +53,17 @@ from selene_orchestrator.task_queue import TaskQueue, TaskStatus  # noqa: E402
 
 class _FakeInjectRequest:
     def __init__(self, task_type='prospect', x=0.0, y=0.0,
-                 quantity=0.0, assigned_robot_id=''):
+                 quantity=0.0, assigned_robot_id='', emergency=False):
         self.task_type = task_type
         self.target_location = types.SimpleNamespace(x=x, y=y, z=0.0)
         self.quantity = quantity
         self.assigned_robot_id = assigned_robot_id
+        # SET, not omitted, even though inject_task_logic reads it with a
+        # getattr default. Omitting it would make every emergency assertion in
+        # this file pass against a request that never carried the field --
+        # exactly the vacuous green the srv half of
+        # test_conftest_mirrors_msgs.py was added to prevent.
+        self.emergency = emergency
 
 
 class _FakeInjectResponse:
@@ -149,7 +155,11 @@ class TestInjectTaskHandler:
 
         assert out.success is True
         assert out.task_id.startswith('manual_')
-        assert out.message == 'queued'
+        # The emergency clause is stated in BOTH directions (2026-08-01): an
+        # operator reading "priority 10" would reasonably assume it jumps the
+        # auction in flight, and it does not unless the flag is set.
+        assert out.message == (
+            'queued; not an emergency: waits for any auction already in flight')
 
         task = task_queue.get_task(out.task_id)
         assert task is not None
@@ -355,7 +365,9 @@ class TestQuantityValidation:
         assert out.success is True
         assert task_queue.get_task(out.task_id).quantity_kg == 0.0
         # No 'target N kg' clause: 0.0 is unconstrained, not a target of zero.
-        assert out.message == f'queued; credited to {_MISSION_SITE_ID}'
+        assert out.message == (
+            'queued; not an emergency: waits for any auction already in '
+            f'flight; credited to {_MISSION_SITE_ID}')
 
     def test_negative_quantity_is_rejected_before_the_task_exists(
             self, inject_ctx, task_queue):

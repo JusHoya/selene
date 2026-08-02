@@ -540,6 +540,8 @@ def _stub_selene_msgs(point_cls: type) -> None:
                 'parent_task_id': '', 'deadline': lambda: MagicMock(),
                 # Appended 2026-07-30 closing D-04.
                 'quantity_kg': 0.0,
+                # Appended 2026-08-01 with operator emergency preemption.
+                'emergency': False,
             }),
             ('TaskAssignment', {
                 'task_id': '', 'robot_id': '', 'task_type': '',
@@ -575,6 +577,8 @@ def _stub_selene_msgs(point_cls: type) -> None:
                 'depends_on': list, 'required_capabilities': list,
                 'status_reason': '', 'status_changed': lambda: MagicMock(),
                 'auction_rounds': 0,
+                # Appended 2026-08-01 with operator emergency preemption.
+                'emergency': False,
             }),
         ):
             setattr(smsgs_msg, msg_name, _make_msg_class(msg_name, fields))
@@ -585,6 +589,20 @@ def _stub_selene_msgs(point_cls: type) -> None:
             Request = _make_msg_class('InjectTask_Request', {
                 'task_type': '', 'target_location': point_cls,
                 'quantity': 0.0, 'assigned_robot_id': '',
+                # Appended 2026-08-01 with operator emergency preemption.
+                # FALSE HERE AND FALSE ON THE WIRE, unlike RobotState.pose_valid
+                # above, and the agreement is the point: false is what an older
+                # client sends and false is today's behaviour, so a test that
+                # does not set it exercises the non-emergency path, which is the
+                # path every pre-existing test means.
+                #
+                # A MISSING FIELD HERE WOULD HAVE PASSED SILENTLY UNTIL
+                # 2026-08-01. inject_task_logic reads it with
+                # ``getattr(request, 'emergency', False)``, so a stub without it
+                # returns the default and an emergency test goes green having
+                # exercised nothing. test_conftest_mirrors_msgs.py now walks
+                # srv/ as well as msg/ for exactly that reason.
+                'emergency': False,
             })
             Response = _make_msg_class('InjectTask_Response', {
                 'success': False, 'task_id': '', 'message': '',

@@ -98,6 +98,70 @@
   background: rgba(0, 212, 255, 0.1);
 }
 
+/* === EMERGENCY ARMING CONTROL ===
+   Deliberately not styled like the other form rows. Everything else in this
+   panel describes the task; this one changes what the ORCHESTRATOR is allowed
+   to do to an auction that is already running, and it has to look like a
+   different kind of decision even before it is read. */
+.task-injector__emergency {
+  border: 1px solid var(--border, #1f2a44);
+  border-radius: var(--radius-sm, 4px);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ARMED. Red fill, red border and a red submit button below it: three
+   simultaneous changes, because one subtle state change on a checkbox is
+   exactly how a control gets armed by accident and left that way. */
+.task-injector__emergency--armed {
+  border-color: var(--accent-red, #ff4757);
+  background: rgba(255, 71, 87, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 71, 87, 0.35);
+}
+
+/* Overrides the panel-wide `.task-injector__form label { flex-direction:
+   column }`, which would otherwise stack the checkbox above its own title. */
+.task-injector__form .task-injector__emergency-arm {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.task-injector__emergency-arm input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-red, #ff4757);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.task-injector__emergency-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+}
+
+.task-injector__emergency--armed .task-injector__emergency-title {
+  color: var(--accent-red, #ff4757);
+}
+
+/* Reads in BOTH states — the default is the case an operator never otherwise
+   learns about. */
+.task-injector__emergency-consequence {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted, #6b7280);
+}
+
+.task-injector__emergency--armed .task-injector__emergency-consequence {
+  color: var(--accent-red, #ff4757);
+}
+
 .task-injector__form > button[type="submit"] {
   background: var(--accent-cyan, #00d4ff);
   color: var(--bg-primary, #0a0e1a);
@@ -121,6 +185,19 @@
   background: #33dfff;
 }
 
+/* The armed submit button. The label changes to "Submit EMERGENCY" as well —
+   colour alone is not a message an operator can read out loud, and it is not
+   available at all to a colour-blind one. */
+.task-injector__form > button[type="submit"].task-injector__submit--emergency {
+  background: var(--accent-red, #ff4757);
+  color: #ffffff;
+}
+
+.task-injector__form
+  > button[type="submit"].task-injector__submit--emergency:not(:disabled):hover {
+  background: #ff6b78;
+}
+
 .task-injector__confirm {
   margin-top: 10px;
   padding: 10px;
@@ -136,6 +213,21 @@
   margin: 0;
   font-size: 12px;
   color: var(--text-primary, #e0e6f0);
+}
+
+/* The confirmation panel is amber for an ordinary injection. An armed one is
+   red end to end, so the operator cannot confirm an emergency believing they
+   are confirming the routine thing they confirm every day. */
+.task-injector__confirm--emergency {
+  background: rgba(255, 71, 87, 0.1);
+  border-color: rgba(255, 71, 87, 0.45);
+}
+
+.task-injector__confirm-emergency {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--accent-red, #ff4757);
 }
 
 .task-injector__confirm button {
@@ -176,6 +268,16 @@
   display: block;
   margin-top: 4px;
   font-size: 10px;
+  color: var(--text-muted, #6b7280);
+}
+
+/* What the BROWSER sent, as opposed to what the orchestrator replied. Dimmer
+   than the reply above it: it is provenance, not a result. */
+.task-injector__feedback-sent {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.4;
   color: var(--text-muted, #6b7280);
 }
 

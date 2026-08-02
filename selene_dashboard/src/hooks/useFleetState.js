@@ -113,6 +113,21 @@ function projectTaskRow(row) {
     progress: typeof row.progress === 'number' ? row.progress : 0,
     quantity_kg: typeof row.quantity_kg === 'number' ? row.quantity_kg : 0,
     auction_rounds: typeof row.auction_rounds === 'number' ? row.auction_rounds : 0,
+    // The operator armed this injection as an EMERGENCY, so the orchestrator was
+    // allowed to abort an auction already in flight to run this one. It is a
+    // property of how the task entered the queue, not of what it is doing now:
+    // an HTN-generated task can never carry it, and it stays true for the whole
+    // life of the row including after the task finishes.
+    //
+    // ABSENT READS AS FALSE, WHICH IS THE OPPOSITE DEFAULT FROM pose_valid, and
+    // the asymmetry is deliberate. `decodePoseValidity` reads an absent key as a
+    // fix because the fail-safe there would blank the entire map against a bridge
+    // that predates the field (see utils/poseFix.js). Here the two errors are not
+    // symmetric either, but the other way round: a false negative loses a badge
+    // on one row, while a false positive would label every ordinary row of a
+    // pre-change orchestrator as an emergency preemption that never happened.
+    // The badge is a claim about auction semantics and must not be invented.
+    emergency: !!row.emergency,
     parent_task_id: row.parent_task_id || '',
     depends_on: row.depends_on || [],
     required_capabilities: row.required_capabilities || [],

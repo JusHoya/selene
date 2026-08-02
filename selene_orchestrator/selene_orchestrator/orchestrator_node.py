@@ -79,6 +79,7 @@ from selene_orchestrator.task_feed import (
     AUCTION_ABANDONED,
     AUCTION_FLEET_CHANGED,
     AUCTION_NO_BIDS,
+    AUCTION_PREEMPTED,
     KIND_OPERATOR,
     KIND_STATUS,
     OUTCOME_ASSIGN,
@@ -89,6 +90,7 @@ from selene_orchestrator.task_feed import (
     auction_backoff_sec,
     auction_failure_reason,
     resolve_auction_winner,
+    should_preempt,
     task_rows,
 )
 from selene_orchestrator.htn_planner import HTNPlanner
@@ -424,6 +426,25 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
     whole simulator (see ``terrain_guard``). Refused, not clamped, because the
     operator is present and can retype it.
 
+    (5) ``request.emergency`` IS READ, and it is the only thing in this system
+    that can abort an auction already in flight (2026-08-01). It is A DELIBERATE
+    CHANGE TO AUCTION SEMANTICS decided by the operator, not a defect fix, and
+    the asymmetry is the whole point: an emergency injection may take the single
+    auction slot from a strictly lower-priority task in the same tick, while a
+    NON-emergency injection at the same priority 10.0 waits for that auction to
+    resolve, exactly as every injection did before. Priority alone still
+    preempts nothing. See ``task_feed.should_preempt`` and
+    ``TaskQueue.abort_auction``. The response message states which of the two
+    behaviours the operator just bought.
+
+    IT BUYS ONE ABORT, NOT A STANDING LICENCE. Nothing ever clears
+    ``TaskEntry.emergency``, so the entitlement is bounded by
+    ``TaskEntry.preemption_spent`` instead, and it is spent only on a tick that
+    goes on to announce the emergency in the same pass -- see
+    ``OrchestratorNode._preempt_for_emergency``. An emergency the fleet cannot
+    serve therefore aborts nothing, rather than aborting a fresh auction every
+    time any robot anywhere finishes anything.
+
     Decision order:
         1. Reject unknown task_type.
         2. Reject a negative or non-finite quantity.
@@ -431,7 +452,7 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
         4. Reject an excavate/haul when no extraction site has been selected.
         5. Allocate a fresh manual task_id; add the task at priority 10.0
            (above HTN baseline) with capability requirements, the quantity,
-           the preferred robot and the ledger site.
+           the preferred robot, the ledger site and the emergency flag.
         6. If a robot was named, run three ADVISORY pre-checks -- it exists,
            it is not in ERROR/OFFLINE/RECHARGING, it has the capability. They
            are advisory because the auction itself now enforces capability and
@@ -510,6 +531,21 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
     task_id = ctx.next_task_id()
     assigned_robot_id = (request.assigned_robot_id or '').strip()
 
+    # EMERGENCY (2026-08-01). ``getattr`` with a False default, matching the
+    # ``quantity`` read above and for the same two reasons: the ROS-free test
+    # lane builds request objects by hand, and a dashboard talking to an
+    # orchestrator built before this field existed must degrade to today's
+    # behaviour rather than raise. False IS today's behaviour, so the fail-safe
+    # direction and the backward-compatible direction are the same one.
+    #
+    # THIS IS THE ENTIRE CONTROL SURFACE. There is deliberately no ROS
+    # parameter: test_no_orphan_parameters.py fails the build on any declared
+    # parameter nothing reads and its allow-list is down to one name, and more
+    # to the point a tunable would be a way to turn "the operator said
+    # emergency" into "the orchestrator decided", which is the thing this design
+    # refuses to do.
+    emergency = bool(getattr(request, 'emergency', False))
+
     ctx.task_queue.add_task(
         task_id=task_id,
         task_type=request.task_type,
@@ -520,6 +556,7 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
         site_id=stored_site_id,
         quantity_kg=stored_quantity,
         preferred_robot=assigned_robot_id,
+        emergency=emergency,
     )
 
     def _reject(message: str):
@@ -549,6 +586,19 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
 
     suffix = f' (preferred {assigned_robot_id})' if assigned_robot_id else ''
     message = f'queued{suffix}'
+    # SAY WHAT THE FLAG WILL DO, IN BOTH DIRECTIONS. This string is the
+    # operator's toast (TaskInjector.jsx renders response.message verbatim) and
+    # the TaskEvent detail in the dashboard's history (_handle_inject_task
+    # copies it), so one sentence written here is the whole account of a
+    # semantics change the operator just triggered. The non-emergency branch is
+    # stated too, and is not noise: "waits for the auction in flight" is the
+    # behaviour a reader is most likely to assume priority 10.0 overrides.
+    if emergency:
+        message += ('; EMERGENCY: preempts an auction already in flight for a '
+                    'lower-priority task -- ONCE, and only when a capable '
+                    'robot is idle to take it')
+    else:
+        message += '; not an emergency: waits for any auction already in flight'
     if quantity_ignored:
         message += f'; quantity {quantity:.1f} kg ignored for prospect'
     elif stored_quantity > 0.0:
@@ -558,7 +608,10 @@ def inject_task_logic(ctx: _InjectTaskContext, request, response):
         # ledger has one site per mission and it is keyed by id, not position.
         message += f'; credited to {stored_site_id}'
 
-    ctx.publish_alert('INFO', f'operator queued {task_id} for auction{suffix}')
+    urgency = ' as an EMERGENCY (may preempt an auction in flight)' \
+        if emergency else ''
+    ctx.publish_alert(
+        'INFO', f'operator queued {task_id} for auction{suffix}{urgency}')
     response.success = True
     response.task_id = task_id
     response.message = message
@@ -2080,9 +2133,21 @@ class OrchestratorNode(Node):
         if self._auction.is_active():
             if self._auction.is_timed_out(now):
                 self._resolve_auction()
-            return  # Don't start a new auction while one is running
+                # One auction resolves per tick, as before: the next opens on
+                # the next tick. Preemption below is what shortens that wait,
+                # and only for an emergency.
+                return
+            if not self._preempt_for_emergency(now):
+                return  # Don't start a new auction while one is running
+            # PREEMPTED. Fall through into the start-auction path below, in
+            # THIS tick rather than the next one, so an already-idle robot is
+            # not made to wait another 500 ms for the emergency announcement.
+            # The fall-through is GUARANTEED to announce the emergency:
+            # _preempt_for_emergency refuses to abort anything until it has
+            # confirmed, against the same collaborators the gates below use,
+            # that this tick will get as far as _publish_announcement.
 
-        # Check for idle robots and pending tasks
+        # Check for idle robots and pending tasks.
         idle = self._fleet.get_idle_robots()
         if not idle:
             return
@@ -2090,7 +2155,30 @@ class OrchestratorNode(Node):
         # D-20: `now` skips any task inside its auction backoff window, which
         # is what stops one unbiddable task holding the single auction slot
         # and starving everything behind it.
-        next_task = self._task_queue.get_next_ready(now)
+        #
+        # `servable` SKIPS a task no IDLE robot could bid on, and that is a
+        # separate defence from D-20's rather than a duplicate of it. The idle
+        # gate above is a bare `if not idle`, so before this a single idle
+        # excavator was enough to open -- and immediately waste -- a full
+        # auction round for a prospect-only task. Each wasted round is charged
+        # to D-20's backoff, and a backed-off task is invisible to this very
+        # method, so a task the fleet simply had no idle robot for could bury
+        # itself and then watch lower-priority work take the robot that finally
+        # arrived. It SKIPS rather than returns: a top-priority emergency
+        # excavate with the only excavator busy must not stop ten surveys being
+        # auctioned to three idle scouts.
+        #
+        # Re-queried rather than carried down from _preempt_for_emergency, and
+        # the answer on that path is the SAME task, deterministically: the
+        # preempted task is strictly lower priority (should_preempt requires
+        # it), so putting it back into the ready set cannot outrank the
+        # emergency; get_next_ready's tie-break settles an equal-priority peer
+        # in the emergency's favour; and the preempt path has already released
+        # the emergency's own D-20 backoff and confirmed it is servable and not
+        # ledger-blocked. Re-querying keeps one expression of "what runs next"
+        # instead of two that can drift.
+        next_task = self._task_queue.get_next_ready(
+            now, servable=self._servable_by_idle_fleet)
         if next_task is None:
             return
 
@@ -2126,6 +2214,172 @@ class OrchestratorNode(Node):
             f'at ({next_task.target_x:.0f}, {next_task.target_y:.0f}) '
             f'round={rounds}'
         )
+
+    def _servable_by_idle_fleet(self, task) -> bool:
+        """Could ANY robot that is idle RIGHT NOW bid on *task*?
+
+        The predicate ``_auction_tick`` and ``_preempt_for_emergency`` both hand
+        to the task queue. It is capability only -- not energy, not distance,
+        not the D-06 ledger -- because capability is the one bid precondition
+        the orchestrator can evaluate without asking the robot, AND BECAUSE IT
+        IS EVALUATED FROM THE ROBOT'S OWN ANSWER. ``agent_node`` declines an
+        announcement whose ``required_capabilities`` its HAL does not cover
+        before it computes anything else (agent_node.py:894-895), and the set it
+        tests is the same ``self._hal.get_capabilities()`` it publishes in
+        ``RobotState.capabilities`` (agent_node.py:1512), which is what
+        ``FleetMonitor`` stores. So "no idle robot is capable" is not an
+        orchestrator-side guess about the fleet: it is the fleet's own answer,
+        and such a round is GUARANTEED to close with no bids.
+
+        Energy and range are deliberately left to the robot. A bid the fleet
+        declines for those reasons is real evidence ABOUT the fleet and is
+        exactly what D-20's backoff is for; a round no robot could physically
+        have bid on is not evidence of anything and should never have been
+        opened.
+
+        An empty ``required_capabilities`` matches every idle robot, which is
+        every task the HTN planner emits without them.
+        """
+        return bool(self._fleet.get_idle_robots_with_capabilities(
+            getattr(task, 'required_capabilities', ()) or ()))
+
+    def _preempt_for_emergency(self, now: float) -> bool:
+        """Abort the in-flight auction for an operator EMERGENCY. True if aborted.
+
+        A DELIBERATE CHANGE TO AUCTION SEMANTICS, decided by the operator, not a
+        defect fix. Until this existed the orchestrator ran one auction at a time
+        and nothing interrupted it, at any priority. It still does not interrupt
+        for priority: the ONLY thing that opens this path is an operator having
+        set ``InjectTask.emergency``. A priority-10 injection without the flag
+        waits for the running auction exactly as it always has -- see
+        ``task_feed.should_preempt`` for why the line is drawn at the flag and
+        not at the number.
+
+        THE VICTIM PAYS AS LITTLE AS THE MECHANISM ALLOWS. Its round is
+        refunded, its D-20 backoff and failure count are untouched, and its
+        status returns to whatever it was before the auction -- INTERRUPTED
+        stays INTERRUPTED. All three live in ``TaskQueue.abort_auction``, which
+        is where the reasoning is written. What it DOES lose is any bid already
+        collected in that window: ``TaskAuction.reset()`` clears them, and it
+        must, because those bids were made for a round that will not resolve.
+        A robot that bid is not told (there is no message in this system that
+        says "your auction was withdrawn") and returns to IDLE on its own
+        ``auction_timeout_sec``.
+
+        Exactly one TaskEvent is produced, by ``abort_auction``'s status change
+        firing ``_on_task_status_change``. Nothing is appended here; a second
+        event would double-count the transition in the ring the dashboard
+        replays.
+
+        ``_auction_failure_logged`` is deliberately NOT cleared for the victim,
+        for the same reason ``_wake_on_fleet_change`` does not clear it: a
+        preemption tells the operator nothing new about whether the FLEET can
+        service that task, which is the only thing that dict's dedupe is about.
+
+        IT IS SPENT ONLY WHEN IT BUYS SOMETHING, AND IT IS SPENT ONLY ONCE.
+        Three gates below stand between ``should_preempt`` saying "may" and this
+        method saying "did", and all three exist because an abort that is not
+        followed by an announcement in the SAME tick is strictly worse than not
+        preempting: the auction slot is emptied, a live bid is thrown away, and
+        the bidder sits in BIDDING for its own 7.0 s agent timeout, which is
+        longer than the 5.0 s the orchestrator's own window had left to run.
+        The gates are (a) some IDLE robot is capable of the emergency, (b) the
+        D-06 ledger will not block its announcement, and (c) the shot has not
+        already been spent. (a) and (b) are the same two questions
+        ``_auction_tick`` asks below, asked here in the same order and against
+        the same collaborators, so "the fall-through will announce it" is a
+        checked fact rather than a hope.
+        """
+        running_id = self._auction.get_task_id()
+        running = self._task_queue.get_task(running_id)
+        # Positional `now`, not `now=now`: test_auction_backoff.py AST-walks
+        # every get_next_ready call in this module and requires a clock
+        # argument, and a keyword argument has an empty `.args`.
+        #
+        # get_preemption_candidate, NOT get_next_ready, and the difference is
+        # the whole reason an emergency can be acted on at all once it has lost
+        # a round: get_next_ready hides a task inside its D-20 backoff, and the
+        # emergency -- injected into a fleet busy enough to be worth an
+        # emergency -- is the likeliest task in the queue to be in one.
+        # Reaching through the backoff is bounded to once per injection by
+        # `preemption_spent`, which should_preempt reads.
+        candidate = self._task_queue.get_preemption_candidate(
+            now, servable=self._servable_by_idle_fleet)
+        if not should_preempt(running, candidate):
+            return False
+
+        # THE D-06 LEDGER GATE, ASKED BEFORE ANYTHING IS DESTROYED. should_preempt
+        # is pure and filters only `select_site`; it cannot know that
+        # inject_task_logic accepts a haul the ledger has no material for, which
+        # _auction_tick then refuses to announce. Choosing the candidate before
+        # that refusal is how a live auction gets taken away and given to
+        # nobody -- and, because the blocked emergency stays the queue's answer,
+        # never given back. Refusing here leaves the running auction to resolve
+        # normally and leaves the shot unspent for a moment when it can be used.
+        blocked = self._authorise_quantity(candidate)[1]
+        if blocked:
+            # NOT reported through _note_haul_block here: this path did not
+            # announce anything, and the same task reaches the identical gate in
+            # _auction_tick as soon as the slot is free, which is where the
+            # operator-facing latched alert belongs. Two callers, one alert.
+            self.get_logger().debug(
+                f'Emergency {candidate.task_id} did not preempt the auction for '
+                f'{running_id or "(no task)"}: the ledger blocks announcing it '
+                f'({blocked}). The in-flight auction is left to resolve and the '
+                f'preemption is NOT spent.')
+            return False
+
+        # Latched BEFORE the abort, so a preemption cannot half-happen and then
+        # repeat. See TaskEntry.preemption_spent for why one is the bound.
+        self._task_queue.spend_preemption(candidate.task_id)
+        # The emergency may have been reached through its own D-20 backoff (see
+        # get_preemption_candidate). Release it -- keeping failed_auctions, so
+        # the escalation to ABANDONED still terminates -- or the fall-through's
+        # get_next_ready would skip the very task this abort was performed for.
+        self._task_queue.release_auction_backoff(candidate.task_id)
+
+        # Named BEFORE reset() discards them. Nothing in this system tells a
+        # bidder its auction was withdrawn, so these robots stay in BIDDING
+        # until their own agent-side timeout and then arrive in IDLE through the
+        # one transition FleetMonitor deliberately ignores. Marking them is what
+        # lets the capacity a preemption creates wake a task D-20 has parked.
+        self._fleet.note_stranded_bidders(
+            bid.robot_id for bid in self._auction.get_bids())
+
+        aborted = self._task_queue.abort_auction(running_id, AUCTION_PREEMPTED)
+        # The reset is NOT conditional on `aborted`. abort_auction declines when
+        # there is nothing to undo -- the auctioned task has left the queue, or
+        # has already moved on from AUCTIONING -- and should_preempt has already
+        # ruled that the slot may be taken in that case. The TaskAuction object
+        # is what actually holds the slot, so leaving it active would strand it
+        # until its own timeout for no gain.
+        self._auction.reset()
+
+        victim = running_id or '(no task)'
+        self.get_logger().info(
+            f'Auction {victim} PREEMPTED by emergency task '
+            f'{candidate.task_id} (priority {candidate.priority:.1f} > '
+            f'{getattr(running, "priority", 0.0):.1f}); the preempted round is '
+            f'refunded and its backoff is untouched'
+            f'{"" if aborted else " (nothing to restore: it had already left AUCTIONING)"}'
+        )
+        # WARNING, not INFO: an operator's emergency has just taken work away
+        # from another operator's or the planner's task, and the person who did
+        # not press the button is the one who needs to see it. source_robot_id
+        # is '' — AlertLog.jsx renders that as "system", which is the honest
+        # attribution here: no robot did this, the orchestrator did.
+        self._publish_alert(
+            'WARNING', '',
+            f'emergency task {candidate.task_id} preempted the in-flight '
+            f'auction for {victim}. {victim} was NOT cancelled: it returns to '
+            f'the queue in the status it held before that auction, keeps its '
+            f'auction round and its backoff, and is announced again on a later '
+            f'tick. Only the emergency injection can do this, only against a '
+            f'strictly lower priority, and only ONCE -- '
+            f'{candidate.task_id} has now spent its preemption and competes on '
+            f'priority alone from here.',
+        )
+        return True
 
     def _resolve_auction(self) -> None:
         """Select the auction winner and assign the task (or re-queue).
@@ -2417,6 +2671,7 @@ class OrchestratorNode(Node):
             entry.status_reason = row['status_reason']
             entry.status_changed = _epoch_to_time(row['status_changed'])
             entry.auction_rounds = row['auction_rounds']
+            entry.emergency = row['emergency']
             rows.append(entry)
         msg.tasks = rows
 
@@ -2783,6 +3038,14 @@ class OrchestratorNode(Node):
         # of the job; no bid weight uses it today (agent_node scores distance,
         # energy and capability only).
         msg.quantity_kg = float(getattr(task, 'quantity_kg', 0.0))
+        # Operator emergency. No bidder reads it -- agent_node scores distance,
+        # energy and capability -- so it changes no bid. Its reader is the
+        # exit-gate probe: ProbeNode._on_announcement records it and check 6
+        # asserts that an injection made with emergency=True produced an
+        # announcement carrying it, which is what makes this hop verified on a
+        # live wire rather than the eighth "declared and never read" field in
+        # this repository. TaskAnnouncement.msg names the same reader.
+        msg.emergency = bool(getattr(task, 'emergency', False))
         self._announce_pub.publish(msg)
 
     def _authorise_quantity(self, task) -> tuple[float, str]:

@@ -78,11 +78,17 @@ OFF_MAP_POINTS = [
 
 class _FakeInjectRequest:
     def __init__(self, task_type='prospect', x=0.0, y=0.0,
-                 quantity=0.0, assigned_robot_id=''):
+                 quantity=0.0, assigned_robot_id='', emergency=False):
         self.task_type = task_type
         self.target_location = types.SimpleNamespace(x=x, y=y, z=0.0)
         self.quantity = quantity
         self.assigned_robot_id = assigned_robot_id
+        # Carried so this fake stays a full InjectTask.Request. The terrain
+        # rejection happens BEFORE add_task and is independent of urgency --
+        # a coordinate off the heightfield is off it in an emergency too --
+        # but a fake that quietly lacks a field is how a getattr default
+        # becomes an untested path.
+        self.emergency = emergency
 
 
 class _FakeInjectResponse:

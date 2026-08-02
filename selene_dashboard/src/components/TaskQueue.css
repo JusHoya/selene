@@ -92,6 +92,15 @@
   grid-template-columns: 60px 1fr 20px 70px 28px 50px;
 }
 
+/* An operator injection armed as an EMERGENCY. The rail is drawn INSIDE the
+   row's own padding so it cannot change the six-column grid, and it is a red
+   family distinct from --selected's cyan outline: a row can be both, and the
+   two must stay tellable apart. */
+.task-queue__row--emergency {
+  box-shadow: inset 2px 0 0 0 var(--accent-red);
+  background: rgba(255, 71, 87, 0.06);
+}
+
 /* --- Status badge --- */
 .task-queue__badge {
   display: inline-flex;
@@ -151,6 +160,17 @@
   min-width: 0;
 }
 
+/* The id and (when present) the EMG badge share one line. min-width:0 on both
+   the line and the id is what keeps the id's ellipsis working inside a flex
+   parent — without it the id refuses to shrink and pushes the badge out of the
+   column instead of truncating. */
+.task-queue__id-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .task-queue__id {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -158,6 +178,25 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* EMERGENCY. Deliberately louder than the status badge beside it: this is the
+   one row property that says the orchestrator was allowed to abort an auction
+   already in flight, and it must not read as one more lifecycle chip.
+   flex-shrink:0 so it survives a long task id rather than being truncated into
+   an unreadable stub. */
+.task-queue__emergency {
+  flex-shrink: 0;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--accent-red);
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  white-space: nowrap;
 }
 
 /* D-03: why the status last changed — 'operator_cancel_task', 'skill_failed',
