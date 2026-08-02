@@ -397,12 +397,26 @@ jobs:
           shellcheck --version
           actionlint --version
 
-      # -S warning, not -S style: the goal is defects, not house style. All four
-      # gate scripts are clean at this level today, so a new finding is a real
-      # regression rather than pre-existing noise.
+      # -S warning, not -S style: the goal is defects, not house style. Every
+      # tracked shell script is clean at this level today, so a new finding is a
+      # real regression rather than pre-existing noise.
+      #
+      # WIDENED 2026-08-02, and the enumeration was replaced by a QUERY on
+      # purpose. This step ran `shellcheck -S warning scripts/*.sh`, a
+      # non-recursive glob that covered 13 files and silently missed the 14th --
+      # docs/whitepapers/build.sh, which was linted by nothing and had accrued
+      # two real defects: it hardcoded another developer's home directory, and
+      # every pandoc call swallowed its exit status so the build could fail
+      # fourteen times and still exit 0. A glob that names one directory cannot
+      # notice a script added anywhere else, which is the same shape as D-38 (a
+      # job that has never fired is not a check). `git ls-files` asks the
+      # repository what shell scripts exist instead of asserting where they live,
+      # so a script added in a new directory is covered the day it lands.
+      # scripts/git-hooks/pre-push is named explicitly because it is
+      # extensionless by necessity and no '*.sh' pattern can match it.
       - name: shellcheck
         shell: bash
-        run: shellcheck -S warning scripts/*.sh
+        run: shellcheck -S warning $(git ls-files '*.sh') scripts/git-hooks/pre-push
 
       - name: actionlint
         shell: bash
