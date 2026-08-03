@@ -58,3 +58,10 @@ docs/prompts/
 # To stop tracking while keeping the local copy, run:
 #   git rm --cached PATENT_PRIOR_ART_ANALYSIS.md
 /PATENT_PRIOR_ART_ANALYSIS.md
+
+# Presentation cheat sheets -- personal notes, never distributed, never committed.
+IP_BOARD_ONEPAGER*.md
+*.private.md
+
+# Whitepaper build log -- regenerated artifact, not source.
+docs/whitepapers/output/build.log
