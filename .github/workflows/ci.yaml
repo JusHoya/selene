@@ -414,9 +414,18 @@ jobs:
       # so a script added in a new directory is covered the day it lands.
       # scripts/git-hooks/pre-push is named explicitly because it is
       # extensionless by necessity and no '*.sh' pattern can match it.
+      #
+      # PIPED THROUGH xargs -0, NOT AN UNQUOTED $( ), and that is not style.
+      # The first version of this step ran `shellcheck ... $(git ls-files '*.sh')`
+      # and turned this job RED on its first firing: actionlint shellchecks the
+      # body of every `run:` block, and an unquoted command substitution is
+      # SC2046 (word splitting). Quoting it would defeat the purpose -- the
+      # point is to expand to many filenames -- so the list is passed as
+      # NUL-delimited records instead, which also survives spaces in paths.
+      # xargs appends them after the fixed arguments, so the hook is linted too.
       - name: shellcheck
         shell: bash
-        run: shellcheck -S warning $(git ls-files '*.sh') scripts/git-hooks/pre-push
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck -S warning scripts/git-hooks/pre-push
 
       - name: actionlint
         shell: bash
